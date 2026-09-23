@@ -1,958 +1,325 @@
-#!/usr/bin/env python3
-"""
-autocut.py
-
-Generate candidate highlight intervals from a motion-analysis CSV.
-
-This is intentionally a first-stage candidate generator, not a final
-"good clip" selector.
-
-Pipeline:
-
-    source video
-        ↓
-    analyze_motion.py
-        ↓
-    motion_scores/<video>.csv
-        ↓
-    autocut.py
-        ↓
-    autocut/<video>/candidates.csv
-
-The script:
-- reads an existing motion CSV
-- calculates a configurable percentile threshold
-- selects samples at or above that threshold
-- groups nearby samples into events
-- adds configurable padding
-- filters very short events
-- calculates additional diagnostic statistics
-- ranks events by peak motion
-- writes candidates.csv
-
-No video rendering is performed in this version.
-"""
-
-from __future__ import annotations
-
 import argparse
-import csv
-import math
-from dataclasses import dataclass
+import subprocess
+import tempfile
 from pathlib import Path
-from statistics import mean, median
 
+import librosa
+import numpy as np
+import shutil
 
-# ---------------------------------------------------------------------------
-# Project paths
-# ---------------------------------------------------------------------------
+# Automatically fall back to system PATH if the explicit file isn't found
+FFMPEG = shutil.which("ffmpeg") or r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"
+FFPROBE = shutil.which("ffprobe") or r"C:\Program Files\ffmpeg\bin\ffprobe.exe"
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PROJECT_DATA_DIR = PROJECT_ROOT / "data"
-MOTION_DIR = PROJECT_DATA_DIR / "motion_scores"
-AUTOCUT_DIR = PROJECT_DATA_DIR / "autocut"
+# Video Constants
+MIN_CLIP = 3.0
+FADE_OUT_DURATION = 3.0
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
+def parse_time(value):
+    if ":" in value:
+        minutes, seconds = value.split(":")
+        return int(minutes) * 60 + float(seconds)
+    return float(value)
 
-@dataclass
-class MotionSample:
-    timestamp: float
-    score: float
 
-
-@dataclass
-class Candidate:
-    start: float
-    end: float
-
-    peak_score: float
-    peak_time: float
-
-    mean_score: float
-    median_score: float
-
-    baseline_mean: float
-    baseline_median: float
-
-    motion_excess: float
-    peak_ratio: float
-
-    high_motion_count: int
-    sample_count: int
-
-    high_motion_fraction: float
-
-    threshold: float
-
-    @property
-    def duration(self) -> float:
-        return self.end - self.start
-
-
-# ---------------------------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------------------------
-
-def format_time(seconds: float) -> str:
-    """Format seconds as HH:MM:SS or MM:SS."""
-
-    seconds = max(0.0, seconds)
-
-    total_seconds = int(seconds)
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    secs = total_seconds % 60
-
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def percentile(values: list[float], p: float) -> float:
-    """
-    Calculate percentile using linear interpolation.
-
-    p is expressed as 0-100.
-    """
-
-    if not values:
-        raise ValueError("Cannot calculate percentile of an empty list.")
-
-    if not 0 <= p <= 100:
-        raise ValueError("Percentile must be between 0 and 100.")
-
-    values = sorted(values)
-
-    if len(values) == 1:
-        return values[0]
-
-    position = (len(values) - 1) * (p / 100.0)
-
-    lower = math.floor(position)
-    upper = math.ceil(position)
-
-    if lower == upper:
-        return values[lower]
-
-    fraction = position - lower
-
-    return values[lower] + (
-        values[upper] - values[lower]
-    ) * fraction
-
-
-def parse_float(
-    value: str,
-    field_name: str,
-    row_number: int,
-) -> float:
-    """Parse a CSV numeric field with a useful error message."""
-
-    try:
-        return float(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid {field_name} on CSV row "
-            f"{row_number}: {value!r}"
-        ) from exc
-
-
-# ---------------------------------------------------------------------------
-# Motion CSV handling
-# ---------------------------------------------------------------------------
-
-def load_motion_csv(csv_path: Path) -> list[MotionSample]:
-    """Load timestamp/motion_score samples from a motion CSV."""
-
-    if not csv_path.exists():
-        raise FileNotFoundError(
-            f"Motion CSV not found: {csv_path}"
-        )
-
-    samples: list[MotionSample] = []
-
-    with csv_path.open(
-        "r",
-        newline="",
-        encoding="utf-8-sig",
-    ) as f:
-        reader = csv.DictReader(f)
-
-        if reader.fieldnames is None:
-            raise ValueError(
-                f"CSV has no header: {csv_path}"
-            )
-
-        required = {
-            "timestamp",
-            "motion_score",
-        }
-
-        missing = required - set(reader.fieldnames)
-
-        if missing:
-            raise ValueError(
-                f"CSV is missing required column(s): "
-                f"{', '.join(sorted(missing))}"
-            )
-
-        for row_number, row in enumerate(reader, start=2):
-            timestamp = parse_float(
-                row["timestamp"],
-                "timestamp",
-                row_number,
-            )
-
-            score = parse_float(
-                row["motion_score"],
-                "motion_score",
-                row_number,
-            )
-
-            samples.append(
-                MotionSample(
-                    timestamp=timestamp,
-                    score=score,
-                )
-            )
-
-    if not samples:
-        raise ValueError(
-            f"Motion CSV contains no samples: {csv_path}"
-        )
-
-    samples.sort(
-        key=lambda sample: sample.timestamp
-    )
-
-    return samples
-
-
-def find_motion_csv(video_path: Path) -> Path:
-    """
-    Find the motion CSV corresponding to a video.
-
-    The normal location is:
-
-        data/motion_scores/<video-stem>.csv
-    """
-
-    csv_path = (
-        MOTION_DIR
-        / f"{video_path.stem}.csv"
-    )
-
-    if csv_path.exists():
-        return csv_path
-
-    raise FileNotFoundError(
-        "Could not find motion CSV for video.\n"
-        f"Video:       {video_path}\n"
-        f"Expected at: {csv_path}\n\n"
-        "Run analyze_motion.py for this video first, or use "
-        "--motion-csv to specify the CSV explicitly."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Candidate generation
-# ---------------------------------------------------------------------------
-
-def select_high_motion_samples(
-    samples: list[MotionSample],
-    threshold: float,
-) -> list[MotionSample]:
-    """Return samples whose score is at or above the threshold."""
-
-    return [
-        sample
-        for sample in samples
-        if sample.score >= threshold
+def probe_duration(path):
+    cmd = [
+        FFPROBE, "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(path),
     ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    return float(result.stdout.strip())
 
 
-def group_samples(
-    samples: list[MotionSample],
-    gap: float,
-) -> list[list[MotionSample]]:
-    """
-    Group selected motion samples into events.
+def analyze_audio(music_path):
+    print("Analyzing audio rhythm, beats, and energy peaks...")
+    y, sr = librosa.load(music_path, sr=None)
+    
+    _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+    measure_times = beat_times[::4]
 
-    Two samples belong to the same event when the time between them
-    is no greater than 'gap'.
-    """
-
-    if not samples:
-        return []
-
-    samples = sorted(
-        samples,
-        key=lambda sample: sample.timestamp,
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    peaks = librosa.util.peak_pick(
+        onset_env,
+        pre_max=3, post_max=3,
+        pre_avg=10, post_avg=10,
+        delta=1.5, wait=10
     )
+    onset_times = librosa.frames_to_time(peaks, sr=sr)
 
-    groups: list[list[MotionSample]] = []
+    combined_times = np.unique(np.concatenate([beat_times, onset_times]))
+    combined_times.sort()
 
-    current_group = [samples[0]]
-
-    for sample in samples[1:]:
-        previous = current_group[-1]
-
-        if (
-            sample.timestamp
-            - previous.timestamp
-            <= gap
-        ):
-            current_group.append(sample)
-        else:
-            groups.append(current_group)
-            current_group = [sample]
-
-    groups.append(current_group)
-
-    return groups
+    return {
+        "beat": beat_times,
+        "measure": measure_times,
+        "onset": onset_times if len(onset_times) > 0 else beat_times,
+        "combined": combined_times,
+    }
 
 
-def samples_in_interval(
-    samples: list[MotionSample],
-    start: float,
-    end: float,
-) -> list[MotionSample]:
-    """Return all motion samples inside an interval."""
-
-    return [
-        sample
-        for sample in samples
-        if start <= sample.timestamp <= end
-    ]
+def snap_timestamp(target_time, grid_times, mode="beat"):
+    if mode == "forward-beat":
+        future = grid_times[grid_times >= target_time]
+        return future[0] if len(future) > 0 else grid_times[-1]
+    
+    idx = (np.abs(grid_times - target_time)).argmin()
+    return grid_times[idx]
 
 
-def build_candidate(
-    group: list[MotionSample],
-    all_samples: list[MotionSample],
-    threshold: float,
-    padding: float,
-) -> Candidate:
-    """
-    Convert one group of high-motion samples into a candidate.
+def load_annotations(path):
+    events = []
+    last_video_name = None
 
-    Two types of statistics are calculated:
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            # Skip empty lines or header comments
+            if not line or line.startswith("#") or line.startswith("START"):
+                continue
 
-    High-motion statistics:
-        calculated only from samples >= threshold.
+            parts = line.split(maxsplit=5)
+            
+            # Check if the first token is a timestamp (contains ':') or a video filename
+            if ":" in parts[0] or parts[0].replace(".", "", 1).isdigit():
+                # Case 1: Video name omitted -> reuse last_video_name
+                if last_video_name is None:
+                    raise ValueError(f"First row in annotations omits video filename: '{line}'")
+                video_name = last_video_name
+                start = parse_time(parts[0])
+                end = parse_time(parts[1])
+                mtb = int(parts[2])
+                film = int(parts[3])
+                description = parts[4] if len(parts) > 4 else ""
+            else:
+                # Case 2: Video name explicitly provided -> update last_video_name
+                video_name = parts[0]
+                last_video_name = video_name
+                start = parse_time(parts[1])
+                end = parse_time(parts[2])
+                mtb = int(parts[3])
+                film = int(parts[4])
+                description = parts[5] if len(parts) > 5 else ""
 
-    Baseline statistics:
-        calculated from every motion sample inside the padded
-        candidate interval.
+            events.append({
+                "video_name": video_name,
+                "start": start,
+                "end": end,
+                "duration": end - start,
+                "mtb": mtb,
+                "film": film,
+                "description": description,
+            })
+    return events
 
-    This distinction is useful because a candidate containing one
-    isolated motion spike should look different from one containing
-    sustained motion.
-    """
+def select_events_beat_synced(events, target_duration, grid_times, sync_mode="beat", max_clip=10.0):
+    for event in events:
+        event["priority"] = event["mtb"] * 2 + event["film"]
 
-    peak_sample = max(
-        group,
-        key=lambda sample: sample.score,
-    )
+    ranked = sorted(events, key=lambda e: (e["priority"], e["duration"]), reverse=True)
+    selected = []
+    current_audio_time = 0.0
 
-    raw_start = group[0].timestamp
-    raw_end = group[-1].timestamp
+    for event in ranked:
+        remaining = target_duration - current_audio_time
+        if remaining < MIN_CLIP:
+            break
 
-    start = max(
-        0.0,
-        raw_start - padding,
-    )
+        ideal_len = min(event["duration"], max_clip) if max_clip else event["duration"]
+        ideal_len = min(ideal_len, remaining)
 
-    end = raw_end + padding
+        target_end_audio = current_audio_time + ideal_len
+        snapped_end_audio = snap_timestamp(target_end_audio, grid_times, mode=sync_mode)
+        clip_length = snapped_end_audio - current_audio_time
 
-    interval_samples = samples_in_interval(
-        all_samples,
-        start,
-        end,
-    )
-
-    if not interval_samples:
-        # This should not normally happen because the high-motion
-        # group itself lies inside the interval.
-        interval_samples = group
-
-    high_motion_scores = [
-        sample.score
-        for sample in group
-    ]
-
-    baseline_scores = [
-        sample.score
-        for sample in interval_samples
-    ]
-
-    high_motion_mean = mean(
-        high_motion_scores
-    )
-
-    high_motion_median = median(
-        high_motion_scores
-    )
-
-    baseline_mean = mean(
-        baseline_scores
-    )
-
-    baseline_median = median(
-        baseline_scores
-    )
-
-    motion_excess = (
-        high_motion_mean
-        - baseline_mean
-    )
-
-    if baseline_mean > 0:
-        peak_ratio = (
-            peak_sample.score
-            / baseline_mean
-        )
-    else:
-        peak_ratio = float("inf")
-
-    high_motion_count = len(group)
-    sample_count = len(interval_samples)
-
-    high_motion_fraction = (
-        high_motion_count / sample_count
-        if sample_count > 0
-        else 0.0
-    )
-
-    return Candidate(
-        start=start,
-        end=end,
-        peak_score=peak_sample.score,
-        peak_time=peak_sample.timestamp,
-        mean_score=high_motion_mean,
-        median_score=high_motion_median,
-        baseline_mean=baseline_mean,
-        baseline_median=baseline_median,
-        motion_excess=motion_excess,
-        peak_ratio=peak_ratio,
-        high_motion_count=high_motion_count,
-        sample_count=sample_count,
-        high_motion_fraction=high_motion_fraction,
-        threshold=threshold,
-    )
-
-
-def generate_candidates(
-    samples: list[MotionSample],
-    threshold: float,
-    gap: float,
-    padding: float,
-    min_duration: float,
-) -> list[Candidate]:
-    """Generate and filter candidate intervals."""
-
-    selected = select_high_motion_samples(
-        samples,
-        threshold,
-    )
-
-    if not selected:
-        return []
-
-    groups = group_samples(
-        selected,
-        gap,
-    )
-
-    candidates: list[Candidate] = []
-
-    for group in groups:
-        candidate = build_candidate(
-            group=group,
-            all_samples=samples,
-            threshold=threshold,
-            padding=padding,
-        )
-
-        if candidate.duration < min_duration:
+        if clip_length < MIN_CLIP or clip_length > remaining:
             continue
 
-        candidates.append(candidate)
+        event_copy = event.copy()
+        event_copy["clip_length"] = clip_length
+        event_copy["audio_start"] = current_audio_time
+        event_copy["audio_end"] = snapped_end_audio
 
-    return candidates
+        selected.append(event_copy)
+        current_audio_time = snapped_end_audio
 
-
-def rank_candidates(
-    candidates: list[Candidate],
-) -> list[Candidate]:
-    """
-    Rank candidates.
-
-    The ranking is intentionally still based primarily on peak
-    motion. We are collecting the additional statistics first,
-    before deciding whether the ranking formula should change.
-    """
-
-    return sorted(
-        candidates,
-        key=lambda candidate: (
-            candidate.peak_score,
-            candidate.mean_score,
-            candidate.duration,
-        ),
-        reverse=True,
-    )
+    selected.sort(key=lambda e: e["start"])
+    return selected, current_audio_time
 
 
-# ---------------------------------------------------------------------------
-# Reporting
-# ---------------------------------------------------------------------------
+def extract_clips(selected, videos_dir, temp_dir, aspect_ratio="landscape"):
+    clip_files = []
 
-def print_statistics(
-    samples: list[MotionSample],
-    threshold: float,
-) -> None:
-    """Print basic statistics for the motion data."""
+    for index, event in enumerate(selected):
+        video_path = videos_dir / event["video_name"]
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video file not found in videos directory: {video_path}")
 
-    scores = [
-        sample.score
-        for sample in samples
-    ]
+        start = event["start"]
+        length = event["clip_length"]
+        final_clip = temp_dir / f"clip_{index:03d}.ts"
 
-    duration = (
-        samples[-1].timestamp
-        if samples
-        else 0.0
-    )
-
-    print()
-    print("Motion statistics:")
-
-    print(
-        f"  Samples:       {len(samples)}"
-    )
-
-    print(
-        f"  Duration:      {format_time(duration)}"
-    )
-
-    print(
-        f"  Mean:          {mean(scores):.2f}"
-    )
-
-    print(
-        f"  Median:        {median(scores):.2f}"
-    )
-
-    print(
-        f"  Min:           {min(scores):.2f}"
-    )
-
-    print(
-        f"  Max:           {max(scores):.2f}"
-    )
-
-    print(
-        f"  P90:           {percentile(scores, 90):.2f}"
-    )
-
-    print(
-        f"  P95:           {percentile(scores, 95):.2f}"
-    )
-
-    print(
-        f"  P99:           {percentile(scores, 99):.2f}"
-    )
-
-    print(
-        f"  Threshold:     {threshold:.2f}"
-    )
-
-
-def print_candidates(
-    candidates: list[Candidate],
-    top: int,
-) -> None:
-    """Print candidate intervals and diagnostics."""
-
-    print()
-    print("Candidates:")
-
-    if not candidates:
-        print("  No candidates found.")
-        return
-
-    displayed = candidates[:top]
-
-    for index, candidate in enumerate(
-        displayed,
-        start=1,
-    ):
         print(
-            f"  {index:02d}. "
-            f"{format_time(candidate.start)}-"
-            f"{format_time(candidate.end)} "
-            f"dur={candidate.duration:.1f}s "
-            f"peak={candidate.peak_score:.2f} "
-            f"@{format_time(candidate.peak_time)} "
-            f"high_mean={candidate.mean_score:.2f} "
-            f"base_mean={candidate.baseline_mean:.2f} "
-            f"excess={candidate.motion_excess:.2f} "
-            f"high={candidate.high_motion_count}/"
-            f"{candidate.sample_count} "
-            f"({candidate.high_motion_fraction:.0%})"
+            f"Clip {index + 1:02d} [{event['video_name']}]: {start:7.2f}s + {length:5.2f}s | "
+            f"Sync: {event['audio_start']:.2f}s -> {event['audio_end']:.2f}s"
         )
 
-    if len(candidates) > top:
-        print(
-            f"  ... {len(candidates) - top} more "
-            f"candidate(s) not displayed."
-        )
+        cmd_extract = [
+            FFMPEG, "-hide_banner", "-loglevel", "error",
+            "-ss", f"{start:.3f}",
+            "-i", str(video_path),
+            "-t", f"{length:.3f}",
+        ]
+
+        if aspect_ratio == "portrait":
+            cmd_extract.extend(["-vf", "crop=ih*9/16:ih"])
+
+        cmd_extract.extend([
+            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20",
+            "-pix_fmt", "yuv420p", "-an",
+            "-f", "mpegts",
+            str(final_clip),
+        ])
+
+        subprocess.run(cmd_extract, check=True)
+        clip_files.append(final_clip)
+
+    return clip_files
 
 
-# ---------------------------------------------------------------------------
-# CSV output
-# ---------------------------------------------------------------------------
+def concatenate_clips(clip_files, temp_dir):
+    concat_file = temp_dir / "concat.txt"
+    with open(concat_file, "w", encoding="utf-8") as f:
+        for clip in clip_files:
+            f.write(f"file '{clip.as_posix()}'\n")
 
-def write_candidates_csv(
-    output_path: Path,
-    candidates: list[Candidate],
-) -> None:
-    """Write ranked candidates to candidates.csv."""
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    fieldnames = [
-        "rank",
-        "start",
-        "end",
-        "duration",
-        "start_time",
-        "end_time",
-        "peak_time",
-        "peak_score",
-        "mean_score",
-        "median_score",
-        "baseline_mean",
-        "baseline_median",
-        "motion_excess",
-        "peak_ratio",
-        "high_motion_count",
-        "sample_count",
-        "high_motion_fraction",
-        "threshold",
+    silent_video = temp_dir / "video_only.mp4"
+    cmd = [
+        FFMPEG, "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0",
+        "-i", str(concat_file),
+        "-c", "copy",
+        str(silent_video),
     ]
-
-    with output_path.open(
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=fieldnames,
-        )
-
-        writer.writeheader()
-
-        for rank, candidate in enumerate(
-            candidates,
-            start=1,
-        ):
-            writer.writerow(
-                {
-                    "rank": rank,
-                    "start": (
-                        f"{candidate.start:.3f}"
-                    ),
-                    "end": (
-                        f"{candidate.end:.3f}"
-                    ),
-                    "duration": (
-                        f"{candidate.duration:.3f}"
-                    ),
-                    "start_time": format_time(
-                        candidate.start
-                    ),
-                    "end_time": format_time(
-                        candidate.end
-                    ),
-                    "peak_time": (
-                        f"{candidate.peak_time:.3f}"
-                    ),
-                    "peak_score": (
-                        f"{candidate.peak_score:.6f}"
-                    ),
-                    "mean_score": (
-                        f"{candidate.mean_score:.6f}"
-                    ),
-                    "median_score": (
-                        f"{candidate.median_score:.6f}"
-                    ),
-                    "baseline_mean": (
-                        f"{candidate.baseline_mean:.6f}"
-                    ),
-                    "baseline_median": (
-                        f"{candidate.baseline_median:.6f}"
-                    ),
-                    "motion_excess": (
-                        f"{candidate.motion_excess:.6f}"
-                    ),
-                    "peak_ratio": (
-                        f"{candidate.peak_ratio:.6f}"
-                    ),
-                    "high_motion_count": (
-                        candidate.high_motion_count
-                    ),
-                    "sample_count": (
-                        candidate.sample_count
-                    ),
-                    "high_motion_fraction": (
-                        f"{candidate.high_motion_fraction:.6f}"
-                    ),
-                    "threshold": (
-                        f"{candidate.threshold:.6f}"
-                    ),
-                }
-            )
+    subprocess.run(cmd, check=True)
+    return silent_video
 
 
-# ---------------------------------------------------------------------------
-# Argument handling
-# ---------------------------------------------------------------------------
+def add_music_with_fade(video_file, music_path, total_duration, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fade_start = max(0.0, total_duration - FADE_OUT_DURATION)
+    af_filter = f"afade=t=out:st={fade_start:.3f}:d={FADE_OUT_DURATION:.3f}"
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Generate candidate highlight intervals "
-            "from a motion CSV."
-        )
-    )
+    cmd = [
+        FFMPEG, "-hide_banner", "-loglevel", "error",
+        "-i", str(video_file),
+        "-i", str(music_path),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "320k",
+        "-af", af_filter,
+        "-t", f"{total_duration:.3f}",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    subprocess.run(cmd, check=True)
 
+
+def main():
+    parser = argparse.ArgumentParser(description="MTB-AutoCut Multi-Video Generator")
+    
+    # Required Positional Arguments
+    parser.add_argument("videos_dir", type=Path, help="Directory containing input raw video files")
+    parser.add_argument("music", type=Path, help="Path to input music/audio file")
+    parser.add_argument("annotations", type=Path, help="Path to annotations TXT file")
+
+    # Optional Arguments
     parser.add_argument(
-        "video",
+        "-o", "--output-dir",
         type=Path,
-        help=(
-            "Source video used to locate the corresponding "
-            "motion CSV."
-        ),
+        default=Path("./output"),
+        help="Directory to save output file (default: ./output)"
     )
-
     parser.add_argument(
-        "--motion-csv",
-        type=Path,
-        default=None,
-        help=(
-            "Explicit motion CSV path. If omitted, the script "
-            "looks in data\\motion_scores using the video's "
-            "filename."
-        ),
+        "-ar", "--aspect-ratio",
+        choices=["landscape", "portrait"],
+        default="landscape",
+        help="Target aspect ratio: landscape (16:9), portrait (9:16 center crop)"
     )
-
     parser.add_argument(
-        "--threshold",
+        "-sm", "--sync-mode",
+        choices=["beat", "measure", "forward-beat", "onset", "combined"],
+        default="beat",
+        help="Sync strategy: 'beat' (standard beats), 'measure' (4-beat bars), 'forward-beat' (next beat), 'onset' (high-energy peaks/taiko hits), 'combined' (beats + peaks)"
+    )
+    parser.add_argument(
+        "-mc", "--max-clip",
         type=float,
-        default=90.0,
-        help=(
-            "Motion percentile threshold (default: 90). "
-            "For example, 90 means P90."
-        ),
+        default=10.0,
+        help="Maximum clip duration in seconds (default: 10.0). Set to 0 to allow full annotated clip length."
     )
-
-    parser.add_argument(
-        "--gap",
-        type=float,
-        default=3.0,
-        help=(
-            "Maximum gap in seconds between high-motion samples "
-            "before starting a new candidate (default: 3)."
-        ),
-    )
-
-    parser.add_argument(
-        "--padding",
-        type=float,
-        default=5.0,
-        help=(
-            "Seconds added before and after each detected event "
-            "(default: 5)."
-        ),
-    )
-
-    parser.add_argument(
-        "--min-duration",
-        type=float,
-        default=4.0,
-        help=(
-            "Minimum candidate duration in seconds "
-            "(default: 4)."
-        ),
-    )
-
-    parser.add_argument(
-        "--top",
-        type=int,
-        default=20,
-        help=(
-            "Number of candidates to display in the terminal "
-            "(default: 20)."
-        ),
-    )
-
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help=(
-            "Optional output CSV path. If omitted, writes to "
-            "data\\autocut\\<video-stem>\\candidates.csv."
-        ),
-    )
-
-    return parser
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    parser = build_parser()
     args = parser.parse_args()
 
-    video_path = args.video
+    if not args.videos_dir.is_dir():
+        parser.error(f"Videos directory not found: {args.videos_dir}")
+    if not args.music.is_file():
+        parser.error(f"Music file not found: {args.music}")
+    if not args.annotations.is_file():
+        parser.error(f"Annotations file not found: {args.annotations}")
 
-    if args.threshold < 0 or args.threshold > 100:
-        parser.error(
-            "--threshold must be between 0 and 100."
+    max_clip_str = "unlimited" if args.max_clip <= 0 else f"{args.max_clip}s"
+    output_filename = f"MultiClip_{args.aspect_ratio}_{args.sync_mode}_max{max_clip_str}.mp4"
+    output_path = args.output_dir / output_filename
+
+    print(f"MTB-AutoCut v1.0 (Multi-Video Support)")
+    print(f"=========================================================================")
+    print(f"Videos Directory: {args.videos_dir}")
+    print(f"Music File:       {args.music}")
+    print(f"Annotations File: {args.annotations}")
+    print(f"Settings:         AR={args.aspect_ratio.upper()} | Sync={args.sync_mode} | Max Clip={max_clip_str}")
+    print(f"=========================================================================\n")
+
+    music_duration = probe_duration(args.music)
+    audio_grids = analyze_audio(args.music)
+    
+    if args.sync_mode in ["beat", "forward-beat"]:
+        grid_times = audio_grids["beat"]
+    elif args.sync_mode == "measure":
+        grid_times = audio_grids["measure"]
+    elif args.sync_mode == "onset":
+        grid_times = audio_grids["onset"]
+    elif args.sync_mode == "combined":
+        grid_times = audio_grids["combined"]
+
+    events = load_annotations(args.annotations)
+    target = music_duration
+
+    max_clip_val = args.max_clip if args.max_clip > 0 else None
+
+    selected, final_duration = select_events_beat_synced(
+        events, target, grid_times, sync_mode=args.sync_mode, max_clip=max_clip_val
+    )
+
+    with tempfile.TemporaryDirectory(prefix="mtb_autocut_") as temp:
+        temp_dir = Path(temp)
+        
+        print(f"\nProcessing clips...")
+        clip_files = extract_clips(
+            selected, args.videos_dir, temp_dir, aspect_ratio=args.aspect_ratio
         )
+        
+        print("\nConcatenating clips...")
+        silent_video = concatenate_clips(clip_files, temp_dir)
 
-    if args.gap < 0:
-        parser.error(
-            "--gap cannot be negative."
-        )
+        print(f"\nApplying audio fade-out and exporting final video ({final_duration:.2f}s)...")
+        add_music_with_fade(silent_video, args.music, final_duration, output_path)
 
-    if args.padding < 0:
-        parser.error(
-            "--padding cannot be negative."
-        )
-
-    if args.min_duration < 0:
-        parser.error(
-            "--min-duration cannot be negative."
-        )
-
-    if args.top < 1:
-        parser.error(
-            "--top must be at least 1."
-        )
-
-    print(
-        "MTB AutoCut - Candidate Generator"
-    )
-    print(
-        "----------------------------------"
-    )
-
-    print(
-        f"Video:       {video_path}"
-    )
-
-    # Locate motion CSV.
-    if args.motion_csv is not None:
-        motion_csv = args.motion_csv
-    else:
-        motion_csv = find_motion_csv(
-            video_path
-        )
-
-    print(
-        f"Motion CSV:  {motion_csv}"
-    )
-
-    # Load motion data.
-    samples = load_motion_csv(
-        motion_csv
-    )
-
-    scores = [
-        sample.score
-        for sample in samples
-    ]
-
-    threshold_value = percentile(
-        scores,
-        args.threshold,
-    )
-
-    print(
-        f"Threshold:   P{args.threshold:g} "
-        f"= {threshold_value:.2f}"
-    )
-
-    print(
-        f"Gap:         {args.gap:.1f}s"
-    )
-
-    print(
-        f"Padding:     {args.padding:.1f}s"
-    )
-
-    print(
-        f"Min duration:{args.min_duration:.1f}s"
-    )
-
-    print_statistics(
-        samples=samples,
-        threshold=threshold_value,
-    )
-
-    # Generate candidates.
-    candidates = generate_candidates(
-        samples=samples,
-        threshold=threshold_value,
-        gap=args.gap,
-        padding=args.padding,
-        min_duration=args.min_duration,
-    )
-
-    candidates = rank_candidates(
-        candidates
-    )
-
-    print_candidates(
-        candidates=candidates,
-        top=args.top,
-    )
-
-    # Output.
-    if args.output is not None:
-        output_path = args.output
-    else:
-        output_path = (
-            AUTOCUT_DIR
-            / video_path.stem
-            / "candidates.csv"
-        )
-
-    write_candidates_csv(
-        output_path=output_path,
-        candidates=candidates,
-    )
-
-    print()
-    print(
-        f"Candidates found: {len(candidates)}"
-    )
-    print(
-        f"Output:            {output_path}"
-    )
+    print("\nDONE")
+    print(f"Output: {output_path}")
 
 
 if __name__ == "__main__":
