@@ -1,3 +1,23 @@
+r"""
+analyze_motion.py
+
+Motion analysis for MTB / POV video footage.
+
+Features:
+- Scans an input directory for video files.
+- Calculates frame-to-frame motion scores using FFmpeg + CUDA decode.
+- Supports an intervals file to restrict analysis to selected videos/time ranges.
+- Supports full paths or filenames in the intervals file.
+- Supports lines beginning with '-' to explicitly exclude videos.
+- Writes one CSV per analyzed video.
+
+Example:
+
+python .\scripts\analyze_motion.py `
+    --intervals ".\data\annotations\Mentorella.txt" `
+    "D:\Prenestini\Mentorella"
+"""
+
 import argparse
 import csv
 import os
@@ -114,6 +134,12 @@ def parse_intervals_file(path):
 
     The second interval belongs to filename.mp4.
 
+    Full paths are also accepted:
+
+        D:\\Prenestini\\Mentorella\\filename.mp4
+
+    For matching purposes, only the filename is used.
+
     Returns:
 
         {
@@ -203,16 +229,25 @@ def parse_intervals_file(path):
                 continue
 
             # ----------------------------------------------------
-            # Otherwise this is a filename
+            # Otherwise this is a filename/path
             # ----------------------------------------------------
 
-            filename = line
+            original_filename = line
 
             # Explicitly skipped file
-            if filename.startswith("-"):
-                filename = filename[1:].strip()
+            if original_filename.startswith("-"):
 
-                if filename:
+                original_filename = (
+                    original_filename[1:].strip()
+                )
+
+                if original_filename:
+
+                    # Normalize full path -> filename only
+                    filename = Path(
+                        original_filename.replace("\\", "/")
+                    ).name.lower()
+
                     files[filename] = {
                         "intervals": [],
                         "skip": True,
@@ -225,6 +260,11 @@ def parse_intervals_file(path):
                 current_file = None
                 continue
 
+            # Normalize full path -> filename only
+            filename = Path(
+                original_filename.replace("\\", "/")
+            ).name.lower()
+
             # Normal file
             files[filename] = {
                 "intervals": [],
@@ -234,7 +274,6 @@ def parse_intervals_file(path):
             current_file = filename
 
     return files
-
 
 # ============================================================
 # Video discovery
@@ -376,6 +415,7 @@ def analyze_segment(video_path, start_time, end_time, show_progress=True):
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        bufsize=1024 * 1024,
     )
 
     scores = []
@@ -383,100 +423,139 @@ def analyze_segment(video_path, start_time, end_time, show_progress=True):
     previous = None
     frame_index = 0
 
+    # ------------------------------------------------------------
+    # Read JPEG frames from pipe
+    #
+    # FFmpeg writes a continuous stream of JPEG images. We read
+    # reasonably large chunks and extract complete JPEGs using
+    # the JPEG start/end markers.
+    # ------------------------------------------------------------
+
+    buffer = bytearray()
+
     while True:
 
-        # --------------------------------------------------------
-        # Read JPEG frame from pipe
-        # --------------------------------------------------------
+        chunk = process.stdout.read(1024 * 1024)
 
-        data = process.stdout.read(4)
-
-        if not data:
+        if not chunk:
             break
 
-        # JPEG begins with FF D8.
-        # Find the beginning of the JPEG.
-        while data[:2] != b"\xff\xd8":
+        buffer.extend(chunk)
 
-            more = process.stdout.read(1)
-
-            if not more:
-                break
-
-            data += more
-
-        if len(data) < 2:
-            break
-
-        jpeg = data
-
-        # Read until JPEG end marker FF D9
         while True:
 
-            chunk = process.stdout.read(4096)
+            # ----------------------------------------------------
+            # Find JPEG start marker: FF D8
+            # ----------------------------------------------------
 
-            if not chunk:
+            start_pos = buffer.find(b"\xff\xd8")
+
+            if start_pos == -1:
+
+                # Keep the final byte in case it is the beginning
+                # of the two-byte JPEG marker.
+                if len(buffer) > 1:
+                    del buffer[:-1]
+
                 break
 
-            jpeg += chunk
+            # Discard anything before the JPEG start.
+            if start_pos > 0:
+                del buffer[:start_pos]
 
-            pos = jpeg.find(b"\xff\xd9")
+            # ----------------------------------------------------
+            # Find JPEG end marker: FF D9
+            # ----------------------------------------------------
 
-            if pos != -1:
-                jpeg = jpeg[:pos + 2]
+            end_pos = buffer.find(
+                b"\xff\xd9",
+                2,
+            )
+
+            if end_pos == -1:
+                # Complete JPEG has not arrived yet.
                 break
 
-        frame = cv2.imdecode(
-            np.frombuffer(jpeg, dtype=np.uint8),
-            cv2.IMREAD_GRAYSCALE,
-        )
-
-        if frame is None:
-            continue
-
-        timestamp = start_time + frame_index / FPS
-
-        if previous is not None:
-
-            diff = cv2.absdiff(
-                frame,
-                previous,
+            # Include the FF D9 marker.
+            jpeg = bytes(
+                buffer[:end_pos + 2]
             )
 
-            score = float(np.mean(diff))
+            # Remove this JPEG from the buffer.
+            del buffer[:end_pos + 2]
 
-            scores.append(
-                (
-                    timestamp,
-                    score,
+            # ----------------------------------------------------
+            # Decode JPEG
+            # ----------------------------------------------------
+
+            frame = cv2.imdecode(
+                np.frombuffer(
+                    jpeg,
+                    dtype=np.uint8,
+                ),
+                cv2.IMREAD_GRAYSCALE,
+            )
+
+            if frame is None:
+                continue
+
+            timestamp = (
+                start_time
+                + frame_index / FPS
+            )
+
+            if previous is not None:
+
+                diff = cv2.absdiff(
+                    frame,
+                    previous,
                 )
-            )
 
-        previous = frame
-        frame_index += 1
-
-        # --------------------------------------------------------
-        # Progress
-        # --------------------------------------------------------
-
-        if show_progress and frame_index % 100 == 0:
-
-            elapsed = frame_index / FPS
-
-            if duration > 0:
-                pct = min(
-                    100,
-                    elapsed / duration * 100,
+                score = float(
+                    np.mean(diff)
                 )
-            else:
-                pct = 0
 
-            print(
-                f"\r    Processed {frame_index} frames "
-                f"({elapsed:.1f}s, {pct:.0f}%)",
-                end="",
-                flush=True,
-            )
+                scores.append(
+                    (
+                        timestamp,
+                        score,
+                    )
+                )
+
+            previous = frame
+            frame_index += 1
+
+            # ----------------------------------------------------
+            # Progress
+            # ----------------------------------------------------
+
+            if (
+                show_progress
+                and frame_index % 100 == 0
+            ):
+
+                elapsed = (
+                    frame_index / FPS
+                )
+
+                if duration > 0:
+                    pct = min(
+                        100,
+                        elapsed / duration * 100,
+                    )
+                else:
+                    pct = 0
+
+                print(
+                    f"\r    Processed {frame_index} frames "
+                    f"({elapsed:.1f}s, {pct:.0f}%)",
+                    end="",
+                    flush=True,
+                )
+
+    # ------------------------------------------------------------
+    # Close FFmpeg
+    # ------------------------------------------------------------
 
     process.stdout.close()
     process.wait()
@@ -485,7 +564,6 @@ def analyze_segment(video_path, start_time, end_time, show_progress=True):
         print()
 
     return scores
-
 
 # ============================================================
 # Event detection
@@ -1173,15 +1251,16 @@ def main():
 
     for video_path in video_files:
 
-        filename = video_path.name
+        display_filename = video_path.name
+        filename = video_path.name.lower()
 
         print(
-            "\n"
-            + "=" * 70
+              "\n"
+              + "=" * 70
         )
 
         print(
-            f"{filename}"
+             f"{display_filename}"
         )
 
         # ========================================================
