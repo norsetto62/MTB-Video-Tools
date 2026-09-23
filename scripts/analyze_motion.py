@@ -1,727 +1,721 @@
 import argparse
 import csv
+import math
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 
-# ============================================================
-# Configuration
-# ============================================================
+DEFAULT_INTERVALS_FILE = Path("intervals.txt")
+DEFAULT_OUTPUT_DIR = Path("data") / "motion_scores"
 
-ANALYSIS_FPS = 2
-OUTPUT_WIDTH = 480
-
-FFMPEG = "ffmpeg"
-FFPROBE = "ffprobe"
-
-
-# ============================================================
-# Utility functions
-# ============================================================
-
-def run_command(cmd):
-    """Run a command and return stdout as text."""
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    if result.returncode != 0:
-        print("\nCommand failed:")
-        print(" ".join(str(x) for x in cmd))
-        print(result.stderr)
-        raise RuntimeError(f"Command failed with exit code {result.returncode}")
-
-    return result.stdout.strip()
-
-
-def get_video_info(video_path):
-    """Return width, height, fps and duration using ffprobe."""
-
-    cmd = [
-        FFPROBE,
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries",
-        "stream=width,height,r_frame_rate,duration:format=duration",
-        "-of", "default=noprint_wrappers=1",
-        str(video_path),
-    ]
-
-    output = run_command(cmd)
-
-    info = {}
-
-    for line in output.splitlines():
-        if "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        info[key] = value
-
-    try:
-        width = int(info["width"])
-        height = int(info["height"])
-    except (KeyError, ValueError):
-        raise RuntimeError(f"Could not determine video dimensions: {video_path}")
-
-    duration = None
-
-    # Stream duration is preferable, but some DJI files don't expose it
-    # there, so fall back to container duration.
-    if "duration" in info:
-        try:
-            duration = float(info["duration"])
-        except ValueError:
-            pass
-
-    if duration is None:
-        # Ask ffprobe specifically for format duration.
-        cmd = [
-            FFPROBE,
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(video_path),
-        ]
-
-        duration_text = run_command(cmd)
-
-        try:
-            duration = float(duration_text)
-        except ValueError:
-            raise RuntimeError(f"Could not determine duration: {video_path}")
-
-    fps = None
-
-    if "r_frame_rate" in info:
-        try:
-            numerator, denominator = info["r_frame_rate"].split("/")
-            fps = float(numerator) / float(denominator)
-        except (ValueError, ZeroDivisionError):
-            pass
-
-    return width, height, fps, duration
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 
 
 def format_time(seconds):
-    """Format seconds as HH:MM:SS."""
+    seconds = max(0, float(seconds))
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
 
-    seconds = max(0, int(seconds))
-
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-    return f"{minutes:02d}:{secs:02d}"
+    if h:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 
-def format_eta(seconds):
-    if seconds is None:
-        return "--:--"
+def parse_time(value):
+    value = value.strip()
 
-    return format_time(seconds)
+    if not value:
+        return None
+
+    # HH:MM:SS
+    if re.fullmatch(r"\d+:\d{2}:\d{2}(?:\.\d+)?", value):
+        h, m, s = value.split(":", 2)
+        return int(h) * 3600 + int(m) * 60 + float(s)
+
+    # MM:SS
+    if re.fullmatch(r"\d+:\d{2}(?:\.\d+)?", value):
+        m, s = value.split(":", 1)
+        return int(m) * 60 + float(s)
+
+    # Seconds
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
-# ============================================================
-# intervals.txt handling
-# ============================================================
+def normalize_path(path_text, base_dir):
+    path_text = path_text.strip().strip('"')
 
-def load_intervals_file(path):
+    path = Path(path_text)
+
+    if not path.is_absolute():
+        path = base_dir / path
+
+    return path.resolve()
+
+
+def paths_match(a, b):
+    try:
+        return a.resolve().samefile(b.resolve())
+    except (FileNotFoundError, OSError):
+        return str(a.resolve()).lower() == str(b.resolve()).lower()
+
+
+def parse_intervals_file(intervals_path):
     """
+    Parse intervals.txt.
+
+    Supported format:
+
+        Start    End    MTB    Video    Remarks
+        D:\\video1.mp4
+        00:00    01:20    4    5    description
+        03:10    04:00    5    3    description
+
+        D:\\video2.mp4
+        00:00    05:00    4    4
+
+    A line beginning with '-' excludes that video.
+
+    A video with no following time ranges means:
+        analyze the whole video.
+
     Returns:
-        includes: set of explicitly included filenames/paths
-        excludes: set of explicitly excluded filenames/paths
-
-    If the file is missing or contains no entries, both sets are empty,
-    meaning: no filtering.
+        entries = [
+            {
+                "path": Path(...),
+                "excluded": bool,
+                "intervals": [(start, end), ...]
+            },
+            ...
+        ]
     """
-    includes = set()
-    excludes = set()
 
-    if not path.exists():
-        return includes, excludes
+    if not intervals_path.exists():
+        return []
 
-    with path.open("r", encoding="utf-8") as f:
+    entries = []
+    current = None
+
+    with intervals_path.open("r", encoding="utf-8-sig") as f:
         for raw_line in f:
             line = raw_line.strip()
 
-            if not line or line.startswith("#"):
+            if not line:
                 continue
 
+            if line.startswith("#"):
+                continue
+
+            # Split on whitespace.
+            fields = line.split()
+
+            # ---------------------------------------------------------
+            # Ignore the optional annotation/header line.
+            # Example:
+            #   Start    End   MTB   Video   Remarks
+            # ---------------------------------------------------------
+            normalized_fields = [field.lower() for field in fields]
+
+            if (
+                len(normalized_fields) >= 4
+                and normalized_fields[:4] == ["start", "end", "mtb", "video"]
+            ):
+                continue
+
+            # Also accept the shorter header:
+            #   Start End MTB Video
+            if normalized_fields == ["start", "end", "mtb", "video"]:
+                continue
+
+            # Explicit exclusion.
             if line.startswith("-"):
-                line = line[1:].strip()
-                if line:
-                    excludes.add(line.lower())
-            else:
-                includes.add(line.lower())
+                path_text = line[1:].strip()
 
-    return includes, excludes
+                if path_text:
+                    path = normalize_path(path_text, intervals_path.parent)
 
-def path_matches(entry, video_path, input_root):
-    """
-    Determine whether an intervals.txt entry refers to video_path.
+                    entries.append(
+                        {
+                            "path": path,
+                            "excluded": True,
+                            "intervals": [],
+                        }
+                    )
 
-    Matching supports:
+                    current = None
 
-    - exact filename
-    - relative path
-    - absolute path
-    """
+                continue
 
-    entry_path = Path(entry)
+            # Try to interpret the first two fields as times.
+            if len(fields) >= 2:
+                start = parse_time(fields[0])
+                end = parse_time(fields[1])
 
-    # Exact absolute path
-    if entry_path.is_absolute():
-        try:
-            return entry_path.resolve() == video_path.resolve()
-        except OSError:
-            return entry_path == video_path
+                if start is not None and end is not None:
+                    if current is None:
+                        print(
+                            f"WARNING: interval without a preceding video:\n"
+                            f"  {line}"
+                        )
+                        continue
 
-    # Match against filename
-    if entry_path.name.lower() == video_path.name.lower():
-        return True
+                    if end <= start:
+                        print(
+                            f"WARNING: invalid interval (end <= start):\n"
+                            f"  {line}"
+                        )
+                        continue
 
-    # Match relative path from input root
-    try:
-        relative = video_path.resolve().relative_to(input_root.resolve())
-        if str(relative).lower() == str(entry_path).lower():
-            return True
-    except ValueError:
-        pass
+                    current["intervals"].append((start, end))
+                    continue
 
-    # Also allow an entry such as ./foo/bar.mp4
-    normalized_entry = str(entry_path).replace("\\", "/").lstrip("./")
-    normalized_video = str(video_path).replace("\\", "/").lower()
+            # Otherwise treat the line as a video path.
+            path = normalize_path(line, intervals_path.parent)
 
-    return normalized_video.endswith("/" + normalized_entry.lower())
+            current = {
+                "path": path,
+                "excluded": False,
+                "intervals": [],
+            }
+
+            entries.append(current)
+
+    return entries
+
+
+def get_video_duration(video_path):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    return float(result.stdout.strip())
+
+
+def get_video_metadata(video_path):
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height,r_frame_rate",
+        "-of",
+        "csv=p=0",
+        str(video_path),
+    ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    line = result.stdout.strip().splitlines()[0]
+    width, height, frame_rate = line.split(",")
+
+    width = int(width)
+    height = int(height)
+
+    num, den = frame_rate.split("/")
+    fps = float(num) / float(den)
+
+    return width, height, fps
+
+
+def merge_intervals(intervals):
+    if not intervals:
+        return []
+
+    intervals = sorted(intervals)
+
+    merged = [list(intervals[0])]
+
+    for start, end in intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    return [(start, end) for start, end in merged]
+
+
+def find_matching_entry(video_path, entries):
+    for entry in entries:
+        if paths_match(video_path, entry["path"]):
+            return entry
+
+    return None
+
+
+def discover_videos(root):
+    root = Path(root)
+
+    if root.is_file():
+        return [root]
+
+    videos = []
+
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+            videos.append(path.resolve())
+
+    return sorted(videos)
+
 
 def select_videos(input_path, intervals_path):
-    """
-    Find videos and apply intervals.txt rules.
+    entries = parse_intervals_file(intervals_path)
 
-    If intervals.txt doesn't exist:
-        all MP4 files are returned.
+    # If an explicit input was supplied, use it as the starting point.
+    if input_path is not None:
+        input_path = Path(input_path)
 
-    If intervals.txt exists but is empty:
-        all MP4 files are returned.
+        if input_path.is_file():
+            candidates = [input_path.resolve()]
+        elif input_path.is_dir():
+            candidates = discover_videos(input_path)
+        else:
+            print(f"ERROR: input does not exist: {input_path}")
+            sys.exit(1)
 
-    If intervals.txt contains positive entries:
-        only positively listed files are returned.
-
-    Negative entries override positive entries.
-
-    For a directly specified single video:
-        the video is processed unless it is explicitly excluded.
-    """
-
-    input_path = input_path.resolve()
-
-    if input_path.is_file():
-        all_videos = [input_path]
-        input_root = input_path.parent
+    # Otherwise derive video paths from intervals.txt.
     else:
-        # Recursive search is useful because DJI footage is often
-        # organized in subdirectories.
-        all_videos = sorted(
-            p for p in input_path.rglob("*")
-            if p.is_file() and p.suffix.lower() == ".mp4"
-        )
-        input_root = input_path
-
-    includes, excludes = load_intervals_file(intervals_path)
-
-    # --------------------------------------------------------
-    # No intervals.txt
-    # --------------------------------------------------------
-
-    if includes is None:
-        return all_videos
-
-    # --------------------------------------------------------
-    # Empty intervals.txt
-    #
-    # No positive OR negative entries means:
-    # don't filter anything.
-    # --------------------------------------------------------
-
-    if not includes and not excludes:
-        return all_videos
+        candidates = [
+            entry["path"]
+            for entry in entries
+            if not entry["excluded"]
+        ]
 
     selected = []
 
-    for video in all_videos:
+    for video in candidates:
+        entry = find_matching_entry(video, entries)
 
-        # Explicit exclusion always wins.
-        excluded = any(
-            path_matches(entry, video, input_root)
-            for entry in excludes
-        )
-
-        if excluded:
+        if entry and entry["excluded"]:
             continue
 
-        # ----------------------------------------------------
-        # Direct single-file input:
-        #
-        # If the user explicitly supplied one video, don't
-        # require it to appear in intervals.txt.
-        # Only an explicit "-" entry excludes it.
-        # ----------------------------------------------------
-
-        if input_path.is_file():
-            selected.append(video)
+        if not video.exists():
+            print(f"WARNING: video does not exist:")
+            print(f"  {video}")
             continue
-
-        # ----------------------------------------------------
-        # Directory input:
-        #
-        # If there are positive entries, only those files are
-        # selected.
-        #
-        # If there are ONLY negative entries, everything else
-        # is selected.
-        # ----------------------------------------------------
-
-        if includes:
-            included = any(
-                path_matches(entry, video, input_root)
-                for entry in includes
-            )
-
-            if not included:
-                continue
 
         selected.append(video)
 
-    return selected
+    # Remove duplicates while preserving order.
+    unique = []
 
-# ============================================================
-# Motion analysis
-# ============================================================
+    for video in selected:
+        if not any(paths_match(video, other) for other in unique):
+            unique.append(video)
 
-def analyze_video(video_path, output_csv):
+    return unique, entries
+
+
+def get_matching_intervals(video_path, entry, duration):
     """
-    Analyze one video.
+    Determine which portions of a video should be analyzed.
 
-    FFmpeg performs:
+    If there are no intervals for the video:
+        analyze the whole video.
 
-        CUDA hardware decode
-        ->
-        sample at 2 FPS
-        ->
-        scale to 480 px width
-        ->
-        grayscale
-        ->
-        raw frames to Python
+    Otherwise:
+        analyze only the specified intervals.
 
-    Motion score = mean absolute pixel difference between
-    consecutive sampled frames.
+    Intervals are clipped to the actual video duration and merged.
     """
 
-    print()
-    print("=" * 70)
-    print(f"Video: {video_path}")
-    print("=" * 70)
+    if entry is None or not entry["intervals"]:
+        return [(0.0, duration)]
 
-    width, height, source_fps, duration = get_video_info(video_path)
+    clipped = []
 
-    output_height = round(height * OUTPUT_WIDTH / width)
+    for start, end in entry["intervals"]:
+        start = max(0.0, min(start, duration))
+        end = max(0.0, min(end, duration))
+
+        if end > start:
+            clipped.append((start, end))
+
+    return merge_intervals(clipped)
+
+
+def run_ffmpeg_motion_analysis(
+    video_path,
+    intervals,
+    output_csv,
+    analysis_fps=2,
+    analysis_width=480,
+):
+    """
+    Analyze only the supplied intervals.
+
+    Timestamps in the CSV remain relative to the original video.
+    """
+
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    total_duration = sum(end - start for start, end in intervals)
+
+    # Source metadata.
+    width, height, source_fps = get_video_metadata(video_path)
+
+    analysis_height = max(1, round(height * analysis_width / width))
 
     print(f"Source:       {width}x{height}")
-    print(f"Source FPS:   {source_fps:.3f}" if source_fps else "Source FPS:   unknown")
-    print(f"Duration:     {format_time(duration)}")
-    print(f"Analysis:     {ANALYSIS_FPS} FPS")
-    print(f"Analysis size:{OUTPUT_WIDTH}x{output_height}")
-    print(f"Output:       {output_csv}")
+    print(f"Source FPS:   {source_fps:.3f}")
+    print(f"Intervals:")
 
-    frame_size = OUTPUT_WIDTH * output_height
-
-    # FFmpeg command.
-    #
-    # -hwaccel cuda:
-    #     use NVIDIA hardware acceleration for decoding.
-    #
-    # -vf fps=2,scale=480:-1,format=gray:
-    #     sample only 2 frames/sec, resize, convert to grayscale.
-    #
-    # -f rawvideo:
-    #     send raw grayscale frames through stdout.
-    #
-    # -pix_fmt gray:
-    #     exactly one byte per pixel.
-    #
-    # -an:
-    #     don't decode audio.
-    #
-    # -sn/-dn:
-    #     ignore subtitles/data streams.
-    #
-    cmd = [
-        FFMPEG,
-        "-hide_banner",
-        "-loglevel", "error",
-
-        "-hwaccel", "cuda",
-
-        "-i", str(video_path),
-
-        "-an",
-        "-sn",
-        "-dn",
-
-        "-vf",
-        f"fps={ANALYSIS_FPS},scale={OUTPUT_WIDTH}:-1,format=gray",
-
-        "-f", "rawvideo",
-        "-pix_fmt", "gray",
-
-        "pipe:1",
-    ]
-
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=10 ** 8,
-    )
-
-    previous_frame = None
-
-    rows = []
-
-    frame_number = 0
-
-    start_time = time.time()
-    last_progress_time = start_time
-
-    try:
-
-        while True:
-
-            raw_frame = process.stdout.read(frame_size)
-
-            if len(raw_frame) < frame_size:
-                break
-
-            frame_number += 1
-
-            # NumPy is imported here so the script can give a
-            # useful error if the environment is incomplete.
-            import numpy as np
-
-            current_frame = np.frombuffer(
-                raw_frame,
-                dtype=np.uint8
-            ).reshape(
-                (output_height, OUTPUT_WIDTH)
-            )
-
-            timestamp = (frame_number - 1) / ANALYSIS_FPS
-
-            if previous_frame is None:
-                motion_score = 0.0
-            else:
-                # Mean absolute difference.
-                #
-                # np.abs(current - previous) would overflow uint8,
-                # so convert before subtraction.
-                difference = cv2_absdiff(
-                    current_frame,
-                    previous_frame
-                )
-
-                motion_score = float(difference.mean())
-
-            rows.append(
-                (
-                    timestamp,
-                    motion_score
-                )
-            )
-
-            previous_frame = current_frame
-
-            # Progress display approximately once per second.
-            now = time.time()
-
-            if now - last_progress_time >= 1.0:
-
-                elapsed = now - start_time
-
-                processed_seconds = timestamp
-
-                if processed_seconds > 0:
-                    speed = processed_seconds / elapsed
-
-                    remaining = max(
-                        0,
-                        duration - processed_seconds
-                    )
-
-                    eta = remaining / speed if speed > 0 else None
-                else:
-                    speed = 0
-                    eta = None
-
-                percent = min(
-                    100.0,
-                    processed_seconds / duration * 100
-                ) if duration > 0 else 0
-
-                print(
-                    f"\r"
-                    f"{percent:6.2f}%  "
-                    f"{format_time(processed_seconds)} / "
-                    f"{format_time(duration)}  "
-                    f"speed {speed:5.2f}x  "
-                    f"ETA {format_eta(eta)}",
-                    end="",
-                    flush=True
-                )
-
-                last_progress_time = now
-
-    finally:
-        process.stdout.close()
-
-    stderr = process.stderr.read().decode(
-        "utf-8",
-        errors="replace"
-    )
-
-    process.stderr.close()
-
-    return_code = process.wait()
-
-    print()
-
-    if return_code != 0:
-        print(stderr)
-        raise RuntimeError(
-            f"FFmpeg failed for {video_path} "
-            f"(exit code {return_code})"
+    for start, end in intervals:
+        print(
+            f"  {format_time(start)} - {format_time(end)} "
+            f"({end - start:.1f}s)"
         )
 
-    # Write CSV.
-    output_csv.parent.mkdir(
-        parents=True,
-        exist_ok=True
+    print(f"Total analysis duration: {format_time(total_duration)}")
+    print(f"Analysis:     {analysis_fps} FPS")
+    print(
+        f"Analysis size:{analysis_width}x{analysis_height}"
     )
+
+    ffmpeg_path = "ffmpeg"
+
+    cmd = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-hwaccel",
+        "cuda",
+        "-i",
+        str(video_path),
+    ]
+
+    # We need one FFmpeg process per interval because each interval
+    # has its own -ss / -t range.
+    #
+    # For simplicity and reliability, process intervals separately
+    # and append the results to the same CSV.
+
+    first_output = True
+    total_frames = 0
+    analysis_start_time = time.time()
 
     with output_csv.open(
         "w",
         newline="",
-        encoding="utf-8"
-    ) as f:
+        encoding="utf-8",
+    ) as csv_file:
 
-        writer = csv.writer(f)
+        writer = csv.writer(csv_file)
+        writer.writerow(["timestamp", "motion_score"])
 
-        writer.writerow([
-            "timestamp",
-            "motion_score",
-        ])
+        for interval_index, (start, end) in enumerate(intervals, 1):
+            interval_duration = end - start
 
-        for timestamp, score in rows:
-            writer.writerow([
-                f"{timestamp:.3f}",
-                f"{score:.6f}",
-            ])
+            print()
+            print(
+                f"Interval {interval_index}/{len(intervals)}: "
+                f"{format_time(start)} - {format_time(end)}"
+            )
 
-    elapsed = time.time() - start_time
+            interval_cmd = [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-hwaccel",
+                "cuda",
+                "-ss",
+                f"{start:.3f}",
+                "-i",
+                str(video_path),
+                "-t",
+                f"{interval_duration:.3f}",
+                "-vf",
+                (
+                    f"fps={analysis_fps},"
+                    f"scale={analysis_width}:{analysis_height},"
+                    "format=gray"
+                ),
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "pipe:1",
+            ]
+
+            process = subprocess.Popen(
+                interval_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            frame_size = analysis_width * analysis_height
+            previous_frame = None
+
+            expected_frames = max(
+                1,
+                int(interval_duration * analysis_fps)
+            )
+
+            interval_frames = 0
+            interval_start_time = time.time()
+
+            while True:
+                raw = process.stdout.read(frame_size)
+
+                if len(raw) < frame_size:
+                    break
+
+                interval_frames += 1
+                total_frames += 1
+
+                if previous_frame is not None:
+                    # Avoid importing NumPy until needed.
+                    import numpy as np
+
+                    current = np.frombuffer(
+                        raw,
+                        dtype=np.uint8,
+                    )
+
+                    previous = np.frombuffer(
+                        previous_frame,
+                        dtype=np.uint8,
+                    )
+
+                    motion = float(
+                        np.mean(
+                            np.abs(
+                                current.astype(np.int16)
+                                - previous.astype(np.int16)
+                            )
+                        )
+                    )
+
+                    timestamp = (
+                        start
+                        + (interval_frames - 1) / analysis_fps
+                    )
+
+                    writer.writerow(
+                        [
+                            f"{timestamp:.3f}",
+                            f"{motion:.6f}",
+                        ]
+                    )
+
+                previous_frame = raw
+
+                # Progress.
+                elapsed = time.time() - analysis_start_time
+                processed_duration = sum(
+                    b - a
+                    for a, b in intervals[: interval_index - 1]
+                ) + min(
+                    interval_frames / analysis_fps,
+                    interval_duration,
+                )
+
+                progress = (
+                    processed_duration / total_duration
+                    if total_duration > 0
+                    else 1.0
+                )
+
+                speed = (
+                    processed_duration / elapsed
+                    if elapsed > 0
+                    else 0
+                )
+
+                remaining = (
+                    (total_duration - processed_duration) / speed
+                    if speed > 0
+                    else 0
+                )
+
+                print(
+                    f"\r"
+                    f"{progress * 100:6.2f}%  "
+                    f"{format_time(processed_duration)} / "
+                    f"{format_time(total_duration)}  "
+                    f"speed {speed:5.2f}x  "
+                    f"ETA {format_time(remaining)}",
+                    end="",
+                    flush=True,
+                )
+
+            stderr = process.stderr.read().decode(
+                "utf-8",
+                errors="replace",
+            )
+
+            return_code = process.wait()
+
+            print()
+
+            if return_code != 0:
+                raise RuntimeError(
+                    f"FFmpeg failed for interval "
+                    f"{format_time(start)}-{format_time(end)}:\n"
+                    f"{stderr}"
+                )
+
+    elapsed = time.time() - analysis_start_time
+
+    speed = (
+        total_duration / elapsed
+        if elapsed > 0
+        else 0
+    )
 
     print(
-        f"Completed {frame_number} analysis frames "
-        f"in {elapsed:.1f}s "
-        f"({duration / elapsed:.2f}x realtime)"
+        f"Completed {total_frames} analysis frames "
+        f"in {elapsed:.1f}s ({speed:.2f}x realtime)"
     )
 
     print(f"Saved: {output_csv}")
 
 
-def cv2_absdiff(a, b):
-    """
-    Small local implementation of absolute difference.
-
-    This avoids making OpenCV mandatory for this particular
-    operation and keeps the calculation explicit.
-    """
-
-    import numpy as np
-
-    return np.abs(
-        a.astype(np.int16) -
-        b.astype(np.int16)
-    ).astype(np.uint8)
-
-
-# ============================================================
-# Main
-# ============================================================
-
 def main():
-
     parser = argparse.ArgumentParser(
-        description="Analyze video motion using FFmpeg + CUDA."
+        description="Analyze video motion using FFmpeg."
     )
 
     parser.add_argument(
         "input",
-        type=Path,
-        help="Input MP4 file or directory."
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        default=None,
+        nargs="?",
         help=(
-            "Output CSV. For a single input video this is the CSV path. "
-            "For a directory, omit this and one CSV is created per video."
+            "Video file or directory. "
+            "If omitted, videos are read from intervals.txt."
         ),
     )
 
     parser.add_argument(
         "--intervals",
-        type=Path,
-        default=None,
+        default=str(DEFAULT_INTERVALS_FILE),
+        help="Intervals file (default: intervals.txt)",
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
         help=(
-            "Path to intervals.txt. "
-            "If omitted, intervals.txt is searched in the current directory "
-            "and then next to the input directory."
+            "Output directory "
+            "(default: data/motion_scores)"
         ),
+    )
+
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=2,
+        help="Analysis FPS (default: 2)",
+    )
+
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=480,
+        help="Analysis width (default: 480)",
     )
 
     args = parser.parse_args()
 
-    input_path = args.input.resolve()
+    intervals_path = Path(args.intervals).resolve()
+    output_dir = Path(args.output_dir).resolve()
 
-    if not input_path.exists():
-        print(f"ERROR: input does not exist:\n{input_path}")
-        sys.exit(1)
-
-    # Locate intervals.txt.
-    if args.intervals:
-        intervals_path = args.intervals.resolve()
-    else:
-        candidates = [
-            Path.cwd() / "intervals.txt",
-            input_path / "intervals.txt"
-            if input_path.is_dir()
-            else input_path.parent / "intervals.txt",
-        ]
-
-        intervals_path = next(
-            (p for p in candidates if p.exists()),
-            candidates[0],
-        )
-
-    videos = select_videos(
-        input_path,
-        intervals_path
+    input_path = (
+        Path(args.input).resolve()
+        if args.input
+        else None
     )
 
-    if intervals_path.exists():
-        print(f"Using intervals file: {intervals_path}")
-
-    else:
-        print("No intervals.txt found -> processing all MP4 files.")
+    videos, entries = select_videos(
+        input_path,
+        intervals_path,
+    )
 
     if not videos:
         print("No videos selected.")
-        sys.exit(0)
+        return
 
+    print(
+        f"Using intervals file: {intervals_path}"
+    )
     print()
-    print(f"Selected {len(videos)} video(s):")
+
+    print(
+        f"Selected {len(videos)} video(s):"
+    )
 
     for video in videos:
         print(f"  {video}")
 
-    # --------------------------------------------------------
-    # Single video
-    # --------------------------------------------------------
+    print()
 
-    if len(videos) == 1:
-
-        video = videos[0]
-
-        if args.output:
-            output_csv = args.output.resolve()
-
-        else:
-            # Default:
-            # data/motion_scores/<video-name>.csv
-            project_root = Path(__file__).resolve().parent.parent
-
-            output_dir = (
-                project_root /
-                "data" /
-                "motion_scores"
-            )
-
-            output_csv = (
-                output_dir /
-                f"{video.stem}.csv"
-            )
-
-        analyze_video(
-            video,
-            output_csv
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # Multiple videos
-    # --------------------------------------------------------
-
-    if args.output:
+    for video_index, video_path in enumerate(
+        videos,
+        1,
+    ):
         print(
-            "ERROR: --output can only be used when analyzing "
-            "a single video."
+            f"=== Video {video_index}/{len(videos)} ==="
         )
-        sys.exit(1)
+        print(video_path)
 
-    project_root = Path(__file__).resolve().parent.parent
+        duration = get_video_duration(video_path)
 
-    output_dir = (
-        project_root /
-        "data" /
-        "motion_scores"
-    )
-
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    for index, video in enumerate(videos, start=1):
-
-        print()
-        print(
-            f"VIDEO {index}/{len(videos)}"
+        entry = find_matching_entry(
+            video_path,
+            entries,
         )
+
+        intervals = get_matching_intervals(
+            video_path,
+            entry,
+            duration,
+        )
+
+        if not intervals:
+            print("No valid intervals for this video.")
+            continue
 
         output_csv = (
-            output_dir /
-            f"{video.stem}.csv"
+            output_dir
+            / f"{video_path.stem}.csv"
         )
 
-        analyze_video(
-            video,
-            output_csv
+        run_ffmpeg_motion_analysis(
+            video_path=video_path,
+            intervals=intervals,
+            output_csv=output_csv,
+            analysis_fps=args.fps,
+            analysis_width=args.width,
         )
+
+        print()
 
 
 if __name__ == "__main__":
