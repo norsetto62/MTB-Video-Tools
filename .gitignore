@@ -16,6 +16,7 @@ data/autocut/
 
 # Generated output
 output/
+annotations_auto.txt
 
 # Local configuration
 intervals.txt
