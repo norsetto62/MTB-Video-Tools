@@ -1,325 +1,978 @@
+"""
+Video-AutoCut v1.0 (Multi-Video Support)
+
+Automatically creates video edits from:
+- One or more source videos
+- An annotation file with MTB / filmmaking ratings
+- A music track
+
+The annotation format supports:
+
+Start    End   MTB   Video   Remarks
+D:\\path\\video.mp4
+00:00   01:19   4   2   Start of track
+01:51   02:06   4   2   Tight switchback
+
+or:
+
+D:\\path\\video.mp4  00:00  01:19  4  2  Description
+
+The standalone video filename applies to following intervals
+until another video filename is encountered.
+"""
+
 import argparse
 import subprocess
 import tempfile
 from pathlib import Path
-
 import librosa
 import numpy as np
 import shutil
 
-# Automatically fall back to system PATH if the explicit file isn't found
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 FFMPEG = shutil.which("ffmpeg") or r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"
 FFPROBE = shutil.which("ffprobe") or r"C:\Program Files\ffmpeg\bin\ffprobe.exe"
 
-# Video Constants
 MIN_CLIP = 3.0
 FADE_OUT_DURATION = 3.0
 
 
+# ---------------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------------
+
 def parse_time(value):
+    """Convert MM:SS or seconds to seconds."""
+    value = value.strip()
+
     if ":" in value:
-        minutes, seconds = value.split(":")
-        return int(minutes) * 60 + float(seconds)
+        parts = value.split(":")
+
+        if len(parts) == 2:
+            minutes = float(parts[0])
+            seconds = float(parts[1])
+            return minutes * 60.0 + seconds
+
+        elif len(parts) == 3:
+            hours = float(parts[0])
+            minutes = float(parts[1])
+            seconds = float(parts[2])
+            return hours * 3600.0 + minutes * 60.0 + seconds
+
     return float(value)
 
 
-def probe_duration(path):
+def format_time(seconds):
+    """Format seconds as MM:SS."""
+    seconds = max(0.0, float(seconds))
+
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def probe_duration(video_path):
+    """Return media duration in seconds."""
     cmd = [
-        FFPROBE, "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(path),
+        FFPROBE,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
     return float(result.stdout.strip())
 
 
+# ---------------------------------------------------------------------------
+# Audio analysis
+# ---------------------------------------------------------------------------
+
 def analyze_audio(music_path):
+    """
+    Analyze music and return synchronization points.
+
+    Returns:
+        dict containing:
+            duration
+            beats
+            onsets
+            combined
+    """
+
     print("Analyzing audio rhythm, beats, and energy peaks...")
-    y, sr = librosa.load(music_path, sr=None)
-    
-    _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+
+    y, sr = librosa.load(
+        str(music_path),
+        sr=None,
+        mono=True,
+    )
+
+    duration = len(y) / sr
+
+    # Beat tracking
+    tempo, beat_frames = librosa.beat.beat_track(
+        y=y,
+        sr=sr,
+    )
+
+    beat_times = librosa.frames_to_time(
+        beat_frames,
+        sr=sr,
+    )
+
+    # Use every 4th beat as a rough musical measure grid
     measure_times = beat_times[::4]
 
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    peaks = librosa.util.peak_pick(
-        onset_env,
-        pre_max=3, post_max=3,
-        pre_avg=10, post_avg=10,
-        delta=1.5, wait=10
+    # Onset strength
+    onset_strength = librosa.onset.onset_strength(
+        y=y,
+        sr=sr,
     )
-    onset_times = librosa.frames_to_time(peaks, sr=sr)
 
-    combined_times = np.unique(np.concatenate([beat_times, onset_times]))
-    combined_times.sort()
+    onset_times = librosa.frames_to_time(
+        np.arange(len(onset_strength)),
+        sr=sr,
+    )
+
+    # Peak picking
+    peaks = librosa.util.peak_pick(
+        onset_strength,
+        pre_max=3,
+        post_max=3,
+        pre_avg=3,
+        post_avg=5,
+        delta=0.2,
+        wait=5,
+    )
+
+    peak_times = onset_times[peaks]
+
+    # Combine beats and energy peaks
+    combined = np.concatenate(
+        [
+            beat_times,
+            peak_times,
+        ]
+    )
+
+    combined = np.unique(
+        np.round(combined, 3)
+    )
+
+    combined = combined[
+        (combined >= 0)
+        & (combined <= duration)
+    ]
+
+    print(f"  Duration: {duration:.2f}s")
+    print(f"  Tempo: {float(np.asarray(tempo).reshape(-1)[0]):.1f} BPM")
+    print(f"  Beats: {len(beat_times)}")
+    print(f"  Measures: {len(measure_times)}")
+    print(f"  Energy peaks: {len(peak_times)}")
 
     return {
-        "beat": beat_times,
-        "measure": measure_times,
-        "onset": onset_times if len(onset_times) > 0 else beat_times,
-        "combined": combined_times,
+        "duration": duration,
+        "beats": beat_times,
+        "measures": measure_times,
+        "onsets": peak_times,
+        "combined": combined,
     }
 
 
-def snap_timestamp(target_time, grid_times, mode="beat"):
+def snap_timestamp(timestamp, audio_data, mode="beat"):
+    """Snap a timestamp to an audio synchronization grid."""
+
     if mode == "forward-beat":
-        future = grid_times[grid_times >= target_time]
-        return future[0] if len(future) > 0 else grid_times[-1]
-    
-    idx = (np.abs(grid_times - target_time)).argmin()
-    return grid_times[idx]
+        grid = audio_data["beats"]
+        candidates = grid[grid >= timestamp]
+
+        if len(candidates) == 0:
+            return timestamp
+
+        return float(candidates[0])
+
+    elif mode == "measure":
+        grid = audio_data["measures"]
+
+    elif mode == "onset":
+        grid = audio_data["onsets"]
+
+    elif mode == "combined":
+        grid = audio_data["combined"]
+
+    else:
+        grid = audio_data["beats"]
+
+    if len(grid) == 0:
+        return timestamp
+
+    index = np.argmin(
+        np.abs(grid - timestamp)
+    )
+
+    return float(grid[index])
 
 
-def load_annotations(path):
+# ---------------------------------------------------------------------------
+# Annotation loading
+# ---------------------------------------------------------------------------
+
+def load_annotations(annotation_file):
+    """
+    Load annotation file.
+
+    Supported formats:
+
+    Header:
+        Start    End   MTB   Video   Remarks
+
+    Standalone video filename:
+        D:\\path\\video.mp4
+
+    Followed by intervals:
+        00:00   01:19   4   2   Description
+
+    Or full rows:
+        D:\\path\\video.mp4   00:00   01:19   4   2   Description
+    """
+
+    annotation_file = Path(annotation_file)
+
     events = []
     last_video_name = None
 
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            # Skip empty lines or header comments
-            if not line or line.startswith("#") or line.startswith("START"):
+    with annotation_file.open(
+        "r",
+        encoding="utf-8-sig",
+    ) as f:
+
+        for raw_line in f:
+            line = raw_line.strip()
+
+            # Ignore empty lines
+            if not line:
                 continue
 
-            parts = line.split(maxsplit=5)
-            
-            # Check if the first token is a timestamp (contains ':') or a video filename
-            if ":" in parts[0] or parts[0].replace(".", "", 1).isdigit():
-                # Case 1: Video name omitted -> reuse last_video_name
+            # Ignore comments
+            if line.startswith("#"):
+                continue
+
+            parts = line.split(
+                maxsplit=5
+            )
+
+            if not parts:
+                continue
+
+            # ---------------------------------------------------------------
+            # Skip column header
+            # ---------------------------------------------------------------
+
+            if parts[0].lower() == "start":
+                continue
+
+            # ---------------------------------------------------------------
+            # Standalone video filename
+            # ---------------------------------------------------------------
+
+            if (
+                len(parts) == 1
+                and (
+                    parts[0].lower().endswith(".mp4")
+                    or parts[0].lower().endswith(".mov")
+                    or parts[0].lower().endswith(".mkv")
+                    or parts[0].lower().endswith(".avi")
+                )
+            ):
+                last_video_name = parts[0]
+                continue
+
+            # ---------------------------------------------------------------
+            # Case 1:
+            # Video name omitted.
+            #
+            # Example:
+            # 00:00  01:19  4  2  Description
+            # ---------------------------------------------------------------
+
+            if (
+                ":" in parts[0]
+                or parts[0].replace(".", "", 1).isdigit()
+            ):
+
                 if last_video_name is None:
-                    raise ValueError(f"First row in annotations omits video filename: '{line}'")
+                    raise ValueError(
+                        f"First row in annotations omits video filename: '{line}'"
+                    )
+
+                if len(parts) < 4:
+                    raise ValueError(
+                        f"Invalid annotation row: '{line}'"
+                    )
+
                 video_name = last_video_name
+
                 start = parse_time(parts[0])
                 end = parse_time(parts[1])
                 mtb = int(parts[2])
                 film = int(parts[3])
-                description = parts[4] if len(parts) > 4 else ""
+
+                description = (
+                    parts[4]
+                    if len(parts) > 4
+                    else ""
+                )
+
+            # ---------------------------------------------------------------
+            # Case 2:
+            # Video name explicitly provided on same row.
+            #
+            # Example:
+            # video.mp4  00:00  01:19  4  2  Description
+            # ---------------------------------------------------------------
+
             else:
-                # Case 2: Video name explicitly provided -> update last_video_name
+
+                if len(parts) < 5:
+                    raise ValueError(
+                        f"Invalid annotation row: '{line}'"
+                    )
+
                 video_name = parts[0]
                 last_video_name = video_name
+
                 start = parse_time(parts[1])
                 end = parse_time(parts[2])
                 mtb = int(parts[3])
                 film = int(parts[4])
-                description = parts[5] if len(parts) > 5 else ""
 
-            events.append({
-                "video_name": video_name,
-                "start": start,
-                "end": end,
-                "duration": end - start,
-                "mtb": mtb,
-                "film": film,
-                "description": description,
-            })
+                description = (
+                    parts[5]
+                    if len(parts) > 5
+                    else ""
+                )
+
+            # ---------------------------------------------------------------
+            # Validate
+            # ---------------------------------------------------------------
+
+            if end <= start:
+                print(
+                    f"WARNING: ignoring invalid interval: {line}"
+                )
+                continue
+
+            duration = end - start
+
+            if duration < MIN_CLIP:
+                print(
+                    f"WARNING: ignoring very short interval: {line}"
+                )
+                continue
+
+            events.append(
+                {
+                    "video_name": video_name,
+                    "start": start,
+                    "end": end,
+                    "duration": duration,
+                    "mtb": mtb,
+                    "film": film,
+                    "description": description,
+                }
+            )
+
     return events
 
-def select_events_beat_synced(events, target_duration, grid_times, sync_mode="beat", max_clip=10.0):
+
+# ---------------------------------------------------------------------------
+# Event selection
+# ---------------------------------------------------------------------------
+
+def select_events_beat_synced(
+    events,
+    audio_data,
+    sync_mode="beat",
+    max_clip=10.0,
+):
+    """
+    Select annotation events until the music duration is filled.
+
+    Priority:
+        MTB rating x 2 + filmmaking rating
+
+    At most one clip is selected from each annotation event.
+
+    max_clip:
+        Maximum clip duration.
+        0 means unlimited.
+    """
+
+    music_duration = audio_data["duration"]
+
+    ranked = []
+
     for event in events:
-        event["priority"] = event["mtb"] * 2 + event["film"]
 
-    ranked = sorted(events, key=lambda e: (e["priority"], e["duration"]), reverse=True)
-    selected = []
-    current_audio_time = 0.0
-
-    for event in ranked:
-        remaining = target_duration - current_audio_time
-        if remaining < MIN_CLIP:
-            break
-
-        ideal_len = min(event["duration"], max_clip) if max_clip else event["duration"]
-        ideal_len = min(ideal_len, remaining)
-
-        target_end_audio = current_audio_time + ideal_len
-        snapped_end_audio = snap_timestamp(target_end_audio, grid_times, mode=sync_mode)
-        clip_length = snapped_end_audio - current_audio_time
-
-        if clip_length < MIN_CLIP or clip_length > remaining:
-            continue
-
-        event_copy = event.copy()
-        event_copy["clip_length"] = clip_length
-        event_copy["audio_start"] = current_audio_time
-        event_copy["audio_end"] = snapped_end_audio
-
-        selected.append(event_copy)
-        current_audio_time = snapped_end_audio
-
-    selected.sort(key=lambda e: e["start"])
-    return selected, current_audio_time
-
-
-def extract_clips(selected, videos_dir, temp_dir, aspect_ratio="landscape"):
-    clip_files = []
-
-    for index, event in enumerate(selected):
-        video_path = videos_dir / event["video_name"]
-        if not video_path.exists():
-            raise FileNotFoundError(f"Video file not found in videos directory: {video_path}")
-
-        start = event["start"]
-        length = event["clip_length"]
-        final_clip = temp_dir / f"clip_{index:03d}.ts"
-
-        print(
-            f"Clip {index + 1:02d} [{event['video_name']}]: {start:7.2f}s + {length:5.2f}s | "
-            f"Sync: {event['audio_start']:.2f}s -> {event['audio_end']:.2f}s"
+        score = (
+            event["mtb"] * 2
+            + event["film"]
         )
 
-        cmd_extract = [
-            FFMPEG, "-hide_banner", "-loglevel", "error",
-            "-ss", f"{start:.3f}",
-            "-i", str(video_path),
-            "-t", f"{length:.3f}",
+        ranked.append(
+            (
+                score,
+                event["mtb"],
+                event["film"],
+                event,
+            )
+        )
+
+    ranked.sort(
+        key=lambda x: (
+            x[0],
+            x[1],
+            x[2],
+        ),
+        reverse=True,
+    )
+
+    selected = []
+    total_duration = 0.0
+
+    for score, mtb, film, event in ranked:
+
+        if total_duration >= music_duration:
+            break
+
+        available = event["duration"]
+
+        if max_clip > 0:
+            clip_duration = min(
+                available,
+                max_clip,
+            )
+        else:
+            clip_duration = available
+
+        clip_duration = min(
+            clip_duration,
+            music_duration - total_duration,
+        )
+
+        if clip_duration < MIN_CLIP:
+            continue
+
+        start = event["start"]
+        end = start + clip_duration
+
+        # Snap the end to the requested audio grid.
+        snapped_end = snap_timestamp(
+            end,
+            audio_data,
+            mode=sync_mode,
+        )
+
+        if snapped_end > start:
+            end = min(
+                snapped_end,
+                event["end"],
+                start + clip_duration + 2.0,
+            )
+
+        final_duration = end - start
+
+        if final_duration < MIN_CLIP:
+            continue
+
+        selected.append(
+            {
+                "video_name": event["video_name"],
+                "start": start,
+                "end": end,
+                "duration": final_duration,
+                "mtb": event["mtb"],
+                "film": event["film"],
+                "description": event["description"],
+                "score": score,
+            }
+        )
+
+        total_duration += final_duration
+
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Video processing
+# ---------------------------------------------------------------------------
+
+def extract_clips(
+    selected_events,
+    videos_dir,
+    temp_dir,
+    aspect_ratio="landscape",
+):
+    """Extract individual video clips."""
+
+    clip_files = []
+
+    videos_dir = Path(videos_dir)
+
+    for index, event in enumerate(selected_events):
+
+        video_path = Path(
+            event["video_name"]
+        )
+
+        # If annotation contains only a filename,
+        # resolve it relative to videos_dir.
+        if not video_path.is_absolute():
+            video_path = videos_dir / video_path.name
+
+        if not video_path.exists():
+            candidate = videos_dir / video_path.name
+
+            if candidate.exists():
+                video_path = candidate
+            else:
+                print(
+                    f"WARNING: video not found: {video_path}"
+                )
+                continue
+
+        duration = event["end"] - event["start"]
+
+        output_file = (
+            Path(temp_dir)
+            / f"clip_{index:04d}.ts"
+        )
+
+        print(
+            f"  Clip {index + 1:02d}: "
+            f"{format_time(event['start'])} - "
+            f"{format_time(event['end'])} "
+            f"({duration:.1f}s) "
+            f"MTB={event['mtb']} "
+            f"Film={event['film']} "
+            f"{event['description']}"
+        )
+
+        cmd = [
+            FFMPEG,
+            "-y",
+            "-ss",
+            str(event["start"]),
+            "-i",
+            str(video_path),
+            "-t",
+            str(duration),
         ]
 
+        # Portrait conversion if requested.
         if aspect_ratio == "portrait":
-            cmd_extract.extend(["-vf", "crop=ih*9/16:ih"])
+            cmd += [
+                "-vf",
+                "crop=ih*9/16:ih",
+            ]
 
-        cmd_extract.extend([
-            "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20",
-            "-pix_fmt", "yuv420p", "-an",
-            "-f", "mpegts",
-            str(final_clip),
-        ])
+        cmd += [
+            "-an",
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            "p4",
+            "-cq",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "mpegts",
+            str(output_file),
+        ]
 
-        subprocess.run(cmd_extract, check=True)
-        clip_files.append(final_clip)
+        subprocess.run(
+            cmd,
+            check=True,
+        )
+
+        clip_files.append(output_file)
 
     return clip_files
 
 
-def concatenate_clips(clip_files, temp_dir):
-    concat_file = temp_dir / "concat.txt"
-    with open(concat_file, "w", encoding="utf-8") as f:
+def concatenate_clips(
+    clip_files,
+    output_file,
+):
+    """Concatenate MPEG-TS clips without re-encoding."""
+
+    concat_file = (
+        Path(output_file).with_suffix(".txt")
+    )
+
+    with concat_file.open(
+        "w",
+        encoding="utf-8",
+    ) as f:
+
         for clip in clip_files:
-            f.write(f"file '{clip.as_posix()}'\n")
-
-    silent_video = temp_dir / "video_only.mp4"
-    cmd = [
-        FFMPEG, "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0",
-        "-i", str(concat_file),
-        "-c", "copy",
-        str(silent_video),
-    ]
-    subprocess.run(cmd, check=True)
-    return silent_video
-
-
-def add_music_with_fade(video_file, music_path, total_duration, output_path):
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fade_start = max(0.0, total_duration - FADE_OUT_DURATION)
-    af_filter = f"afade=t=out:st={fade_start:.3f}:d={FADE_OUT_DURATION:.3f}"
+            f.write(
+                f"file '{clip.resolve()}'\n"
+            )
 
     cmd = [
-        FFMPEG, "-hide_banner", "-loglevel", "error",
-        "-i", str(video_file),
-        "-i", str(music_path),
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "320k",
-        "-af", af_filter,
-        "-t", f"{total_duration:.3f}",
-        "-movflags", "+faststart",
-        str(output_path),
+        FFMPEG,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_file),
+        "-c",
+        "copy",
+        str(output_file),
     ]
-    subprocess.run(cmd, check=True)
 
+    subprocess.run(
+        cmd,
+        check=True,
+    )
+
+    concat_file.unlink(
+        missing_ok=True
+    )
+
+
+def add_music_with_fade(
+    video_file,
+    music_file,
+    output_file,
+    total_duration,
+):
+    """Add music and fade it out at the end."""
+
+    fade_start = max(
+        0.0,
+        total_duration - FADE_OUT_DURATION,
+    )
+
+    audio_filter = (
+        f"afade=t=out:"
+        f"st={fade_start}:"
+        f"d={FADE_OUT_DURATION}"
+    )
+
+    cmd = [
+        FFMPEG,
+        "-y",
+        "-i",
+        str(video_file),
+        "-i",
+        str(music_file),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "320k",
+        "-af",
+        audio_filter,
+        "-t",
+        str(total_duration),
+        "-movflags",
+        "+faststart",
+        str(output_file),
+    ]
+
+    subprocess.run(
+        cmd,
+        check=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="MTB-AutoCut Multi-Video Generator")
-    
-    # Required Positional Arguments
-    parser.add_argument("videos_dir", type=Path, help="Directory containing input raw video files")
-    parser.add_argument("music", type=Path, help="Path to input music/audio file")
-    parser.add_argument("annotations", type=Path, help="Path to annotations TXT file")
 
-    # Optional Arguments
-    parser.add_argument(
-        "-o", "--output-dir",
-        type=Path,
-        default=Path("./output"),
-        help="Directory to save output file (default: ./output)"
+    parser = argparse.ArgumentParser(
+        description="Video-AutoCut v1.0"
     )
+
     parser.add_argument(
-        "-ar", "--aspect-ratio",
-        choices=["landscape", "portrait"],
+        "videos_dir",
+        help="Directory containing source videos",
+    )
+
+    parser.add_argument(
+        "music",
+        help="Music file",
+    )
+
+    parser.add_argument(
+        "annotations",
+        help="Annotation file",
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        default="./output",
+        help="Output directory",
+    )
+
+    parser.add_argument(
+        "-ar",
+        "--aspect-ratio",
+        choices=[
+            "landscape",
+            "portrait",
+        ],
         default="landscape",
-        help="Target aspect ratio: landscape (16:9), portrait (9:16 center crop)"
     )
+
     parser.add_argument(
-        "-sm", "--sync-mode",
-        choices=["beat", "measure", "forward-beat", "onset", "combined"],
+        "-sm",
+        "--sync-mode",
+        choices=[
+            "beat",
+            "measure",
+            "forward-beat",
+            "onset",
+            "combined",
+        ],
         default="beat",
-        help="Sync strategy: 'beat' (standard beats), 'measure' (4-beat bars), 'forward-beat' (next beat), 'onset' (high-energy peaks/taiko hits), 'combined' (beats + peaks)"
     )
+
     parser.add_argument(
-        "-mc", "--max-clip",
+        "-mc",
+        "--max-clip",
         type=float,
         default=10.0,
-        help="Maximum clip duration in seconds (default: 10.0). Set to 0 to allow full annotated clip length."
+        help="Maximum clip duration. 0 = unlimited.",
     )
+
     args = parser.parse_args()
 
-    if not args.videos_dir.is_dir():
-        parser.error(f"Videos directory not found: {args.videos_dir}")
-    if not args.music.is_file():
-        parser.error(f"Music file not found: {args.music}")
-    if not args.annotations.is_file():
-        parser.error(f"Annotations file not found: {args.annotations}")
-
-    max_clip_str = "unlimited" if args.max_clip <= 0 else f"{args.max_clip}s"
-    output_filename = f"MultiClip_{args.aspect_ratio}_{args.sync_mode}_max{max_clip_str}.mp4"
-    output_path = args.output_dir / output_filename
-
-    print(f"MTB-AutoCut v1.0 (Multi-Video Support)")
-    print(f"=========================================================================")
-    print(f"Videos Directory: {args.videos_dir}")
-    print(f"Music File:       {args.music}")
-    print(f"Annotations File: {args.annotations}")
-    print(f"Settings:         AR={args.aspect_ratio.upper()} | Sync={args.sync_mode} | Max Clip={max_clip_str}")
-    print(f"=========================================================================\n")
-
-    music_duration = probe_duration(args.music)
-    audio_grids = analyze_audio(args.music)
-    
-    if args.sync_mode in ["beat", "forward-beat"]:
-        grid_times = audio_grids["beat"]
-    elif args.sync_mode == "measure":
-        grid_times = audio_grids["measure"]
-    elif args.sync_mode == "onset":
-        grid_times = audio_grids["onset"]
-    elif args.sync_mode == "combined":
-        grid_times = audio_grids["combined"]
-
-    events = load_annotations(args.annotations)
-    target = music_duration
-
-    max_clip_val = args.max_clip if args.max_clip > 0 else None
-
-    selected, final_duration = select_events_beat_synced(
-        events, target, grid_times, sync_mode=args.sync_mode, max_clip=max_clip_val
+    videos_dir = Path(
+        args.videos_dir
     )
 
-    with tempfile.TemporaryDirectory(prefix="mtb_autocut_") as temp:
-        temp_dir = Path(temp)
-        
-        print(f"\nProcessing clips...")
-        clip_files = extract_clips(
-            selected, args.videos_dir, temp_dir, aspect_ratio=args.aspect_ratio
+    music_file = Path(
+        args.music
+    )
+
+    annotation_file = Path(
+        args.annotations
+    )
+
+    output_dir = Path(
+        args.output_dir
+    )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    print()
+    print(
+        "Video-AutoCut v1.0 (Multi-Video Support)"
+    )
+    print(
+        "========================================================================="
+    )
+    print(
+        f"Videos Directory: {videos_dir}"
+    )
+    print(
+        f"Music File:       {music_file}"
+    )
+    print(
+        f"Annotations File: {annotation_file}"
+    )
+    print(
+        f"Settings:         "
+        f"AR={args.aspect_ratio.upper()} | "
+        f"Sync={args.sync_mode} | "
+        f"Max Clip={args.max_clip:.1f}s"
+    )
+    print(
+        "========================================================================="
+    )
+    print()
+
+    # -----------------------------------------------------------------------
+    # Analyze audio
+    # -----------------------------------------------------------------------
+
+    audio_data = analyze_audio(
+        music_file
+    )
+
+    # -----------------------------------------------------------------------
+    # Load annotations
+    # -----------------------------------------------------------------------
+
+    events = load_annotations(
+        annotation_file
+    )
+
+    print(
+        f"Loaded {len(events)} annotation events."
+    )
+
+    if not events:
+        raise RuntimeError(
+            "No valid annotation events found."
         )
-        
-        print("\nConcatenating clips...")
-        silent_video = concatenate_clips(clip_files, temp_dir)
 
-        print(f"\nApplying audio fade-out and exporting final video ({final_duration:.2f}s)...")
-        add_music_with_fade(silent_video, args.music, final_duration, output_path)
+    # -----------------------------------------------------------------------
+    # Select events
+    # -----------------------------------------------------------------------
 
-    print("\nDONE")
-    print(f"Output: {output_path}")
+    selected = select_events_beat_synced(
+        events,
+        audio_data,
+        sync_mode=args.sync_mode,
+        max_clip=args.max_clip,
+    )
+
+    if not selected:
+        raise RuntimeError(
+            "No suitable events selected."
+        )
+
+    total_duration = sum(
+        event["duration"]
+        for event in selected
+    )
+
+    print()
+    print(
+        f"Selected {len(selected)} clips."
+    )
+    print(
+        f"Total footage: {total_duration:.2f}s"
+    )
+    print(
+        f"Music duration: {audio_data['duration']:.2f}s"
+    )
+    print()
+
+    # -----------------------------------------------------------------------
+    # Temporary working directory
+    # -----------------------------------------------------------------------
+
+    with tempfile.TemporaryDirectory(
+        prefix="mtb_autocut_"
+    ) as temp_dir:
+
+        print("Extracting clips...")
+        print()
+
+        clip_files = extract_clips(
+            selected,
+            videos_dir,
+            temp_dir,
+            aspect_ratio=args.aspect_ratio,
+        )
+
+        if not clip_files:
+            raise RuntimeError(
+                "No clips were successfully extracted."
+            )
+
+        # -------------------------------------------------------------------
+        # Concatenate
+        # -------------------------------------------------------------------
+
+        temp_video = (
+            Path(temp_dir)
+            / "video_concat.ts"
+        )
+
+        print()
+        print("Concatenating clips...")
+
+        concatenate_clips(
+            clip_files,
+            temp_video,
+        )
+
+        # Recalculate actual duration from the selected clips.
+        actual_duration = sum(
+            selected[i]["duration"]
+            for i in range(
+                min(
+                    len(selected),
+                    len(clip_files),
+                )
+            )
+        )
+
+        # Don't exceed music duration.
+        actual_duration = min(
+            actual_duration,
+            audio_data["duration"],
+        )
+
+        # -------------------------------------------------------------------
+        # Add music
+        # -------------------------------------------------------------------
+
+        output_file = (
+            output_dir
+            / "autocut.mp4"
+        )
+
+        print()
+        print("Adding music...")
+
+        add_music_with_fade(
+            temp_video,
+            music_file,
+            output_file,
+            actual_duration,
+        )
+
+    print()
+    print(
+        "========================================================================="
+    )
+    print("DONE")
+    print(
+        f"Output: {output_file}"
+    )
+    print(
+        f"Duration: {actual_duration:.2f}s"
+    )
+    print(
+        "========================================================================="
+    )
 
 
 if __name__ == "__main__":
