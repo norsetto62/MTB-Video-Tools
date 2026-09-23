@@ -11,6 +11,8 @@ __pycache__/
 # Generated analysis data
 data/motion_scores/
 data/event_inspection/
+data/flow_scores/
+data/autocut/
 
 # Generated output
 output/
