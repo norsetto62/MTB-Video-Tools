@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+
+# Generated analysis data
+data/motion_scores/
+data/event_inspection/
+
+# Generated output
+output/
+
+# Local configuration
+intervals.txt
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+
+# OS
+Thumbs.db
+.DS_Store
