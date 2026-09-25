@@ -1189,7 +1189,12 @@ def _regions_from_mask(
             continue
 
         start_time = float(times[start_idx])
-        end_time = float(times[end_idx])
+        if end_idx > 0:
+            sample_interval = float(times[end_idx] - times[end_idx - 1])
+        else:
+            sample_interval = float(times[1] - times[0]) if len(times) > 1 else 0.0
+
+        end_time = float(times[end_idx]) + sample_interval
 
         if end_time - start_time >= min_duration:
             regions.append((start_time, end_time))
