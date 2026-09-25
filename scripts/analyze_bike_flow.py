@@ -50,6 +50,14 @@ DEFAULT_FLOW_WIDTH = 480
 DEFAULT_FLOW_HEIGHT = 50.0
 DEFAULT_FLOW_ALPHA = 0.55
 
+# v4 candidate detector
+DEFAULT_SCORE_WINDOW = 2.0
+DEFAULT_SCORE_PERCENTILE = 92.0
+DEFAULT_FILL_GAP = 1.0
+DEFAULT_MIN_DURATION = 0.8
+DEFAULT_MERGE_GAP = 5.0
+DEFAULT_PADDING = 1.0
+
 GRID_ROWS = 3
 GRID_COLS = 3
 
@@ -1084,6 +1092,459 @@ def print_progress(
         flush=True,
     )
 
+
+# ---------------------------------------------------------------------------
+# V4 candidate detector
+# ---------------------------------------------------------------------------
+
+V4_FEATURES = (
+    ("magnitude", "flow_mean"),
+    ("angle", "angle_change_abs"),
+    ("divergence", "div_abs_mean"),
+    ("curl", "curl_abs_mean"),
+)
+
+
+def _rolling_median(values: np.ndarray, window_samples: int) -> np.ndarray:
+    """Centered rolling median with edge padding."""
+    values = np.asarray(values, dtype=float)
+    if len(values) == 0:
+        return values.copy()
+
+    window_samples = max(1, int(window_samples))
+    if window_samples % 2 == 0:
+        window_samples += 1
+
+    radius = window_samples // 2
+    padded = np.pad(
+        values,
+        (radius, radius),
+        mode="edge",
+    )
+
+    windows = np.lib.stride_tricks.sliding_window_view(
+        padded,
+        window_samples,
+    )
+
+    return np.median(windows, axis=1)
+
+
+def _robust_zscore(values: np.ndarray, window_samples: int) -> np.ndarray:
+    """
+    V4 feature normalization:
+      1. remove a centered rolling median baseline;
+      2. scale the residuals with a robust MAD estimate.
+    """
+    values = np.asarray(values, dtype=float)
+
+    if len(values) == 0:
+        return values.copy()
+
+    baseline = _rolling_median(
+        values,
+        window_samples,
+    )
+
+    residual = values - baseline
+
+    median_residual = float(np.median(residual))
+    mad = float(
+        np.median(
+            np.abs(residual - median_residual)
+        )
+    )
+
+    scale = 1.4826 * mad
+
+    if not np.isfinite(scale) or scale < 1e-9:
+        std = float(np.std(residual))
+        scale = std if np.isfinite(std) and std > 1e-9 else 1.0
+
+    return residual / scale
+
+
+def _regions_from_mask(
+    times: np.ndarray,
+    mask: np.ndarray,
+    fill_gap: float,
+    min_duration: float,
+):
+    """Return contiguous time regions after gap filling and duration filtering."""
+    indices = np.flatnonzero(mask)
+
+    if len(indices) == 0:
+        return []
+
+    regions = []
+    start_idx = int(indices[0])
+    end_idx = start_idx
+
+    for index in indices[1:]:
+        index = int(index)
+        gap = float(times[index] - times[end_idx])
+
+        if gap <= fill_gap + 1e-9:
+            end_idx = index
+            continue
+
+        start_time = float(times[start_idx])
+        end_time = float(times[end_idx])
+
+        if end_time - start_time >= min_duration:
+            regions.append((start_time, end_time))
+
+        start_idx = index
+        end_idx = index
+
+    start_time = float(times[start_idx])
+    end_time = float(times[end_idx])
+
+    if end_time - start_time >= min_duration:
+        regions.append((start_time, end_time))
+
+    return regions
+
+
+def _merge_regions(regions, merge_gap: float):
+    """Merge overlapping/nearby regions."""
+    if not regions:
+        return []
+
+    regions = sorted(
+        (float(start), float(end))
+        for start, end in regions
+    )
+
+    merged = [list(regions[0])]
+
+    for start, end in regions[1:]:
+        previous = merged[-1]
+
+        if start - previous[1] <= merge_gap + 1e-9:
+            previous[1] = max(previous[1], end)
+        else:
+            merged.append([start, end])
+
+    return [
+        (start, end)
+        for start, end in merged
+    ]
+
+
+def _format_autocut_time(seconds: float) -> str:
+    """Format seconds as HH:MM:SS.ss for AutoCut."""
+    seconds = max(0.0, float(seconds))
+
+    total_hundredths = int(
+        round(seconds * 100.0)
+    )
+
+    hours, remainder = divmod(
+        total_hundredths,
+        360000,
+    )
+    minutes, remainder = divmod(
+        remainder,
+        6000,
+    )
+    whole_seconds, hundredths = divmod(
+        remainder,
+        100,
+    )
+
+    return (
+        f"{hours:02d}:"
+        f"{minutes:02d}:"
+        f"{whole_seconds:02d}."
+        f"{hundredths:02d}"
+    )
+
+
+def generate_candidate_outputs(
+    csv_path: Path,
+    video_path: Path,
+    source_start: float,
+    merge_gap: float,
+):
+    """
+    Run the tested v4 detector on the freshly generated flow CSV.
+
+    Returns:
+        candidate_csv_path, autocut_path, candidates
+    """
+    rows = []
+
+    with open(
+        csv_path,
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as handle:
+        reader = csv.DictReader(handle)
+
+        for row in reader:
+            try:
+                time_value = float(row["time"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            parsed = {"time": time_value}
+
+            for _, column in V4_FEATURES:
+                try:
+                    value = float(row[column])
+                except (KeyError, TypeError, ValueError):
+                    value = float("nan")
+
+                parsed[column] = value
+
+            rows.append(parsed)
+
+    if not rows:
+        raise RuntimeError(
+            "Cannot generate candidate events: flow CSV contains no usable rows."
+        )
+
+    times = np.asarray(
+        [row["time"] for row in rows],
+        dtype=float,
+    )
+
+    if len(times) > 1:
+        sample_intervals = np.diff(times)
+        sample_interval = float(
+            np.median(sample_intervals[
+                sample_intervals > 0
+            ])
+        ) if np.any(sample_intervals > 0) else 0.1
+    else:
+        sample_interval = 0.1
+
+    window_samples = max(
+        3,
+        int(round(
+            DEFAULT_SCORE_WINDOW /
+            sample_interval
+        )),
+    )
+
+    if window_samples % 2 == 0:
+        window_samples += 1
+
+    feature_scores = {}
+    feature_regions = {}
+
+    for feature_name, column in V4_FEATURES:
+        values = np.asarray(
+            [row[column] for row in rows],
+            dtype=float,
+        )
+
+        finite = np.isfinite(values)
+
+        if not np.any(finite):
+            scores = np.zeros_like(values)
+        else:
+            fill_value = float(
+                np.nanmedian(values)
+            )
+            values = np.where(
+                finite,
+                values,
+                fill_value,
+            )
+
+            scores = _robust_zscore(
+                values,
+                window_samples,
+            )
+
+            scores = np.maximum(
+                scores,
+                0.0,
+            )
+
+        feature_scores[feature_name] = scores
+
+        threshold = float(
+            np.percentile(
+                scores,
+                DEFAULT_SCORE_PERCENTILE,
+            )
+        )
+
+        mask = scores >= threshold
+
+        feature_regions[feature_name] = _regions_from_mask(
+            times,
+            mask,
+            DEFAULT_FILL_GAP,
+            DEFAULT_MIN_DURATION,
+        )
+
+    # Union all feature regions, then merge them into candidate events.
+    all_regions = [
+        region
+        for regions in feature_regions.values()
+        for region in regions
+    ]
+
+    merged_regions = _merge_regions(
+        all_regions,
+        merge_gap,
+    )
+
+    candidates = []
+
+    for event_id, (start, end) in enumerate(
+        merged_regions,
+        start=1,
+    ):
+        # Use all samples falling inside the unpadded merged interval.
+        sample_mask = (
+            (times >= start) &
+            (times <= end)
+        )
+
+        if not np.any(sample_mask):
+            continue
+
+        strongest_score = 0.0
+        strongest_feature = ""
+        active_features = []
+
+        for feature_name, scores in feature_scores.items():
+            event_scores = scores[sample_mask]
+
+            if len(event_scores) == 0:
+                continue
+
+            peak = float(np.max(event_scores))
+
+            if peak > 0.0:
+                active_features.append(feature_name)
+
+            if peak > strongest_score:
+                strongest_score = peak
+                strongest_feature = feature_name
+
+        regions_text = []
+
+        for feature_name, regions in feature_regions.items():
+            for region_start, region_end in regions:
+                if (
+                    region_end >= start - 1e-9
+                    and region_start <= end + 1e-9
+                ):
+                    regions_text.append(
+                        f"{feature_name}:"
+                        f"{region_start:.2f}-"
+                        f"{region_end:.2f}"
+                    )
+
+        candidates.append({
+            "id": event_id,
+            "raw_start": start,
+            "raw_end": end,
+            "start": max(
+                0.0,
+                start - DEFAULT_PADDING,
+            ),
+            "end": end + DEFAULT_PADDING,
+            "duration": (
+                end - start +
+                2.0 * DEFAULT_PADDING
+            ),
+            "score": strongest_score,
+            "features": "+".join(active_features),
+            "strongest_feature": strongest_feature,
+            "num_feature_regions": len(regions_text),
+            "feature_regions": ";".join(regions_text),
+        })
+
+    candidate_csv_path = csv_path.with_name(
+        f"{csv_path.stem}_candidate_events.csv"
+    )
+    autocut_path = csv_path.with_name(
+        f"{csv_path.stem}_autocut.txt"
+    )
+
+    candidate_fields = [
+        "id",
+        "start",
+        "end",
+        "duration",
+        "peak",
+        "score",
+        "features",
+        "strongest_feature",
+        "num_feature_regions",
+        "feature_regions",
+    ]
+
+    with open(
+        candidate_csv_path,
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=candidate_fields,
+        )
+        writer.writeheader()
+
+        for candidate in candidates:
+            writer.writerow({
+                "id": candidate["id"],
+                "start": f"{candidate['start']:.2f}",
+                "end": f"{candidate['end']:.2f}",
+                "duration": f"{candidate['duration']:.2f}",
+                "peak": f"{candidate['score']:.3f}",
+                "score": f"{candidate['score']:.3f}",
+                "features": candidate["features"],
+                "strongest_feature": candidate["strongest_feature"],
+                "num_feature_regions": candidate["num_feature_regions"],
+                "feature_regions": candidate["feature_regions"],
+            })
+
+    with open(
+        autocut_path,
+        "w",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(f"{video_path}\n")
+
+        for candidate in candidates:
+            absolute_start = (
+                source_start +
+                candidate["start"]
+            )
+            absolute_end = (
+                source_start +
+                candidate["end"]
+            )
+
+            description = (
+                "AUTO "
+                f"score={candidate['score']:.3f} "
+                f"features={candidate['features'] or 'none'}"
+            )
+
+            handle.write(
+                f"{_format_autocut_time(absolute_start)} "
+                f"{_format_autocut_time(absolute_end)} "
+                f"5 5 {description}\n"
+            )
+
+    return (
+        candidate_csv_path,
+        autocut_path,
+        candidates,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main processing
 # ---------------------------------------------------------------------------
@@ -1101,7 +1562,10 @@ def process_video(
     arrows: bool,
     video: bool,
     track: bool,
+    merge_gap: float,
 ):
+    interrupted = False
+
     width, height, source_fps, source_duration = get_video_info(
         video_path
     )
@@ -1139,6 +1603,7 @@ def process_video(
     print(f"Flow width:     {flow_width}")
     print(f"Flow height:    {flow_height:.1f}%")
     print(f"Flow alpha:     {flow_alpha:.2f}")
+    print(f"Merge gap:      {merge_gap:.2f} s")
     print(
         f"Arrows:         {'yes' if arrows else 'no'}"
     )
@@ -1579,6 +2044,22 @@ def process_video(
             + stderr
         )
 
+    if not interrupted:
+        (
+            candidate_csv_path,
+            autocut_path,
+            candidates,
+        ) = generate_candidate_outputs(
+            csv_path=csv_path,
+            video_path=video_path,
+            source_start=start,
+            merge_gap=merge_gap,
+        )
+    else:
+        candidate_csv_path = None
+        autocut_path = None
+        candidates = []
+
     print()
     print("Completed.")
     print(f"Flow samples: {flow_samples}")
@@ -1586,6 +2067,10 @@ def process_video(
     if video:
         print(f"Video:        {output_path}")
     print(f"CSV:          {csv_path}")
+    if candidate_csv_path is not None:
+        print(f"Candidates:    {candidate_csv_path}")
+        print(f"AutoCut:       {autocut_path}")
+        print(f"Events:        {len(candidates)}")
 
     # A 50-second run at 10 FPS should produce roughly 490-500
     # flow samples, depending on the exact sampling alignment.
@@ -1695,6 +2180,13 @@ def build_parser():
         help="Enable bike/reference tracking and ROI selection. Only available with --video.",
     )
 
+    parser.add_argument(
+        "--merge-gap",
+        type=float,
+        default=DEFAULT_MERGE_GAP,
+        help="Maximum gap used to merge candidate regions, in seconds.",
+    )
+
     return parser
 
 
@@ -1755,6 +2247,13 @@ def main():
         )
         sys.exit(1)
 
+    if args.merge_gap < 0:
+        print(
+            "Error: --merge-gap cannot be negative.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if not args.video:
         if args.track or args.arrows:
             print(
@@ -1762,8 +2261,6 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-
-    interrupted = False
 
     try:
         process_video(
@@ -1779,6 +2276,7 @@ def main():
             arrows=args.arrows,
             video=args.video,
             track=args.track,
+            merge_gap=args.merge_gap,
         )
 
     except KeyboardInterrupt:
