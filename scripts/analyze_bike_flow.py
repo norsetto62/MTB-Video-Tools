@@ -1593,7 +1593,8 @@ def process_video(
     print("Integrated Bike + Optical Flow Analysis")
     print("-----------------------------------------")
     print(f"Input:          {video_path}")
-    print(f"Output:         {output_path}")
+    if video:
+        print(f"Output:         {output_path}")
     print(f"CSV:            {csv_path}")
     print(f"Start:          {start:.3f} s")
     print(f"Duration:       {processing_duration:.3f} s")
