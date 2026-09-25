@@ -259,6 +259,9 @@ def start_ffmpeg_encode(
         "-preset",
         "p5",
 
+        "-cq",
+        "18",
+        
         "-pix_fmt",
         "yuv420p",
 
@@ -285,19 +288,12 @@ def start_ffmpeg_encode(
 
 def initialise_tracker(
     frame: np.ndarray,
-    no_video: bool,
 ):
     """
     Ask the user to select a reference object and detect Shi-Tomasi
     features inside it.
     """
-
-    if no_video:
-        raise RuntimeError(
-            "Bike/reference ROI selection requires video. "
-            "Remove --no-video for the first tracking run."
-        )
-
+    
     roi = cv2.selectROI(
         "Select bike/reference object",
         frame,
@@ -761,7 +757,7 @@ def create_flow_overlay(
     flow_width: int,
     flow_height_percent: float,
     alpha: float,
-    draw_arrows: bool,
+    arrows: bool,
 ):
     """
     Create a semi-transparent HSV flow visualization over the
@@ -885,7 +881,7 @@ def create_flow_overlay(
     # Sparse arrows
     # ---------------------------------------------------------------
 
-    if draw_arrows:
+    if arrows:
         step_x = max(
             20,
             source_width // 24,
@@ -1102,9 +1098,9 @@ def process_video(
     flow_width: int,
     flow_height: float,
     flow_alpha: float,
-    draw_arrows: bool,
-    no_video: bool,
-    no_track: bool,
+    arrows: bool,
+    video: bool,
+    track: bool,
 ):
     width, height, source_fps, source_duration = get_video_info(
         video_path
@@ -1144,7 +1140,7 @@ def process_video(
     print(f"Flow height:    {flow_height:.1f}%")
     print(f"Flow alpha:     {flow_alpha:.2f}")
     print(
-        f"Arrows:         {'yes' if draw_arrows else 'no'}"
+        f"Arrows:         {'yes' if arrows else 'no'}"
     )
     print()
 
@@ -1159,7 +1155,7 @@ def process_video(
     )
 
     encoder = None
-    if not no_video:
+    if video:
         encoder = start_ffmpeg_encode(
             output_path,
             width,
@@ -1216,10 +1212,9 @@ def process_video(
 
     tracker = None
 
-    if not no_track:
+    if track:
         tracker = initialise_tracker(
             first_frame,
-            no_video,
         )
 
     # First frame is output immediately.
@@ -1236,7 +1231,7 @@ def process_video(
             first_output.tobytes()
         )
 
-    if not no_video:
+    if video:
         cv2.imshow(
             "Bike + Optical Flow",
             first_output,
@@ -1264,6 +1259,7 @@ def process_video(
 
     processing_start_wall = cv2.getTickCount()
     last_progress_time = 0.0
+    flow_field = None
 
     # ---------------------------------------------------------------
     # Main decode loop
@@ -1324,8 +1320,7 @@ def process_video(
             # -------------------------------------------------------
 
             flow_features = None
-            flow_field = None
-
+            
             if current_time + 1e-9 >= next_flow_time:
 
                 flow_field, flow_features, _ = (
@@ -1423,25 +1418,25 @@ def process_video(
                     flow_width,
                     flow_height,
                     flow_alpha,
-                    draw_arrows,
+                    arrows,
                 )
 
-                if tracker is not None:
-                    visual = draw_tracker(
-                        visual,
-                        tracker,
-                    )
+            if tracker is not None:
+                visual = draw_tracker(
+                    visual,
+                    tracker,
+                )
 
-                if encoder is not None:
-                    encoder.stdin.write(
-                        visual.tobytes()
-                    )
+            if encoder is not None:
+                encoder.stdin.write(
+                    visual.tobytes()
+                )
 
             # -------------------------------------------------------
             # Display
             # -------------------------------------------------------
 
-            if not no_video:
+            if video:
                 cv2.imshow(
                     "Bike + Optical Flow",
                     visual,
@@ -1452,6 +1447,7 @@ def process_video(
                 if key == 27:
                     print()
                     print("Interrupted by user.")
+                    interrupted = True
                     break
 
             # -------------------------------------------------------
@@ -1498,17 +1494,23 @@ def process_video(
         # Close decoder
         # -----------------------------------------------------------
 
+    if interrupted:
         try:
-            if decoder.stdout:
-                decoder.stdout.close()
+            decoder.terminate()
         except Exception:
             pass
 
-        try:
-            decoder.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            decoder.kill()
-            decoder.wait()
+    try:
+        decoder.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        decoder.kill()
+        decoder.wait()
+
+    try:
+        if decoder.stdout:
+            decoder.stdout.close()
+    except Exception:
+        pass
 
         # -----------------------------------------------------------
         # Finish encoder
@@ -1516,12 +1518,15 @@ def process_video(
 
         if encoder is not None:
             try:
-                encoder.stdin.close()
+                if interrupted:
+                    encoder.terminate()
+                else:
+                    encoder.stdin.close()
             except Exception:
                 pass
 
             try:
-                encoder.wait(timeout=120)
+                encoder.wait(timeout=10 if interrupted else 120)
             except subprocess.TimeoutExpired:
                 encoder.kill()
                 encoder.wait()
@@ -1533,7 +1538,7 @@ def process_video(
         csv_file.flush()
         csv_file.close()
 
-        if not no_video:
+        if video:
             cv2.destroyAllWindows()
 
     if encoder is not None:
@@ -1557,7 +1562,7 @@ def process_video(
                 + stderr
             )
 
-    if decoder.returncode not in (0, None):
+    if not interrupted and decoder.returncode not in (0, None):
         stderr = ""
 
         if decoder.stderr:
@@ -1578,7 +1583,7 @@ def process_video(
     print("Completed.")
     print(f"Flow samples: {flow_samples}")
     print(f"CSV rows:     {csv_rows}")
-    if not no_video:
+    if video:
         print(f"Video:        {output_path}")
     print(f"CSV:          {csv_path}")
 
@@ -1603,7 +1608,7 @@ def build_parser():
     )
 
     parser.add_argument(
-        "video",
+        "input",
         type=Path,
         help="Input video.",
     )
@@ -1673,21 +1678,21 @@ def build_parser():
     )
 
     parser.add_argument(
-        "--no-arrows",
+        "--arrows",
         action="store_true",
-        help="Disable sparse optical-flow arrows.",
+        help="Enable sparse optical-flow arrows. Only available with --video.",
     )
 
     parser.add_argument(
-        "--no-video",
+        "--video",
         action="store_true",
-        help="Disable creation of the annotated output video.",
+        help="Enable overlay video.",
     )
 
     parser.add_argument(
-        "--no-track",
+        "--track",
         action="store_true",
-        help="Disable bike/reference tracking and ROI selection.",
+        help="Enable bike/reference tracking and ROI selection. Only available with --video.",
     )
 
     return parser
@@ -1701,9 +1706,9 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    if not args.video.exists():
+    if not args.input.exists():
         print(
-            f"Error: input video does not exist:\n{args.video}",
+            f"Error: input video does not exist:\n{args.input}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1750,9 +1755,19 @@ def main():
         )
         sys.exit(1)
 
+    if not args.video:
+        if args.track or args.arrows:
+            print(
+                "Error: --track or --arrows cannot be used without --video.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    interrupted = False
+
     try:
         process_video(
-            video_path=args.video,
+            video_path=args.input,
             output_path=args.output,
             csv_path=args.csv,
             start=args.start,
@@ -1761,9 +1776,9 @@ def main():
             flow_width=args.flow_width,
             flow_height=args.flow_height,
             flow_alpha=args.flow_alpha,
-            draw_arrows=not args.no_arrows,
-            no_video=args.no_video,
-            no_track=args.no_track,
+            arrows=args.arrows,
+            video=args.video,
+            track=args.track,
         )
 
     except KeyboardInterrupt:
