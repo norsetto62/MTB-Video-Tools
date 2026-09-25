@@ -285,17 +285,17 @@ def start_ffmpeg_encode(
 
 def initialise_tracker(
     frame: np.ndarray,
-    no_display: bool,
+    no_video: bool,
 ):
     """
     Ask the user to select a reference object and detect Shi-Tomasi
     features inside it.
     """
 
-    if no_display:
+    if no_video:
         raise RuntimeError(
-            "Bike/reference ROI selection requires display. "
-            "Remove --no-display for the first tracking run."
+            "Bike/reference ROI selection requires video. "
+            "Remove --no-video for the first tracking run."
         )
 
     roi = cv2.selectROI(
@@ -1012,8 +1012,10 @@ def get_csv_fieldnames():
 
 def print_progress(
     elapsed: float,
+    elapsed_wall: float,
     total_duration: float,
     processing_fps: float,
+    source_fps: float,
     flow_samples: int,
     csv_rows: int,
 ):
@@ -1021,9 +1023,9 @@ def print_progress(
         percent = 0.0
     else:
         percent = (
-            elapsed /
-            total_duration *
-            100.0
+            elapsed
+            / total_duration
+            * 100.0
         )
 
     percent = max(
@@ -1031,10 +1033,46 @@ def print_progress(
         min(100.0, percent),
     )
 
-    if processing_fps > 0:
-        realtime = processing_fps / 59.94
+    if processing_fps > 0 and source_fps > 0:
+        realtime = processing_fps / source_fps
     else:
         realtime = 0.0
+
+    # Estimated total processing time.
+    if elapsed > 0 and elapsed_wall > 0:
+        processing_speed = (
+            elapsed /
+            elapsed_wall
+        )
+
+        eta = max(
+            0.0,
+            (total_duration - elapsed)
+            / processing_speed,
+        )
+    else:
+        eta = 0.0
+
+    eta_minutes, eta_seconds = divmod(
+        int(eta),
+        60,
+    )
+
+    if eta_minutes >= 60:
+        eta_hours, eta_minutes = divmod(
+            eta_minutes,
+            60,
+        )
+        eta_text = (
+            f"{eta_hours:02d}:"
+            f"{eta_minutes:02d}:"
+            f"{eta_seconds:02d}"
+        )
+    else:
+        eta_text = (
+            f"{eta_minutes:02d}:"
+            f"{eta_seconds:02d}"
+        )
 
     print(
         f"\r"
@@ -1043,12 +1081,12 @@ def print_progress(
         f"{total_duration:7.1f}s  "
         f"{processing_fps:6.1f} fps  "
         f"{realtime:5.2f}x  "
+        f"ETA: {eta_text}  "
         f"flow samples: {flow_samples:6d}  "
         f"CSV rows: {csv_rows:6d}",
         end="",
         flush=True,
     )
-
 
 # ---------------------------------------------------------------------------
 # Main processing
@@ -1065,7 +1103,8 @@ def process_video(
     flow_height: float,
     flow_alpha: float,
     draw_arrows: bool,
-    no_display: bool,
+    no_video: bool,
+    no_track: bool,
 ):
     width, height, source_fps, source_duration = get_video_info(
         video_path
@@ -1119,12 +1158,14 @@ def process_video(
         height,
     )
 
-    encoder = start_ffmpeg_encode(
-        output_path,
-        width,
-        height,
-        source_fps,
-    )
+    encoder = None
+    if not no_video:
+        encoder = start_ffmpeg_encode(
+            output_path,
+            width,
+            height,
+            source_fps,
+        )
 
     csv_path.parent.mkdir(
         parents=True,
@@ -1145,8 +1186,9 @@ def process_video(
         fieldnames=fieldnames,
     )
 
-    writer.writeheader()
-    csv_file.flush()
+    if writer is not None:
+        writer.writeheader()
+        csv_file.flush()
 
     # ---------------------------------------------------------------
     # Read first frame
@@ -1172,22 +1214,29 @@ def process_video(
         3,
     )
 
-    tracker = initialise_tracker(
-        first_frame,
-        no_display,
-    )
+    tracker = None
+
+    if not no_track:
+        tracker = initialise_tracker(
+            first_frame,
+            no_video,
+        )
 
     # First frame is output immediately.
-    first_output = draw_tracker(
-        first_frame,
-        tracker,
-    )
+    first_output = first_frame.copy()
 
-    encoder.stdin.write(
-        first_output.tobytes()
-    )
+    if tracker is not None:
+        first_output = draw_tracker(
+            first_output,
+            tracker,
+        )
 
-    if not no_display:
+    if encoder is not None:
+        encoder.stdin.write(
+            first_output.tobytes()
+        )
+
+    if not no_video:
         cv2.imshow(
             "Bike + Optical Flow",
             first_output,
@@ -1214,6 +1263,7 @@ def process_video(
     frame_index = 0
 
     processing_start_wall = cv2.getTickCount()
+    last_progress_time = 0.0
 
     # ---------------------------------------------------------------
     # Main decode loop
@@ -1253,12 +1303,18 @@ def process_video(
             # Track reference object on EVERY source frame.
             # -------------------------------------------------------
 
-            bike_dx, bike_dy, bike_speed, tracked_points = (
-                update_tracker(
-                    frame,
-                    tracker,
+            if tracker is not None:
+                bike_dx, bike_dy, bike_speed, tracked_points = (
+                    update_tracker(
+                        frame,
+                        tracker
+                    )
                 )
-            )
+            else:
+                bike_dx = 0.0
+                bike_dy = 0.0
+                bike_speed = 0.0
+                tracked_points = 0
 
             # -------------------------------------------------------
             # Optical-flow sampling.
@@ -1324,8 +1380,8 @@ def process_video(
                 row = {
                     "time": current_time,
 
-                    "bike_x": tracker["center_x"],
-                    "bike_y": tracker["center_y"],
+                    "bike_x": tracker["center_x"] if tracker is not None else 0.0,
+                    "bike_y": tracker["center_y"] if tracker is not None else 0.0,
                     "bike_dx": bike_dx,
                     "bike_dy": bike_dy,
                     "bike_speed": bike_speed,
@@ -1333,7 +1389,6 @@ def process_video(
                 }
 
                 row.update(flow_features)
-
                 writer.writerow(row)
 
                 csv_rows += 1
@@ -1371,20 +1426,22 @@ def process_video(
                     draw_arrows,
                 )
 
-            visual = draw_tracker(
-                visual,
-                tracker,
-            )
+                if tracker is not None:
+                    visual = draw_tracker(
+                        visual,
+                        tracker,
+                    )
 
-            encoder.stdin.write(
-                visual.tobytes()
-            )
+                if encoder is not None:
+                    encoder.stdin.write(
+                        visual.tobytes()
+                    )
 
             # -------------------------------------------------------
             # Display
             # -------------------------------------------------------
 
-            if not no_display:
+            if not no_video:
                 cv2.imshow(
                     "Bike + Optical Flow",
                     visual,
@@ -1412,19 +1469,24 @@ def process_video(
             )
 
             processing_fps = (
-                processed_video_time /
+                frame_index /
                 elapsed_wall
                 if elapsed_wall > 0
                 else 0.0
             )
 
-            print_progress(
-                processed_video_time,
-                processing_duration,
-                processing_fps,
-                flow_samples,
-                csv_rows,
-            )
+            # Only print progress every 2 sec
+            if elapsed_wall - last_progress_time >= 2.0 :
+                print_progress(
+                    processed_video_time,
+                    elapsed_wall,
+                    processing_duration,
+                    processing_fps,
+                    source_fps,
+                    flow_samples,
+                    csv_rows,
+                )
+                last_progress_time = elapsed_wall
 
             if current_time >= processing_duration:
                 break
@@ -1452,16 +1514,17 @@ def process_video(
         # Finish encoder
         # -----------------------------------------------------------
 
-        try:
-            encoder.stdin.close()
-        except Exception:
-            pass
+        if encoder is not None:
+            try:
+                encoder.stdin.close()
+            except Exception:
+                pass
 
-        try:
-            encoder.wait(timeout=120)
-        except subprocess.TimeoutExpired:
-            encoder.kill()
-            encoder.wait()
+            try:
+                encoder.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                encoder.kill()
+                encoder.wait()
 
         # -----------------------------------------------------------
         # Close CSV
@@ -1470,25 +1533,29 @@ def process_video(
         csv_file.flush()
         csv_file.close()
 
-        if not no_display:
+        if not no_video:
             cv2.destroyAllWindows()
 
-    if encoder.returncode != 0:
-        stderr = ""
+    if encoder is not None:
+        encoder.stdin.close()
+        encoder.wait()
 
-        if encoder.stderr:
-            try:
-                stderr = encoder.stderr.read().decode(
-                    "utf-8",
-                    errors="replace",
-                )
-            except Exception:
-                pass
+        if encoder.returncode != 0:
+            stderr = ""
 
-        raise RuntimeError(
-            "FFmpeg encoder failed.\n"
-            + stderr
-        )
+            if encoder.stderr:
+                try:
+                    stderr = encoder.stderr.read().decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                except Exception:
+                    pass
+
+            raise RuntimeError(
+                "FFmpeg encoder failed.\n"
+                + stderr
+            )
 
     if decoder.returncode not in (0, None):
         stderr = ""
@@ -1511,7 +1578,8 @@ def process_video(
     print("Completed.")
     print(f"Flow samples: {flow_samples}")
     print(f"CSV rows:     {csv_rows}")
-    print(f"Video:        {output_path}")
+    if not no_video:
+        print(f"Video:        {output_path}")
     print(f"CSV:          {csv_path}")
 
     # A 50-second run at 10 FPS should produce roughly 490-500
@@ -1611,9 +1679,15 @@ def build_parser():
     )
 
     parser.add_argument(
-        "--no-display",
+        "--no-video",
         action="store_true",
-        help="Disable video display.",
+        help="Disable creation of the annotated output video.",
+    )
+
+    parser.add_argument(
+        "--no-track",
+        action="store_true",
+        help="Disable bike/reference tracking and ROI selection.",
     )
 
     return parser
@@ -1688,7 +1762,8 @@ def main():
             flow_height=args.flow_height,
             flow_alpha=args.flow_alpha,
             draw_arrows=not args.no_arrows,
-            no_display=args.no_display,
+            no_video=args.no_video,
+            no_track=args.no_track,
         )
 
     except KeyboardInterrupt:

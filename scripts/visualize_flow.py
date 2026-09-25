@@ -316,6 +316,8 @@ def process_video(
     flow_height_percent,
     flow_alpha,
     draw_vectors,
+    no_display,
+    no_track,
 ):
     print()
     print("=" * 70)
@@ -1096,6 +1098,8 @@ def main():
             flow_height_percent=args.flow_height,
             flow_alpha=args.flow_alpha,
             draw_vectors=not args.no_arrows,
+            no_display=args.no_display,
+            no_track=args.no_track,
         )
 
     except KeyboardInterrupt:
