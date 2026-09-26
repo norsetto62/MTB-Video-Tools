@@ -50,3 +50,7 @@ for gap in [1.5, 2, 3, 5, 7, 10]:
         f"total duration {total_duration:6.1f}s | "
         f"longest {longest:5.1f}s"
     )
+
+    print("Merged events:")
+    for row in merged:
+        print(row)

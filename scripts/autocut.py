@@ -489,7 +489,9 @@ def select_events_beat_synced(
             mode=sync_mode,
         )
 
-        if snapped_end > start:
+        minimum_end = start + MIN_CLIP
+
+        if snapped_end >= minimum_end:
             end = min(
                 snapped_end,
                 event["end"],
