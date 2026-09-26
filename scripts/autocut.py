@@ -22,6 +22,8 @@ until another video filename is encountered.
 """
 
 import argparse
+import hashlib
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -103,7 +105,279 @@ def probe_duration(video_path):
 # Audio analysis
 # ---------------------------------------------------------------------------
 
-def analyze_audio(music_path):
+AUDIO_CACHE_VERSION = 1
+
+
+def music_file_hash(music_path):
+    """Return a SHA-256 hash of the music file."""
+    digest = hashlib.sha256()
+
+    with Path(music_path).open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+
+            if not chunk:
+                break
+
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def audio_cache_path(music_path, cache_dir):
+    """Return the cache filename for a music file."""
+    music_path = Path(music_path)
+    cache_dir = Path(cache_dir)
+
+    path_key = hashlib.sha256(
+        str(music_path.resolve()).encode("utf-8")
+    ).hexdigest()[:12]
+
+    return (
+        cache_dir
+        / f"{music_path.stem}_{path_key}.json"
+    )
+
+
+def load_cached_audio(music_path, cache_dir):
+    """Load cached audio analysis if it matches the current music file."""
+    cache_file = audio_cache_path(
+        music_path,
+        cache_dir,
+    )
+
+    if not cache_file.exists():
+        return None
+
+    try:
+        source_hash = music_file_hash(music_path)
+
+        with cache_file.open(
+            "r",
+            encoding="utf-8",
+        ) as f:
+            cached = json.load(f)
+
+        if cached.get("cache_version") != AUDIO_CACHE_VERSION:
+            return None
+
+        if cached.get("source_hash") != source_hash:
+            return None
+
+        audio_data = {
+            "duration": float(cached["duration"]),
+            "tempo": float(cached["tempo"]),
+            "beats": np.asarray(
+                cached["beats"],
+                dtype=float,
+            ),
+            "measures": np.asarray(
+                cached["measures"],
+                dtype=float,
+            ),
+            "onsets": np.asarray(
+                cached["onsets"],
+                dtype=float,
+            ),
+            "combined": np.asarray(
+                cached["combined"],
+                dtype=float,
+            ),
+        }
+
+        print("Using cached audio analysis:")
+        print(
+            f"  Duration: {audio_data['duration']:.2f}s"
+        )
+        print(
+            f"  Tempo: {audio_data['tempo']:.1f} BPM"
+        )
+        print(
+            f"  Beats: {len(audio_data['beats'])}"
+        )
+        print(
+            f"  Measures: {len(audio_data['measures'])}"
+        )
+        print(
+            f"  Energy peaks: {len(audio_data['onsets'])}"
+        )
+
+        return audio_data
+
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+    ):
+        return None
+
+
+def save_cached_audio(
+    music_path,
+    cache_dir,
+    audio_data,
+):
+    """Save audio analysis results to the JSON cache."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    cache_file = audio_cache_path(
+        music_path,
+        cache_dir,
+    )
+
+    payload = {
+        "cache_version": AUDIO_CACHE_VERSION,
+        "source_hash": music_file_hash(music_path),
+        "source": str(Path(music_path).resolve()),
+        "duration": float(audio_data["duration"]),
+        "tempo": float(audio_data["tempo"]),
+        "beats": audio_data["beats"].tolist(),
+        "measures": audio_data["measures"].tolist(),
+        "onsets": audio_data["onsets"].tolist(),
+        "combined": audio_data["combined"].tolist(),
+    }
+
+    with cache_file.open(
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(
+            payload,
+            f,
+            indent=2,
+        )
+
+    print(
+        f"  Saved audio analysis cache: {cache_file}"
+    )
+
+
+def analyze_audio(
+    music_path,
+    cache_dir=None,
+):
+    """
+    Analyze music and return synchronization points.
+
+    If cache_dir is provided, reuse a matching cached analysis.
+
+    Returns:
+        dict containing:
+            duration
+            tempo
+            beats
+            onsets
+            combined
+    """
+
+    if cache_dir is not None:
+        cached = load_cached_audio(
+            music_path,
+            cache_dir,
+        )
+
+        if cached is not None:
+            return cached
+
+    print("Analyzing audio rhythm, beats, and energy peaks...")
+
+    y, sr = librosa.load(
+        str(music_path),
+        sr=None,
+        mono=True,
+    )
+
+    duration = len(y) / sr
+
+    # Beat tracking
+    tempo, beat_frames = librosa.beat.beat_track(
+        y=y,
+        sr=sr,
+    )
+
+    tempo = float(
+        np.asarray(tempo).reshape(-1)[0]
+    )
+
+    beat_times = librosa.frames_to_time(
+        beat_frames,
+        sr=sr,
+    )
+
+    # Use every 4th beat as a rough musical measure grid
+    measure_times = beat_times[::4]
+
+    # Onset strength
+    onset_strength = librosa.onset.onset_strength(
+        y=y,
+        sr=sr,
+    )
+
+    onset_times = librosa.frames_to_time(
+        np.arange(len(onset_strength)),
+        sr=sr,
+    )
+
+    # Peak picking
+    peaks = librosa.util.peak_pick(
+        onset_strength,
+        pre_max=3,
+        post_max=3,
+        pre_avg=3,
+        post_avg=5,
+        delta=0.2,
+        wait=5,
+    )
+
+    peak_times = onset_times[peaks]
+
+    # Combine beats and energy peaks
+    combined = np.concatenate(
+        [
+            beat_times,
+            peak_times,
+        ]
+    )
+
+    combined = np.unique(
+        np.round(combined, 3)
+    )
+
+    combined = combined[
+        (combined >= 0)
+        & (combined <= duration)
+    ]
+
+    print(f"  Duration: {duration:.2f}s")
+    print(f"  Tempo: {tempo:.1f} BPM")
+    print(f"  Beats: {len(beat_times)}")
+    print(f"  Measures: {len(measure_times)}")
+    print(f"  Energy peaks: {len(peak_times)}")
+
+    audio_data = {
+        "duration": duration,
+        "tempo": tempo,
+        "beats": beat_times,
+        "measures": measure_times,
+        "onsets": peak_times,
+        "combined": combined,
+    }
+
+    if cache_dir is not None:
+        save_cached_audio(
+            music_path,
+            cache_dir,
+            audio_data,
+        )
+
+    return audio_data
+
     """
     Analyze music and return synchronization points.
 
@@ -831,8 +1105,11 @@ def main():
     # Analyze audio
     # -----------------------------------------------------------------------
 
+    audio_cache_dir = output_dir / "audio_cache"
+
     audio_data = analyze_audio(
-        music_file
+        music_file,
+        cache_dir=audio_cache_dir,
     )
 
     # -----------------------------------------------------------------------
