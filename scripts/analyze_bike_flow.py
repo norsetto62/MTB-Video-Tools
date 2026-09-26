@@ -725,6 +725,18 @@ def calculate_flow_features(
     curl_std = float(np.std(curl))
 
     # ---------------------------------------------------------------
+    # Normalized Divergence & Curl (Relative to Forward Speed)
+    # ---------------------------------------------------------------
+    # Adding a small epsilon (1e-6) prevents Division-By-Zero when stationary
+    eps = 1e-6
+
+    # Unitless expansion rate: How fast the field expands relative to speed
+    div_normalized_mean = div_abs_mean / (flow_mean + eps)
+    
+    # Unitless rotational rate: How strong turns/twists are relative to speed
+    curl_normalized_mean = curl_abs_mean / (flow_mean + eps)
+
+    # ---------------------------------------------------------------
     # 3x3 spatial grid
     # ---------------------------------------------------------------
 
@@ -745,12 +757,14 @@ def calculate_flow_features(
         "flow_angle": flow_angle,
 
         "div_abs_mean": div_abs_mean,
+        "div_normalized_mean": div_normalized_mean,
         "div_abs_p90": div_abs_p90,
         "div_std": div_std,
         "div_pos_fraction": div_pos_fraction,
         "div_neg_fraction": div_neg_fraction,
 
         "curl_abs_mean": curl_abs_mean,
+        "curl_normalized_mean": curl_normalized_mean,
         "curl_abs_p90": curl_abs_p90,
         "curl_std": curl_std,
     }
@@ -801,7 +815,32 @@ def calculate_flow_features(
         current_small,
     )
 
-
+def append_temporal_derivatives(sequence_matrix: np.ndarray, target_indices: list[int]) -> np.ndarray:
+    """
+    Computes frame-to-frame delta features (1st derivatives) for selected column indices 
+    using pure NumPy and appends them to the sequence.
+    
+    Parameters:
+        sequence_matrix: 2D array of shape (T, F) where T = time steps, F = feature count
+        target_indices: List of column indices for features where delta is calculated 
+                       (e.g., [flow_mean_idx, flow_y_idx, div_abs_mean_idx])
+                       
+    Returns:
+        Expanded 2D array of shape (T, F + len(target_indices))
+    """
+    # Extract only the columns we want derivatives for: shape (T, num_targets)
+    targets = sequence_matrix[:, target_indices]
+    
+    # Compute first difference along the time axis (axis 0): shape (T-1, num_targets)
+    deltas = np.diff(targets, axis=0)
+    
+    # Pad the first row with zeros to maintain length T: shape (T, num_targets)
+    deltas_padded = np.pad(deltas, ((1, 0), (0, 0)), mode='constant', constant_values=0.0)
+    
+    # Concatenate original features with the new delta features along columns (axis 1)
+    # Final Shape: (T, F + num_targets)
+    return np.hstack([sequence_matrix, deltas_padded])
+    
 # ---------------------------------------------------------------------------
 # Flow visualization
 # ---------------------------------------------------------------------------
@@ -1034,12 +1073,14 @@ def get_csv_fieldnames():
         "angle_change_abs",
 
         "div_abs_mean",
+        "div_norm_mean",
         "div_abs_p90",
         "div_std",
         "div_pos_fraction",
         "div_neg_fraction",
 
         "curl_abs_mean",
+        "curl_norm_mean",
         "curl_abs_p90",
         "curl_std",
     ]
@@ -1146,7 +1187,14 @@ def print_progress(
 # ---------------------------------------------------------------------------
 # V4 candidate detector
 # ---------------------------------------------------------------------------
-
+"""
+Feature Signature   Raw Flow Indicator          Temporal Delta (Δ) Indicator                        Target MTB Feature
+-----------------------------------------------------------------------------------------------------------------------
+Drop Landing        High flow_y (downward flow) Massive +Δ flow_y (sudden downward spike)           Drop / Jump
+Braking into Corner High div_abs_mean           Sharp -Δflow_mean (sudden deceleration)             Tight Switchback
+Rock Garden Entry   Moderate flow_mean          Sudden drop in Δ flow_coherence (smooth → chaotic)  Technical / Rocks
+Pumping / Flow      Cyclic flow_mean            Rhythmic oscillating Δ div_normalized_mean          Flow Trail
+"""
 V4_FEATURES = (
     ("magnitude", "flow_mean"),
     ("angle", "angle_change_abs"),
@@ -2099,6 +2147,29 @@ def process_video(
             "FFmpeg decoder failed.\n"
             + stderr
         )
+    
+    """
+    # 1. Collect dictionary features for every frame in a clip
+    clip_features = []
+    for frame_prev, frame_curr in video_frames:
+        flow, frame_dict, _ = calculate_flow_features(frame_prev, frame_curr, flow_width=112, flow_height_percent=100)
+        # Convert dictionary values to a list in a deterministic order
+        feature_vector = list(frame_dict.values())
+        clip_features.append(feature_vector)
+
+    # 2. Convert to a 2D NumPy array: Shape (T, F) e.g., (150, 65)
+    sequence_matrix = np.array(clip_features, dtype=np.float32)
+
+    # 3. Specify indices of columns where rate of change matters most
+    # (e.g., flow_mean, flow_y, flow_x, div_abs_mean, div_normalized_mean, curl_abs_mean, flow_coherence)
+    target_feature_indices = [0, 5, 6, 14, 21, 22, 12] 
+
+    # 4. Append derivatives: Shape becomes (150, 72)
+    sequence_matrix_with_deltas = append_temporal_derivatives(sequence_matrix, target_feature_indices)
+
+    # Save directly as a lightweight NumPy array file
+    np.save("clip_001_features.npy", sequence_matrix_with_deltas)
+    """
 
     if not interrupted:
         (
