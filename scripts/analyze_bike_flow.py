@@ -628,6 +628,50 @@ def calculate_flow_features(
     flow_std_x = float(np.std(u))
     flow_std_y = float(np.std(v))
 
+    # Resultant of the average flow vector.
+    #
+    # Unlike flow_coherence/flow_angle (which average directions on the
+    # unit circle), this uses the actual vector components. This is useful
+    # for patterns such as:
+    #
+    #     < < <   bike   > > >
+    #
+    # where the left/right motion cancels out and the average vector is
+    # close to zero. A coherent upward/downward flow, on the other hand,
+    # produces a large resultant.
+    flow_resultant = math.sqrt(
+        flow_x * flow_x +
+        flow_y * flow_y
+    )
+
+    # Direction of the average flow vector.
+    #
+    # Image coordinates are +x = right, +y = down:
+    #     right =   0 degrees
+    #     down  = +90 degrees
+    #     left  = 180 degrees
+    #     up    = 270 degrees
+    #
+    # This is deliberately based on (flow_x, flow_y), not on averaging
+    # angles directly.
+    flow_resultant_angle = math.degrees(
+        math.atan2(
+            flow_y,
+            flow_x,
+        )
+    )
+
+    if flow_resultant_angle < 0:
+        flow_resultant_angle += 360.0
+
+    # How much of the mean flow magnitude survives directional
+    # cancellation. This is in [0, 1] in normal numerical conditions.
+    flow_resultant_ratio = (
+        flow_resultant / flow_mean
+        if flow_mean > 1e-9
+        else 0.0
+    )
+
     # Circular directional coherence:
     # length of the mean unit direction vector.
     angle_rad = np.deg2rad(angle)
@@ -694,6 +738,9 @@ def calculate_flow_features(
         "flow_y": flow_y,
         "flow_std_x": flow_std_x,
         "flow_std_y": flow_std_y,
+        "flow_resultant": flow_resultant,
+        "flow_resultant_angle": flow_resultant_angle,
+        "flow_resultant_ratio": flow_resultant_ratio,
         "flow_coherence": flow_coherence,
         "flow_angle": flow_angle,
 
@@ -977,6 +1024,9 @@ def get_csv_fieldnames():
         "flow_y",
         "flow_std_x",
         "flow_std_y",
+        "flow_resultant",
+        "flow_resultant_angle",
+        "flow_resultant_ratio",
         "flow_coherence",
         "flow_angle",
 
