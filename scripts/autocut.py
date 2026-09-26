@@ -804,6 +804,7 @@ def extract_clips(
     videos_dir,
     temp_dir,
     aspect_ratio="landscape",
+    verbose=False,
 ):
     """Extract individual video clips."""
 
@@ -886,6 +887,8 @@ def extract_clips(
         subprocess.run(
             cmd,
             check=True,
+            stdout=None if verbose else subprocess.DEVNULL,
+            stderr=None if verbose else subprocess.DEVNULL,
         )
 
         clip_files.append(output_file)
@@ -896,6 +899,7 @@ def extract_clips(
 def concatenate_clips(
     clip_files,
     output_file,
+    verbose=False,
 ):
     """Concatenate MPEG-TS clips without re-encoding."""
 
@@ -930,6 +934,8 @@ def concatenate_clips(
     subprocess.run(
         cmd,
         check=True,
+        stdout=None if verbose else subprocess.DEVNULL,
+        stderr=None if verbose else subprocess.DEVNULL,
     )
 
     concat_file.unlink(
@@ -942,6 +948,7 @@ def add_music_with_fade(
     music_file,
     output_file,
     total_duration,
+    verbose=False,
 ):
     """Add music and fade it out at the end."""
 
@@ -985,6 +992,8 @@ def add_music_with_fade(
     subprocess.run(
         cmd,
         check=True,
+        stdout=None if verbose else subprocess.DEVNULL,
+        stderr=None if verbose else subprocess.DEVNULL,
     )
 
 
@@ -1049,6 +1058,13 @@ def main():
         type=float,
         default=10.0,
         help="Maximum clip duration. 0 = unlimited.",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show FFmpeg console output.",
     )
 
     args = parser.parse_args()
@@ -1178,6 +1194,7 @@ def main():
             videos_dir,
             temp_dir,
             aspect_ratio=args.aspect_ratio,
+            verbose=args.verbose,
         )
 
         if not clip_files:
@@ -1200,6 +1217,7 @@ def main():
         concatenate_clips(
             clip_files,
             temp_video,
+            verbose=args.verbose,
         )
 
         # Recalculate actual duration from the selected clips.
@@ -1236,6 +1254,7 @@ def main():
             music_file,
             output_file,
             actual_duration,
+            verbose=args.verbose,
         )
 
     print()
