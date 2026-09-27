@@ -402,4 +402,190 @@ def write_manifest(path: Path, manifest: list[dict]) -> None:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(manifest)
+def print_annotation_audit(annotations: list[Annotation]) -> None:
+    print()
+    print("=" * 90)
+    print("ANNOTATION AUDIT")
+    print("=" * 90)
 
+    for i, ann in enumerate(annotations, start=1):
+        role = (
+            "+".join(ann.categories)
+            if ann.categories
+            else ("negative" if ann.mtb <= 2 else "ignored")
+        )
+
+        print(
+            f"{i:2d}  {ann.start:7.2f}-{ann.end:7.2f}  "
+            f"MTB={ann.mtb}  Video={ann.video}  "
+            f"role={role:14s}  {ann.remarks}"
+        )
+
+
+def print_dataset_preview(
+    manifest: list[dict],
+    y: np.ndarray,
+    max_rows: int,
+) -> None:
+    print()
+    print("=" * 90)
+    print("GENERATED TRAINING EXAMPLES")
+    print("=" * 90)
+
+    header = (
+        "id    start     end    "
+        "drop rock_garden switchback stairs technical_climb   category"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for row, labels in zip(manifest[:max_rows], y[:max_rows]):
+        values = " ".join(f"{int(v):4d}" for v in labels)
+        print(
+            f"{row['example_id']:3d}  "
+            f"{row['start']:7.2f}  "
+            f"{row['end']:7.2f}  "
+            f"{values}    "
+            f"{row['category']}"
+        )
+
+    if len(manifest) > max_rows:
+        print(f"... {len(manifest) - max_rows} more examples")
+
+
+def print_summary(manifest: list[dict], y: np.ndarray) -> None:
+    print()
+    print("=" * 90)
+    print("DATASET SUMMARY")
+    print("=" * 90)
+
+    print(f"Examples:       {len(manifest)}")
+    print(f"Window samples: {y.shape[0]} x {y.shape[1]} labels")
+
+    for i, label in enumerate(LABELS):
+        positive = int(np.sum(y[:, i] == 1))
+        print(f"  {label:16s}: {positive:4d} positive")
+
+    negatives = int(np.sum(np.all(y == 0, axis=1)))
+    print(f"  {'all-zero negative':16s}: {negatives:4d}")
+
+    print()
+    print("By annotation:")
+    counts: dict[int, int] = {}
+    for row in manifest:
+        counts[row["annotation_id"]] = counts.get(row["annotation_id"], 0) + 1
+
+    for annotation_id, count in counts.items():
+        print(f"  annotation {annotation_id:2d}: {count:4d} windows")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build the five-class MTB temporal NN dataset."
+    )
+    parser.add_argument(
+        "--flow-csv",
+        type=Path,
+        required=True,
+        help="Optical-flow CSV produced by analyze_bike_flow.py",
+    )
+    parser.add_argument(
+        "--annotations",
+        type=Path,
+        default=Path("data/annotations/Mentorella.txt"),
+        help="Manual annotation file",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("data/datasets"),
+        help="Directory for generated dataset files",
+    )
+    parser.add_argument(
+        "--window",
+        type=float,
+        default=DEFAULT_WINDOW,
+        help="Temporal window in seconds (default: 4)",
+    )
+    parser.add_argument(
+        "--stride",
+        type=float,
+        default=DEFAULT_STRIDE,
+        help="Window stride in seconds (default: 2)",
+    )
+    parser.add_argument(
+        "--dt-tolerance",
+        type=float,
+        default=DEFAULT_DT_TOLERANCE,
+        help="Maximum relative sampling deviation before warning",
+    )
+    parser.add_argument(
+        "--min-overlap",
+        type=float,
+        default=0.50,
+        help="Minimum fraction of each window overlapping an annotation (default: 0.50)",
+    )
+    parser.add_argument(
+        "--preview",
+        type=int,
+        default=40,
+        help="Number of generated examples to print (default: 40)",
+    )
+
+    args = parser.parse_args()
+
+    video_path, annotations = load_annotations(args.annotations)
+    timestamps, feature_names, x = load_flow_csv(args.flow_csv)
+
+    median_dt = check_sampling(timestamps, args.dt_tolerance)
+
+    X, y, manifest = make_windows(
+        timestamps,
+        x,
+        annotations,
+        args.window,
+        args.stride,
+        args.min_overlap,
+    )
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = args.annotations.stem.lower()
+
+    manifest_path = args.output_dir / f"{stem}_dataset_manifest.csv"
+    npz_path = args.output_dir / f"{stem}_dataset.npz"
+
+    write_manifest(manifest_path, manifest)
+
+    np.savez_compressed(
+        npz_path,
+        X=X,
+        y=y,
+        timestamps=np.asarray(timestamps, dtype=np.float64),
+        feature_names=np.asarray(feature_names),
+        labels=np.asarray(LABELS),
+    )
+
+    print(f"Annotation video: {video_path}")
+    print(f"Flow CSV:         {args.flow_csv}")
+    print(f"Flow rows:        {len(timestamps)}")
+    print(f"Features/row:     {len(feature_names)}")
+    print(f"Median dt:        {median_dt:.6f}s")
+    print(f"Window:           {args.window:.2f}s")
+    print(f"Stride:           {args.stride:.2f}s")
+    print(f"Output X shape:   {X.shape}")
+    print(f"Output y shape:   {y.shape}")
+
+    print_annotation_audit(annotations)
+    print_dataset_preview(manifest, y, args.preview)
+    print_summary(manifest, y)
+
+    print()
+    print(f"Manifest: {manifest_path}")
+    print(f"Dataset:  {npz_path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
