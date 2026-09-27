@@ -187,10 +187,16 @@ def load_flow_csv(path: Path) -> tuple[list[float], list[str], np.ndarray]:
 
         fields = [name.strip() for name in reader.fieldnames]
 
-        if "timestamp" not in fields:
-            raise ValueError(f"{path}: missing timestamp column")
+        # Flow CSVs produced by analyze_bike_flow.py use "time".
+        # Accept "timestamp" only as a compatibility alias for older/external CSVs.
+        if "time" in fields:
+            time_field = "time"
+        elif "timestamp" in fields:
+            time_field = "timestamp"
+        else:
+            raise ValueError(f"{path}: missing time column")
 
-        feature_names = [name for name in fields if name != "timestamp"]
+        feature_names = [name for name in fields if name != time_field]
 
         if not feature_names:
             raise ValueError(f"{path}: no feature columns")
@@ -200,7 +206,7 @@ def load_flow_csv(path: Path) -> tuple[list[float], list[str], np.ndarray]:
 
         for line_no, raw in enumerate(reader, start=2):
             try:
-                timestamp = float(raw["timestamp"])
+                timestamp = float(raw[time_field])
                 values = [float(raw[name]) for name in feature_names]
             except (TypeError, ValueError) as exc:
                 raise ValueError(
