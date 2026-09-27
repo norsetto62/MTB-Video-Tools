@@ -730,26 +730,14 @@ def calculate_flow_features(
     # Adding a small epsilon (1e-6) prevents Division-By-Zero when stationary
     eps = 1e-6
 
-    # Unitless expansion rate: How fast the field expands relative to speed
+    # Normalize by mean flow magnitude. The result is NOT dimensionless:
+    # divergence/curl have units of 1/frame, while flow_mean has units of
+    # pixels/frame, so the normalized quantities have units of 1/pixel.
+    # The purpose is to describe spatial expansion/rotation relative to the
+    # amount of motion, so the feature is less directly tied to flow speed.
     div_normalized_mean = div_abs_mean / (flow_mean + eps)
-    
-    # Unitless rotational rate: How strong turns/twists are relative to speed
+
     curl_normalized_mean = curl_abs_mean / (flow_mean + eps)
-
-    #----------------------------------------------------------------
-    # Time derivatives
-    #----------------------------------------------------------------
-    delta_flow_x = flow_x - old_flow_x
-    delta_flow_y = flow_y - old_flow_y
-    delta_flow_mean = flow_mean - old_flow_mean
-    delta_flow_coherence = flow_coherence - old_flow_coherence
-    delta_div_mean = div_normalized_mean - old_div_normalized_mean
-
-    old_flow_x = flow_x
-    old_flow_y = flow_y
-    old_flow_mean = flow_mean
-    old_flow_coherence = flow_coherence
-    old_div_normalized_mean = div_normalized_mean
 
     # ---------------------------------------------------------------
     # 3x3 spatial grid
@@ -1068,14 +1056,14 @@ def get_csv_fieldnames():
         "angle_change_abs",
 
         "div_abs_mean",
-        "div_norm_mean",
+        "div_normalized_mean",
         "div_abs_p90",
         "div_std",
         "div_pos_fraction",
         "div_neg_fraction",
 
         "curl_abs_mean",
-        "curl_norm_mean",
+        "curl_normalized_mean",
         "curl_abs_p90",
         "curl_std",
 
@@ -1197,14 +1185,26 @@ Braking into Corner High div_abs_mean           Sharp -Δflow_mean (sudden decel
 Rock Garden Entry   Moderate flow_mean          Sudden drop in Δ flow_coherence (smooth → chaotic)  Technical / Rocks
 Pumping / Flow      Cyclic flow_mean            Rhythmic oscillating Δ div_normalized_mean          Flow Trail
 """
+# Each entry is:
+#     (display name, CSV column, direction)
+#
+# direction controls which side of the temporal change is interesting:
+#   "high"     -> unusually high value
+#   "positive" -> unusually positive change
+#   "negative" -> unusually negative change
+#   "absolute" -> unusually large change in either direction
+#
+# This matters because a generic "positive robust z-score" cannot detect
+# hypotheses such as braking (negative delta flow) or loss of coherence
+# (negative delta coherence).
 V5_FEATURES = (
-    ("flow", "flow_mean"),
-    ("delta flow", "delta_flow_mean"),
-    ("vertical flow", "flow_y"),
-    ("delta vertical flow", "delta_flow_y"),
-    ("divergence", "div_abs_mean"),
-    ("delta divergence","delta_div_mean"),
-    ("delta coherence", "delta_flow_coherence"),
+    ("flow", "flow_mean", "high"),
+    ("delta flow", "delta_flow_mean", "negative"),
+    ("vertical flow", "flow_y", "high"),
+    ("delta vertical flow", "delta_flow_y", "positive"),
+    ("divergence", "div_abs_mean", "high"),
+    ("delta divergence", "delta_div_mean", "absolute"),
+    ("delta coherence", "delta_flow_coherence", "negative"),
 )
 
 
@@ -1399,7 +1399,7 @@ def generate_candidate_outputs(
 
             parsed = {"time": time_value}
 
-            for _, column in V5_FEATURES:
+            for _, column, _ in V5_FEATURES:
                 try:
                     value = float(row[column])
                 except (KeyError, TypeError, ValueError):
@@ -1443,7 +1443,7 @@ def generate_candidate_outputs(
     feature_scores = {}
     feature_regions = {}
 
-    for feature_name, column in V5_FEATURES:
+    for feature_name, column, direction in V5_FEATURES:
         values = np.asarray(
             [row[column] for row in rows],
             dtype=float,
@@ -1454,24 +1454,28 @@ def generate_candidate_outputs(
         if not np.any(finite):
             scores = np.zeros_like(values)
         else:
-            fill_value = float(
-                np.nanmedian(values)
-            )
-            values = np.where(
-                finite,
-                values,
-                fill_value,
-            )
+            fill_value = float(np.nanmedian(values))
+            values = np.where(finite, values, fill_value)
 
-            scores = _robust_zscore(
+            # First obtain the signed robust deviation from the local
+            # rolling-median baseline.
+            z = _robust_zscore(
                 values,
                 window_samples,
             )
 
-            scores = np.maximum(
-                scores,
-                0.0,
-            )
+            # Convert that signed deviation into the direction required
+            # by the V5 event hypothesis.
+            if direction == "high" or direction == "positive":
+                scores = np.maximum(z, 0.0)
+            elif direction == "negative":
+                scores = np.maximum(-z, 0.0)
+            elif direction == "absolute":
+                scores = np.abs(z)
+            else:
+                raise ValueError(
+                    f"Unknown V5 feature direction: {direction}"
+                )
 
         feature_scores[feature_name] = scores
 
@@ -1835,11 +1839,7 @@ def process_video(
     last_progress_time = 0.0
     flow_field = None
 
-    old_flow_x = 0.0
-    old_flow_y = 0.0
-    old_flow_mean = 0.0
-    old_flow_coherence = 0.0
-    old_div_normalized_mean = 0.0
+    previous_flow_features = None
 
     # ---------------------------------------------------------------
     # Main decode loop
@@ -1913,6 +1913,47 @@ def process_video(
                 )
 
                 flow_samples += 1
+
+                # Temporal deltas are differences between consecutive
+                # flow samples, not derivatives divided by elapsed time.
+                # Keep the state here rather than inside
+                # calculate_flow_features(), so the scope is explicit and
+                # the first sample has no artificial delta from zero.
+                if previous_flow_features is None:
+                    flow_features["delta_flow_x"] = 0.0
+                    flow_features["delta_flow_y"] = 0.0
+                    flow_features["delta_flow_mean"] = 0.0
+                    flow_features["delta_flow_coherence"] = 0.0
+                    flow_features["delta_div_mean"] = 0.0
+                else:
+                    flow_features["delta_flow_x"] = (
+                        flow_features["flow_x"]
+                        - previous_flow_features["flow_x"]
+                    )
+                    flow_features["delta_flow_y"] = (
+                        flow_features["flow_y"]
+                        - previous_flow_features["flow_y"]
+                    )
+                    flow_features["delta_flow_mean"] = (
+                        flow_features["flow_mean"]
+                        - previous_flow_features["flow_mean"]
+                    )
+                    flow_features["delta_flow_coherence"] = (
+                        flow_features["flow_coherence"]
+                        - previous_flow_features["flow_coherence"]
+                    )
+                    flow_features["delta_div_mean"] = (
+                        flow_features["div_normalized_mean"]
+                        - previous_flow_features["div_normalized_mean"]
+                    )
+
+                previous_flow_features = {
+                    "flow_x": flow_features["flow_x"],
+                    "flow_y": flow_features["flow_y"],
+                    "flow_mean": flow_features["flow_mean"],
+                    "flow_coherence": flow_features["flow_coherence"],
+                    "div_normalized_mean": flow_features["div_normalized_mean"],
+                }
 
                 # Circular angular change.
                 current_angle = float(
