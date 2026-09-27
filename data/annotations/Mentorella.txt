@@ -1,11 +1,30 @@
-                                                         Start    End   MTB   Video   Remarks
+                                                         Start	End	MTB	Video	Feature			Remarks
 D:\Prenestini\Mentorella\DJI_20250710113127_0012_D.MP4
-                                                         00:00   01:19   4      2     Start of track, rock gardens
-                                                         01:51   02:06   4      2     Tight, steep and rocky switchback
-                                                         04:44   05:14   4      2     Drops
-                                                         05:30   05:50   4      2     Rocky garden
-                                                         08:23   09:03   4      2     Rocky garden
-                                                         09:04   09:34   1      1     Pause
-                                                         09:35   14:35   2      1     Very slow technical passages with many pauses
-                                                         14:40   14:50   4      2     Drop
-                                                         14:51   15:51   2      1     Rocky outcrop but dismounted
+                                                         00:02	00:20	4	2	Rock garden		Track beginning
+							 00:35	00:40   4	2      	Rock Garden	
+							 00:50	01:00	5	2	Drop
+							 01:06	01:18	5	2	Drop + Turn		Tight
+                                                         01:51  02:06	4      	2    	Switchback	 	Tight, steep and rocky switchback
+							 02:17	02:27	3	3	Drop (Dismounted)
+							 03:08	03:17	2	2	Switchback		Tight
+							 03:25  03:32	2	2	Drop (Copied)
+							 03:36  03:46	3	2	Drop (Copied)
+							 03:54	04:24	2	2	Drops			Slow
+							 04:30	04:44   2       2	Drops			Slow
+                                                         04:44  05:00	2      	2     	Drops			Slow
+							 05:05	05:14	4	2	Rock garden + Drop
+                                                         05:30  05:50	4      	2     	Rock garden
+							 06:10	06:30	2	2	Rocky outcrop		Slow
+							 06:58	07:05	3	2	Switchback
+							 07:08	07:24	2	2	Switchback		Slow
+							 07:29	07:50	2	2	Switchback		Slow
+							 07:50	08:02	2	2	Switchback		Slow
+                                                         08:23  09:03	4      	2     	Rock garden
+                                                         09:04  09:34	1      	1     	Pause
+                                                         09:50  10:19	2      	2     	Drop (Dismounted)
+							 11:13	12:03	2	2	Drop (Dismounted)
+							 12:46	12:56	2	2	Switchback
+							 13:10	13:18	2	2	Switchback
+							 13:32	13:42	2	2	Switchback
+                                                         14:40  14:50	4      	2     	Drop (Copied)
+                                                         14:51  15:51	2      	2     	Rocky outcrop		Dismounted

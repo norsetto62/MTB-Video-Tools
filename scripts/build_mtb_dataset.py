@@ -247,7 +247,6 @@ def check_sampling(timestamps: list[float], tolerance: float) -> float:
 
     return median_dt
 
-
 def make_windows(
     timestamps: list[float],
     x: np.ndarray,
@@ -275,6 +274,15 @@ def make_windows(
     video_start = float(timestamp_array[0])
     video_end = float(timestamp_array[-1])
 
+    # Keep every temporal window at a fixed number of samples.
+    dt = float(np.median(np.diff(timestamp_array)))
+    n_window_samples = int(round(window / dt))
+
+    if n_window_samples < 2:
+        raise ValueError(
+            f"window={window:.3f}s is too short for flow sampling dt={dt:.6f}s"
+        )
+
     examples: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     manifest: list[dict] = []
@@ -285,13 +293,23 @@ def make_windows(
     while start + window <= video_end + 1e-9:
         end = start + window
 
-        mask = (
-            (timestamp_array >= start - 1e-9)
-            & (timestamp_array < end - 1e-9)
+        # Select exactly n_window_samples starting at the first flow sample
+        # at or after the requested window start.
+        first_index = int(
+            np.searchsorted(timestamp_array, start, side="left")
         )
-        indices = np.flatnonzero(mask)
+        indices = np.arange(
+            first_index,
+            first_index + n_window_samples,
+            dtype=np.int64,
+        )
 
-        if len(indices) >= 2:
+        # The selected samples must actually fit inside the requested window.
+        if (
+            len(indices) == n_window_samples
+            and indices[-1] < len(timestamp_array)
+            and timestamp_array[indices[-1]] < end + 1e-9
+        ):
             labels_vector = np.zeros(len(LABELS), dtype=np.float32)
             target_matches: list[tuple[int, Annotation, float]] = []
             negative_matches: list[tuple[int, Annotation, float]] = []
@@ -387,7 +405,6 @@ def make_windows(
         np.stack(labels).astype(np.float32),
         manifest,
     )
-
 
 def write_manifest(path: Path, manifest: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
