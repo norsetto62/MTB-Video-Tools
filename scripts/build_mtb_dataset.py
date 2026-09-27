@@ -475,7 +475,7 @@ def print_summary(manifest: list[dict], y: np.ndarray) -> None:
         counts[row["annotation_id"]] = counts.get(row["annotation_id"], 0) + 1
 
     for annotation_id, count in counts.items():
-        print(f"  annotation {annotation_id:2d}: {count:4d} windows")
+        print(f"  annotation {annotation_id:>2}: {count:4d} windows")
 
 
 def main() -> int:
