@@ -771,11 +771,6 @@ def calculate_flow_features(
         "curl_abs_p90": curl_abs_p90,
         "curl_std": curl_std,
 
-        "delta_flow_x": delta_flow_x,
-        "delta_flow_y": delta_flow_y,
-        "delta_flow_mean": delta_flow_mean,
-        "delta_flow_coherence": delta_flow_coherence,
-        "delta_div_mean": delta_div_mean,
     }
 
     height, width = magnitude.shape
