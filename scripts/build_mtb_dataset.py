@@ -90,20 +90,13 @@ def parse_time(value: str) -> float:
     raise ValueError(f"invalid time: {value!r}")
 
 
-def classify_remarks(remarks: str) -> str | None:
-    matches = [
+def classify_remarks(remarks: str) -> list[str]:
+    """Return all target classes explicitly mentioned in the remarks."""
+    return [
         label
         for label, pattern in CATEGORY_PATTERNS.items()
         if pattern.search(remarks)
     ]
-
-    if len(matches) > 1:
-        raise ValueError(
-            f"annotation matches multiple target classes: "
-            f"{matches!r}: {remarks!r}"
-        )
-
-    return matches[0] if matches else None
 
 
 def load_annotations(path: Path) -> tuple[Path, list[Annotation]]:
