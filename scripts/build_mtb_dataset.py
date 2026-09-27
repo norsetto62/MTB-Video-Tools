@@ -390,4 +390,4 @@ def make_windows(
     )
 
 
-def write_manifestundefined
+def write_manifest
