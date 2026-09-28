@@ -757,7 +757,7 @@ def audit_dataset(
         # put near-identical temporal samples in both sets.
         adjacent_same_label = 0
         for left, right in zip(order[:-1], order[1:]):
-            if np.any(y[left] & y[right]):
+            if np.any((y[left] == 1) & (y[right] == 1)):
                 adjacent_same_label += 1
         print(
             f"  Adjacent pairs sharing at least one label: "
@@ -800,6 +800,67 @@ def audit_dataset(
 
     print()
     print("AUDIT COMPLETE")
+
+def write_example_audit(
+    path: Path,
+    manifest: list[dict],
+    y: np.ndarray,
+    annotations: list[Annotation],
+    stride: float,
+    min_overlap: float,
+) -> None:
+    """Write one inspectable row per generated example, including audit flags."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    annotation_lookup = {
+        str(i): ann for i, ann in enumerate(annotations, start=1)
+    }
+
+    fields = [
+        "example_id", "start", "end", "requested_start", "requested_end",
+        "duration", "annotation_id", "mtb", "video", "category", "remarks",
+        "overlap_fraction", "n_samples", "labels", "is_negative",
+        "near_threshold", "near_annotation_boundary", "suspicious",
+    ]
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+
+        for i, row in enumerate(manifest):
+            annotation_ids = row["annotation_id"].split(";")
+            fractions = [float(v) for v in row["overlap_fraction"].split(";")]
+            requested_start = float(row["requested_start"])
+            requested_end = float(row["requested_end"])
+
+            near_threshold = any(
+                abs(fraction - min_overlap) <= 0.03
+                for fraction in fractions
+            )
+            near_boundary = False
+            for annotation_id in annotation_ids:
+                ann = annotation_lookup[annotation_id]
+                if (
+                    abs(requested_start - ann.start) <= stride + 1e-9
+                    or abs(requested_end - ann.end) <= stride + 1e-9
+                ):
+                    near_boundary = True
+                    break
+
+            suspicious = near_threshold or near_boundary or ";" in row["annotation_id"]
+            labels = "+".join(
+                label for j, label in enumerate(LABELS) if y[i, j] == 1
+            )
+
+            out = dict(row)
+            out.update({
+                "labels": labels,
+                "is_negative": int(np.all(y[i] == 0)),
+                "near_threshold": int(near_threshold),
+                "near_annotation_boundary": int(near_boundary),
+                "suspicious": int(suspicious),
+            })
+            writer.writerow(out)
+
 
 def print_dataset_preview(
     manifest: list[dict],
@@ -932,6 +993,7 @@ def main() -> int:
     stem = args.annotations.stem.lower()
 
     manifest_path = args.output_dir / f"{stem}_dataset_manifest.csv"
+    audit_csv_path = args.output_dir / f"{stem}_dataset_audit.csv"
     npz_path = args.output_dir / f"{stem}_dataset.npz"
 
     write_manifest(manifest_path, manifest)
@@ -964,11 +1026,20 @@ def main() -> int:
         args.stride,
         args.min_overlap,
     )
+    write_example_audit(
+        audit_csv_path,
+        manifest,
+        y,
+        annotations,
+        args.stride,
+        args.min_overlap,
+    )
     print_dataset_preview(manifest, y, args.preview)
     print_summary(manifest, y)
 
     print()
     print(f"Manifest: {manifest_path}")
+    print(f"Audit CSV: {audit_csv_path}")
     print(f"Dataset:  {npz_path}")
 
     return 0
