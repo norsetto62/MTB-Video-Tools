@@ -13,8 +13,9 @@ Outputs:
 
 The generator deliberately does NOT treat unlabeled video as negative.
 Only explicit annotated intervals are used:
-    * target-feature annotations -> positive labels
-    * explicit low-interest annotations (MTB <= 2) -> all-zero negatives
+    * valid target-feature annotations -> positive labels
+    * explicit low-interest non-target annotations (MTB <= 2) -> all-zero negatives
+    * annotations marked "Slow" or "Dismounted" -> excluded from training
 
 A window is accepted when at least 50% of its duration overlaps an explicit
 annotation. Target-feature annotations contribute independent labels, so an
@@ -25,6 +26,9 @@ The five labels are independent:
 
 Category names are inferred from annotation remarks using explicit keyword
 rules. Unknown remarks are reported and are not silently assigned a class.
+Annotations marked "Slow" or "Dismounted" are excluded entirely: they are
+not used as positives or negatives because their motion characteristics may
+differ from the real riding events the model is intended to detect.
 """
 
 from __future__ import annotations
@@ -51,6 +55,11 @@ DEFAULT_STRIDE = 2.0
 DEFAULT_DT_TOLERANCE = 0.15
 
 # Explicit mapping from the current annotation vocabulary to model classes.
+EXCLUDE_PATTERNS = {
+    "slow": re.compile(r"\bslow\b", re.IGNORECASE),
+    "dismounted": re.compile(r"\bdismounted\b", re.IGNORECASE),
+}
+
 CATEGORY_PATTERNS = {
     "drop": re.compile(r"\bdrops?\b", re.IGNORECASE),
     "rock_garden": re.compile(
@@ -72,6 +81,7 @@ class Annotation:
     video: int
     remarks: str
     categories: tuple[str, ...]
+    excluded: bool
 
 
 def parse_time(value: str) -> float:
@@ -97,6 +107,11 @@ def classify_remarks(remarks: str) -> list[str]:
         for label, pattern in CATEGORY_PATTERNS.items()
         if pattern.search(remarks)
     ]
+
+
+def annotation_is_excluded(remarks: str) -> bool:
+    """Return True for events unsuitable for feature-model training."""
+    return any(pattern.search(remarks) for pattern in EXCLUDE_PATTERNS.values())
 
 
 def load_annotations(path: Path) -> tuple[Path, list[Annotation]]:
@@ -159,6 +174,7 @@ def load_annotations(path: Path) -> tuple[Path, list[Annotation]]:
             )
 
         categories = classify_remarks(remarks)
+        excluded = annotation_is_excluded(remarks)
 
         annotations.append(
             Annotation(
@@ -168,6 +184,7 @@ def load_annotations(path: Path) -> tuple[Path, list[Annotation]]:
                 video=video,
                 remarks=remarks,
                 categories=categories,
+                excluded=excluded,
             )
         )
 
@@ -261,9 +278,10 @@ def make_windows(
     contribute independent positive labels, so multi-feature annotations
     such as "Rock garden + Drop" become multi-hot targets.
 
-    Explicit low-interest annotations (MTB <= 2) produce all-zero negatives
-    when they cover at least min_overlap of the window and no target-feature
-    annotation covers the window.
+    Explicit low-interest non-target annotations (MTB <= 2) produce all-zero
+    negatives when they cover at least min_overlap of the window and no
+    target-feature annotation covers the window. Annotations marked Slow or
+    Dismounted are excluded entirely and never produce training examples.
     """
     if window <= 0 or stride <= 0:
         raise ValueError("window and stride must be > 0")
@@ -315,6 +333,11 @@ def make_windows(
             negative_matches: list[tuple[int, Annotation, float]] = []
 
             for ann_index, ann in enumerate(annotations, start=1):
+                # Slow/Dismounted occurrences are deliberately excluded from
+                # both positive and negative training data.
+                if ann.excluded:
+                    continue
+
                 overlap = max(
                     0.0,
                     min(end, ann.end) - max(start, ann.start),
@@ -426,7 +449,9 @@ def print_annotation_audit(annotations: list[Annotation]) -> None:
 
     for i, ann in enumerate(annotations, start=1):
         role = (
-            "+".join(ann.categories)
+            "excluded"
+            if ann.excluded
+            else "+".join(ann.categories)
             if ann.categories
             else ("negative" if ann.mtb <= 2 else "ignored")
         )
@@ -496,6 +521,21 @@ def audit_dataset(
             f"    {int(annotation_id):2d}: {annotation_counts[annotation_id]:3d} "
             f"windows  ({ann.start:.2f}-{ann.end:.2f}s, "
             f"MTB={ann.mtb}, {ann.remarks})"
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Label correctness
+    # ------------------------------------------------------------------
+    excluded_ids = [
+        i for i, ann in enumerate(annotations, start=1) if ann.excluded
+    ]
+    print()
+    print(f"  Excluded annotations: {len(excluded_ids)}")
+    for annotation_id in excluded_ids:
+        ann = annotation_lookup[str(annotation_id)]
+        print(
+            f"    annotation {annotation_id:2d}: {ann.start:.2f}-{ann.end:.2f}s  "
+            f"{ann.remarks}"
         )
 
     # ------------------------------------------------------------------
@@ -656,7 +696,7 @@ def audit_dataset(
             )
         for annotation_id in annotation_ids:
             ann = annotation_lookup[annotation_id]
-            if ann.categories or ann.mtb > 2:
+            if ann.excluded or ann.categories or ann.mtb > 2:
                 invalid_negative_rows.append(
                     f"id {row['example_id']}: annotation {annotation_id} "
                     f"is not an explicit MTB<=2 non-target annotation"
