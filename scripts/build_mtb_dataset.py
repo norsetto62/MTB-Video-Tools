@@ -470,7 +470,7 @@ def audit_dataset(
     print(f"  Total examples: {len(manifest)}")
     print(f"  Window: {window:.2f}s   Stride: {stride:.2f}s")
     print(f"  Minimum annotation overlap: {min_overlap:.0%}")
-    print(f"  Fixed samples/example: {y.shape[1] and int(manifest[0]['n_samples'])}")
+    print(f"  Samples/example: {int(manifest[0]['n_samples'])}")
 
     for i, label in enumerate(LABELS):
         count = int(np.sum(y[:, i] == 1))
@@ -521,7 +521,7 @@ def audit_dataset(
                 label for j, label in enumerate(LABELS) if y[i, j] == 1
             ]
             print(
-                f"    id {row['example_id']:3s} "
+                f"    id {row['example_id']:3d} "
                 f"{float(row['start']):7.2f}-{float(row['end']):7.2f}s: "
                 f"{'+'.join(labels)}  "
                 f"annotations={row['annotation_id']}"
@@ -532,7 +532,7 @@ def audit_dataset(
         for i in multi_annotation_ids:
             row = manifest[i]
             print(
-                f"    id {row['example_id']:3s} "
+                f"    id {row['example_id']:3d} "
                 f"{float(row['start']):7.2f}-{float(row['end']):7.2f}s: "
                 f"annotations={row['annotation_id']} "
                 f"category={row['category']}"
