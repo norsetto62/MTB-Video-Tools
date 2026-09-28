@@ -438,6 +438,369 @@ def print_annotation_audit(annotations: list[Annotation]) -> None:
         )
 
 
+
+def audit_dataset(
+    annotations: list[Annotation],
+    manifest: list[dict],
+    y: np.ndarray,
+    window: float,
+    stride: float,
+    min_overlap: float,
+) -> None:
+    """Audit generated examples before they are used for NN training.
+
+    This is deliberately human-readable rather than a full row dump. It checks
+    coverage, label consistency, annotation boundaries, negative provenance,
+    MTB-score distributions, temporal redundancy, and suspicious edge cases.
+    """
+    print()
+    print("=" * 90)
+    print("DATASET AUDIT")
+    print("=" * 90)
+
+    annotation_lookup = {
+        str(i): ann for i, ann in enumerate(annotations, start=1)
+    }
+
+    # ------------------------------------------------------------------
+    # 1. Coverage and class counts
+    # ------------------------------------------------------------------
+    print()
+    print("1. COVERAGE")
+    print(f"  Total examples: {len(manifest)}")
+    print(f"  Window: {window:.2f}s   Stride: {stride:.2f}s")
+    print(f"  Minimum annotation overlap: {min_overlap:.0%}")
+    print(f"  Fixed samples/example: {y.shape[1] and int(manifest[0]['n_samples'])}")
+
+    for i, label in enumerate(LABELS):
+        count = int(np.sum(y[:, i] == 1))
+        print(f"  {label:16s}: {count:4d} positive")
+
+    negative_count = int(np.sum(np.all(y == 0, axis=1)))
+    print(f"  {'all-zero negative':16s}: {negative_count:4d}")
+
+    annotation_counts: dict[str, int] = {}
+    for row in manifest:
+        for annotation_id in row["annotation_id"].split(";"):
+            annotation_counts[annotation_id] = (
+                annotation_counts.get(annotation_id, 0) + 1
+            )
+
+    print()
+    print("  Windows per source annotation:")
+    for annotation_id in sorted(
+        annotation_counts, key=lambda value: int(value)
+    ):
+        ann = annotation_lookup[annotation_id]
+        print(
+            f"    {int(annotation_id):2d}: {annotation_counts[annotation_id]:3d} "
+            f"windows  ({ann.start:.2f}-{ann.end:.2f}s, "
+            f"MTB={ann.mtb}, {ann.remarks})"
+        )
+
+    # ------------------------------------------------------------------
+    # 2. Label correctness
+    # ------------------------------------------------------------------
+    print()
+    print("2. LABEL CORRECTNESS")
+
+    multi_label_ids = [
+        i for i, row in enumerate(manifest)
+        if int(np.sum(y[i])) > 1
+    ]
+    multi_annotation_ids = [
+        i for i, row in enumerate(manifest)
+        if ";" in row["annotation_id"]
+    ]
+
+    print(f"  Multi-label examples: {len(multi_label_ids)}")
+    if multi_label_ids:
+        for i in multi_label_ids:
+            row = manifest[i]
+            labels = [
+                label for j, label in enumerate(LABELS) if y[i, j] == 1
+            ]
+            print(
+                f"    id {row['example_id']:3s} "
+                f"{float(row['start']):7.2f}-{float(row['end']):7.2f}s: "
+                f"{'+'.join(labels)}  "
+                f"annotations={row['annotation_id']}"
+            )
+
+    print(f"  Multiple source annotations: {len(multi_annotation_ids)}")
+    if multi_annotation_ids:
+        for i in multi_annotation_ids:
+            row = manifest[i]
+            print(
+                f"    id {row['example_id']:3s} "
+                f"{float(row['start']):7.2f}-{float(row['end']):7.2f}s: "
+                f"annotations={row['annotation_id']} "
+                f"category={row['category']}"
+            )
+
+    consistency_errors: list[str] = []
+    for i, (row, labels) in enumerate(zip(manifest, y)):
+        expected = [
+            label for j, label in enumerate(LABELS) if labels[j] == 1
+        ]
+        if all(v == 0 for v in labels):
+            if row["category"] != "negative":
+                consistency_errors.append(
+                    f"id {row['example_id']}: all-zero target but category={row['category']}"
+                )
+        elif row["category"] != "+".join(expected):
+            consistency_errors.append(
+                f"id {row['example_id']}: y={'+'.join(expected)} "
+                f"but category={row['category']}"
+            )
+
+    print(f"  Internal label/category contradictions: {len(consistency_errors)}")
+    for error in consistency_errors[:20]:
+        print(f"    {error}")
+    if len(consistency_errors) > 20:
+        print(f"    ... {len(consistency_errors) - 20} more")
+
+    # ------------------------------------------------------------------
+    # 3. Boundary behavior
+    # ------------------------------------------------------------------
+    print()
+    print("3. BOUNDARY BEHAVIOR")
+
+    boundary_rows: list[tuple[int, str]] = []
+    overlap_values: list[float] = []
+
+    for row in manifest:
+        fractions = [
+            float(value) for value in row["overlap_fraction"].split(";")
+        ]
+        overlap_values.extend(fractions)
+
+        for annotation_id, fraction in zip(
+            row["annotation_id"].split(";"), fractions
+        ):
+            ann = annotation_lookup[annotation_id]
+            start = float(row["requested_start"])
+            end = float(row["requested_end"])
+
+            distance_to_start = abs(start - ann.start)
+            distance_to_end = abs(end - ann.end)
+
+            if distance_to_start <= stride + 1e-9:
+                boundary_rows.append(
+                    (int(row["example_id"]),
+                     f"near start of annotation {annotation_id} "
+                     f"(window {start:.2f}-{end:.2f}, overlap={fraction:.3f})")
+                )
+            if distance_to_end <= stride + 1e-9:
+                boundary_rows.append(
+                    (int(row["example_id"]),
+                     f"near end of annotation {annotation_id} "
+                     f"(window {start:.2f}-{end:.2f}, overlap={fraction:.3f})")
+                )
+
+    below_threshold = [
+        (row["example_id"], row["overlap_fraction"])
+        for row in manifest
+        if any(
+            float(value) + 1e-12 < min_overlap
+            for value in row["overlap_fraction"].split(";")
+        )
+    ]
+
+    near_threshold = [
+        (row["example_id"], row["overlap_fraction"])
+        for row in manifest
+        if any(
+            abs(float(value) - min_overlap) <= 0.03
+            for value in row["overlap_fraction"].split(";")
+        )
+    ]
+
+    print(f"  Recorded annotation overlaps: {len(overlap_values)}")
+    if overlap_values:
+        print(
+            f"  Overlap range: {min(overlap_values):.3f} .. "
+            f"{max(overlap_values):.3f}"
+        )
+    print(f"  Windows below {min_overlap:.0%}: {len(below_threshold)}")
+    print(f"  Windows near threshold (+/- 3 percentage points): {len(near_threshold)}")
+    print(f"  Boundary-near examples: {len(set(i for i, _ in boundary_rows))}")
+
+    if below_threshold:
+        for example_id, fractions in below_threshold[:20]:
+            print(f"    ERROR: id {example_id}: overlap={fractions}")
+
+    print("  Boundary examples:")
+    for example_id, description in boundary_rows[:30]:
+        print(f"    id {example_id:3d}: {description}")
+    if len(boundary_rows) > 30:
+        print(f"    ... {len(boundary_rows) - 30} more")
+
+    # ------------------------------------------------------------------
+    # 4. Negative provenance
+    # ------------------------------------------------------------------
+    print()
+    print("4. NEGATIVE PROVENANCE")
+
+    negative_rows = [
+        (row, i) for i, row in enumerate(manifest)
+        if np.all(y[i] == 0)
+    ]
+    invalid_negative_rows: list[str] = []
+
+    for row, _ in negative_rows:
+        annotation_ids = row["annotation_id"].split(";")
+        if row["category"] != "negative":
+            invalid_negative_rows.append(
+                f"id {row['example_id']}: category={row['category']}"
+            )
+        for annotation_id in annotation_ids:
+            ann = annotation_lookup[annotation_id]
+            if ann.categories or ann.mtb > 2:
+                invalid_negative_rows.append(
+                    f"id {row['example_id']}: annotation {annotation_id} "
+                    f"is not an explicit MTB<=2 non-target annotation"
+                )
+
+    print(f"  All-zero examples: {len(negative_rows)}")
+    print(
+        f"  Valid explicit-negative sources: "
+        f"{len(set(row['annotation_id'] for row, _ in negative_rows))}"
+    )
+    print(f"  Invalid negative provenance: {len(invalid_negative_rows)}")
+
+    print("  Negative source annotations:")
+    negative_source_ids = sorted(
+        {
+            annotation_id
+            for row, _ in negative_rows
+            for annotation_id in row["annotation_id"].split(";")
+        },
+        key=lambda value: int(value),
+    )
+    for annotation_id in negative_source_ids:
+        ann = annotation_lookup[annotation_id]
+        count = sum(
+            1 for row, _ in negative_rows
+            if annotation_id in row["annotation_id"].split(";")
+        )
+        print(
+            f"    annotation {int(annotation_id):2d}: {count:3d} windows  "
+            f"MTB={ann.mtb}  {ann.start:.2f}-{ann.end:.2f}s  {ann.remarks}"
+        )
+
+    # ------------------------------------------------------------------
+    # 5. MTB-score distribution by feature
+    # ------------------------------------------------------------------
+    print()
+    print("5. MTB SCORE DISTRIBUTION BY FEATURE")
+
+    for label_index, label in enumerate(LABELS):
+        scores: list[int] = []
+        for i, row in enumerate(manifest):
+            if y[i, label_index] != 1:
+                continue
+            for annotation_id in row["annotation_id"].split(";"):
+                ann = annotation_lookup[annotation_id]
+                if label in ann.categories:
+                    scores.append(ann.mtb)
+
+        if scores:
+            values, counts = np.unique(scores, return_counts=True)
+            distribution = ", ".join(
+                f"{int(value)}:{int(count)}" for value, count in zip(values, counts)
+            )
+            print(
+                f"  {label:16s}: n={len(scores):3d}  "
+                f"mean={np.mean(scores):.2f}  "
+                f"range={min(scores)}..{max(scores)}  "
+                f"[{distribution}]"
+            )
+        else:
+            print(f"  {label:16s}: no positive examples")
+
+    # ------------------------------------------------------------------
+    # 6. Temporal redundancy / leakage
+    # ------------------------------------------------------------------
+    print()
+    print("6. TEMPORAL REDUNDANCY / LEAKAGE")
+
+    starts = np.asarray(
+        [float(row["requested_start"]) for row in manifest],
+        dtype=np.float64,
+    )
+    ends = starts + window
+
+    adjacent_overlap = max(0.0, window - stride) / window
+    print(
+        f"  Adjacent grid windows overlap by {adjacent_overlap:.0%} "
+        f"when both are present."
+    )
+
+    if len(starts) > 1:
+        order = np.argsort(starts)
+        sorted_starts = starts[order]
+        sorted_ends = ends[order]
+        overlaps = np.maximum(
+            0.0,
+            np.minimum(sorted_ends[:-1], sorted_ends[1:])
+            - np.maximum(sorted_starts[:-1], sorted_starts[1:]),
+        )
+        print(
+            f"  Adjacent generated-example overlap: "
+            f"{np.mean(overlaps > 0):.1%} of pairs have temporal overlap; "
+            f"mean overlap={np.mean(overlaps):.2f}s"
+        )
+
+        # Same source annotation with overlapping windows is expected. The
+        # important warning is that random train/validation splitting would
+        # put near-identical temporal samples in both sets.
+        adjacent_same_label = 0
+        for left, right in zip(order[:-1], order[1:]):
+            if np.any(y[left] & y[right]):
+                adjacent_same_label += 1
+        print(
+            f"  Adjacent pairs sharing at least one label: "
+            f"{adjacent_same_label}/{len(order) - 1}"
+        )
+
+    print(
+        "  IMPORTANT: use grouped/temporal train-validation splitting; "
+        "do not randomly split these overlapping windows."
+    )
+
+    # ------------------------------------------------------------------
+    # 7. Suspicious cases
+    # ------------------------------------------------------------------
+    print()
+    print("7. SUSPICIOUS CASES")
+
+    suspicious: list[str] = []
+
+    for example_id, fractions in near_threshold:
+        suspicious.append(
+            f"id {example_id}: overlap near minimum threshold ({fractions})"
+        )
+
+    for example_id, description in boundary_rows:
+        suspicious.append(f"id {example_id}: {description}")
+
+    for i in multi_annotation_ids:
+        row = manifest[i]
+        suspicious.append(
+            f"id {row['example_id']}: multiple source annotations "
+            f"({row['annotation_id']})"
+        )
+
+    print(f"  Suspicious examples/conditions reported: {len(suspicious)}")
+    for item in suspicious[:60]:
+        print(f"    {item}")
+    if len(suspicious) > 60:
+        print(f"    ... {len(suspicious) - 60} more")
+
+    print()
+    print("AUDIT COMPLETE")
+
 def print_dataset_preview(
     manifest: list[dict],
     y: np.ndarray,
@@ -593,6 +956,14 @@ def main() -> int:
     print(f"Output y shape:   {y.shape}")
 
     print_annotation_audit(annotations)
+    audit_dataset(
+        annotations,
+        manifest,
+        y,
+        args.window,
+        args.stride,
+        args.min_overlap,
+    )
     print_dataset_preview(manifest, y, args.preview)
     print_summary(manifest, y)
 
