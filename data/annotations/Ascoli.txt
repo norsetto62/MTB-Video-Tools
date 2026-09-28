@@ -1,0 +1,13 @@
+                                  	Start	End	MTB	Video	Feature			Remarks
+D:\Ascoli\DJI_20250923122005_0005_D.MP4 
+                                        01:09	01:12	5	5	Drop
+                                        01:14	01:19	5	5	Rock Garden
+                                        05:19	05:32	5	5	Rock Garden
+					05:37	05:42	5	5	Rock Garden
+                                        06:04	06:09	5	5	Rock Garden
+                                        06:44	06:48	5	5	Drop+Tight left turn
+                                        06:55	07:19	5	5	Rock Garden
+                                        08:20	08:46	5	5	Stairs+Rock Garden
+					10:25	10:40	5	5 	Switchbacks		2 tight rocky switchbacks
+					11:54	12:13	5	5	stairs
+					12:23	12:33	5	5	stairs

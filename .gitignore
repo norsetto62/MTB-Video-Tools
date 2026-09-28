@@ -14,6 +14,9 @@ data/event_inspection/
 data/flow_scores/
 data/autocut/
 
+# Generated datasets
+data/datasets/
+
 # Generated output
 output/
 annotations_auto.txt
