@@ -290,8 +290,10 @@ def make_windows(
         raise ValueError("min_overlap must be in (0, 1]")
 
     timestamp_array = np.asarray(timestamps, dtype=np.float64)
-    video_start = float(timestamp_array[0] + flow_start)
-    video_end = float(timestamp_array[-1] + flow_start)
+    # Work on the flow CSV timeline internally; add flow_start only when
+    # comparing against source-video annotation times or writing manifest times.
+    video_start = float(timestamp_array[0])
+    video_end = float(timestamp_array[-1])
 
     # Keep every temporal window at a fixed number of samples.
     dt = float(np.median(np.diff(timestamp_array)))
