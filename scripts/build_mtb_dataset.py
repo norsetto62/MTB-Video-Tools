@@ -65,7 +65,7 @@ CATEGORY_PATTERNS = {
     "rock_garden": re.compile(
         r"\brock(?:y)?\s+garden(?:s)?\b", re.IGNORECASE
     ),
-    "switchback": re.compile(r"\bswitchback\b", re.IGNORECASE),
+    "switchback": re.compile(r"\bswitchbacks?\b", re.IGNORECASE),
     "stairs": re.compile(r"\bstairs?\b", re.IGNORECASE),
     # Deliberately require "technical climb"; "technical passages" is NOT
     # considered a positive technical_climb example.
