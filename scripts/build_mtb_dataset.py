@@ -271,6 +271,7 @@ def make_windows(
     window: float,
     stride: float,
     min_overlap: float = 0.50,
+    flow_start: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """Create temporal windows using a minimum annotation-overlap rule.
 
@@ -289,8 +290,8 @@ def make_windows(
         raise ValueError("min_overlap must be in (0, 1]")
 
     timestamp_array = np.asarray(timestamps, dtype=np.float64)
-    video_start = float(timestamp_array[0])
-    video_end = float(timestamp_array[-1])
+    video_start = float(timestamp_array[0] + flow_start)
+    video_end = float(timestamp_array[-1] + flow_start)
 
     # Keep every temporal window at a fixed number of samples.
     dt = float(np.median(np.diff(timestamp_array)))
@@ -332,6 +333,9 @@ def make_windows(
             target_matches: list[tuple[int, Annotation, float]] = []
             negative_matches: list[tuple[int, Annotation, float]] = []
 
+            annotation_start = start + flow_start
+            annotation_end = end + flow_start
+
             for ann_index, ann in enumerate(annotations, start=1):
                 # Slow/Dismounted occurrences are deliberately excluded from
                 # both positive and negative training data.
@@ -340,7 +344,7 @@ def make_windows(
 
                 overlap = max(
                     0.0,
-                    min(end, ann.end) - max(start, ann.start),
+                    min(annotation_end, ann.end) - max(annotation_start, ann.start),
                 )
                 overlap_fraction = overlap / window
 
@@ -384,10 +388,10 @@ def make_windows(
                 manifest.append(
                     {
                         "example_id": len(manifest),
-                        "start": float(timestamp_array[indices[0]]),
-                        "end": float(timestamp_array[indices[-1]]),
-                        "requested_start": start,
-                        "requested_end": end,
+                        "start": float(timestamp_array[indices[0]] + flow_start),
+                        "end": float(timestamp_array[indices[-1]] + flow_start),
+                        "requested_start": annotation_start,
+                        "requested_end": annotation_end,
                         "duration": float(
                             timestamp_array[indices[-1]]
                             - timestamp_array[indices[0]]
@@ -1006,6 +1010,12 @@ def main() -> int:
         help="Minimum fraction of each window overlapping an annotation (default: 0.50)",
     )
     parser.add_argument(
+        "--flow-start",
+        type=float,
+        default=0.0,
+        help="Start time of the analyzed flow segment in the source video (default: 0)",
+    )
+    parser.add_argument(
         "--preview",
         type=int,
         default=40,
@@ -1026,6 +1036,7 @@ def main() -> int:
         args.window,
         args.stride,
         args.min_overlap,
+        args.flow_start,
     )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1049,6 +1060,7 @@ def main() -> int:
 
     print(f"Annotation video: {video_path}")
     print(f"Flow CSV:         {args.flow_csv}")
+    print(f"Flow start:       {args.flow_start:.3f}s")
     print(f"Flow rows:        {len(timestamps)}")
     print(f"Features/row:     {len(feature_names)}")
     print(f"Median dt:        {median_dt:.6f}s")
