@@ -1084,8 +1084,8 @@ def main() -> int:
     parser.add_argument(
         "--flow-csv",
         type=Path,
-        required=True,
-        help="Optical-flow CSV produced by analyze_bike_flow.py",
+        required=False,
+        help="Optical-flow CSV produced by analyze_bike_flow.py (required unless --audit-only)",
     )
     parser.add_argument(
         "--annotations",
@@ -1151,6 +1151,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    if not args.audit_only and args.flow_csv is None:
+        parser.error("--flow-csv is required unless --audit-only is used")
 
     if args.audit_only:
         if not args.audit_pair:
