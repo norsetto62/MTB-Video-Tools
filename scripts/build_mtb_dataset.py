@@ -502,9 +502,19 @@ def audit_multiple_datasets(
         video_path, annotations = load_annotations(annotation_path)
         timestamps, feature_names, x = load_flow_csv(flow_csv)
         median_dt = check_sampling(timestamps, dt_tolerance)
-        X, y, manifest = make_windows(
-            timestamps, x, annotations, window, stride, min_overlap, flow_start
-        )
+        try:
+            X, y, manifest = make_windows(
+                timestamps, x, annotations, window, stride, min_overlap, flow_start
+            )
+        except ValueError as exc:
+            if str(exc) != "no training windows were generated":
+                raise
+            X = np.empty((0, 0, len(feature_names)), dtype=np.float32)
+            y = np.empty((0, len(LABELS)), dtype=np.float32)
+            manifest = []
+            no_training_windows = True
+        else:
+            no_training_windows = False
 
         print()
         print("-" * 90)
@@ -517,6 +527,8 @@ def audit_multiple_datasets(
         print(f"  Annotations:  {len(annotations)}")
         steep_count = sum(bool(a.audit_categories) for a in annotations)
         print(f"  Steep annotations (audit-only): {steep_count}")
+        if no_training_windows:
+            print("  Training examples: 0 (no target or explicit negative annotations)")
 
         for i, label in enumerate(LABELS):
             count = int(np.sum(y[:, i] == 1))
@@ -531,7 +543,16 @@ def audit_multiple_datasets(
         combined_steep += steep_count
 
         print_annotation_audit(annotations)
-        audit_dataset(annotations, manifest, y, window, stride, min_overlap)
+        if no_training_windows:
+            print()
+            print("DATASET AUDIT")
+            print("=" * 90)
+            print("  No training windows were generated for this video.")
+            print("  This is valid for audit-only videos containing no target")
+            print("  labels and no explicit MTB<=2 non-target negatives.")
+            print("  Annotation parsing and audit classification are still reported above.")
+        else:
+            audit_dataset(annotations, manifest, y, window, stride, min_overlap)
 
         audit_csv_path = output_dir / f"{annotation_path.stem.lower()}_dataset_audit.csv"
         write_example_audit(
