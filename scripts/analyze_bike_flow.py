@@ -1714,7 +1714,6 @@ def process_video(
     print(f"Duration:       {processing_duration:.3f} s")
     print(f"Source:         {width}x{height}")
     print(f"Source FPS:     {source_fps:.3f}")
-    print(f"Decode FPS:     {decode_fps:.3f}")
     print(f"Flow FPS:       {flow_fps:.3f}")
     print(f"Flow width:     {flow_width}")
     print(f"Flow height:    {flow_height:.1f}%")
@@ -1729,6 +1728,7 @@ def process_video(
 
     sampled_decode = not video and not track
     decode_fps = flow_fps if sampled_decode else source_fps
+    print(f"Decode FPS:     {decode_fps:.3f}")
 
     decoder = start_ffmpeg_decode(
         video_path,
