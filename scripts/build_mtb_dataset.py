@@ -24,6 +24,9 @@ annotation such as "Rock garden + Drop" produces both positive labels.
 The five labels are independent:
     drop, rock_garden, switchback, stairs, technical_climb
 
+"Steep" is recognized for audit purposes only. It is deliberately NOT an NN
+label yet, so steep-only annotations retain the existing training behavior.
+
 Category names are inferred from annotation remarks using explicit keyword
 rules. Unknown remarks are reported and are not silently assigned a class.
 Annotations marked "Slow" or "Dismounted" are excluded entirely: they are
@@ -60,6 +63,10 @@ EXCLUDE_PATTERNS = {
     "dismounted": re.compile(r"\bdismounted\b", re.IGNORECASE),
 }
 
+AUDIT_CATEGORY_PATTERNS = {
+    "steep": re.compile(r"\bsteep\b", re.IGNORECASE),
+}
+
 CATEGORY_PATTERNS = {
     "drop": re.compile(r"\bdrops?\b", re.IGNORECASE),
     "rock_garden": re.compile(
@@ -82,6 +89,7 @@ class Annotation:
     remarks: str
     categories: tuple[str, ...]
     excluded: bool
+    audit_categories: tuple[str, ...] = ()
 
 
 def parse_time(value: str) -> float:
@@ -174,6 +182,11 @@ def load_annotations(path: Path) -> tuple[Path, list[Annotation]]:
             )
 
         categories = classify_remarks(remarks)
+        audit_categories = tuple(
+            label
+            for label, pattern in AUDIT_CATEGORY_PATTERNS.items()
+            if pattern.search(remarks)
+        )
         excluded = annotation_is_excluded(remarks)
 
         annotations.append(
@@ -185,6 +198,7 @@ def load_annotations(path: Path) -> tuple[Path, list[Annotation]]:
                 remarks=remarks,
                 categories=categories,
                 excluded=excluded,
+                audit_categories=audit_categories,
             )
         )
 
@@ -447,6 +461,102 @@ def write_manifest(path: Path, manifest: list[dict]) -> None:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(manifest)
+def parse_audit_pair(value: str) -> tuple[Path, Path]:
+    """Parse an audit pair as FLOW_CSV=ANNOTATIONS_TXT."""
+    if "=" not in value:
+        raise ValueError(
+            f"invalid --audit-pair {value!r}: expected FLOW_CSV=ANNOTATIONS_TXT"
+        )
+    flow_csv, annotations = value.split("=", 1)
+    if not flow_csv.strip() or not annotations.strip():
+        raise ValueError(
+            f"invalid --audit-pair {value!r}: both paths are required"
+        )
+    return Path(flow_csv.strip()), Path(annotations.strip())
+
+
+def audit_multiple_datasets(
+    pairs: list[tuple[Path, Path]],
+    output_dir: Path,
+    window: float,
+    stride: float,
+    dt_tolerance: float,
+    min_overlap: float,
+    flow_start: float,
+) -> None:
+    """Audit several flow/annotation pairs and print one combined summary."""
+    combined_counts = np.zeros(len(LABELS), dtype=np.int64)
+    combined_negative = 0
+    combined_examples = 0
+    combined_annotations = 0
+    combined_excluded = 0
+    combined_steep = 0
+
+    print()
+    print("#" * 90)
+    print("MULTI-VIDEO DATASET AUDIT")
+    print("#" * 90)
+    print(f"Videos: {len(pairs)}")
+
+    for flow_csv, annotation_path in pairs:
+        video_path, annotations = load_annotations(annotation_path)
+        timestamps, feature_names, x = load_flow_csv(flow_csv)
+        median_dt = check_sampling(timestamps, dt_tolerance)
+        X, y, manifest = make_windows(
+            timestamps, x, annotations, window, stride, min_overlap, flow_start
+        )
+
+        print()
+        print("-" * 90)
+        print(f"VIDEO: {annotation_path.stem}")
+        print(f"  Source video: {video_path}")
+        print(f"  Flow CSV:     {flow_csv}")
+        print(f"  Flow rows:    {len(timestamps)}")
+        print(f"  Features:     {len(feature_names)}")
+        print(f"  Median dt:    {median_dt:.6f}s")
+        print(f"  Annotations:  {len(annotations)}")
+        steep_count = sum(bool(a.audit_categories) for a in annotations)
+        print(f"  Steep annotations (audit-only): {steep_count}")
+
+        for i, label in enumerate(LABELS):
+            count = int(np.sum(y[:, i] == 1))
+            combined_counts[i] += count
+            print(f"  {label:16s}: {count:4d}")
+
+        negative_count = int(np.sum(np.all(y == 0, axis=1)))
+        combined_negative += negative_count
+        combined_examples += len(manifest)
+        combined_annotations += len(annotations)
+        combined_excluded += sum(a.excluded for a in annotations)
+        combined_steep += steep_count
+
+        print_annotation_audit(annotations)
+        audit_dataset(annotations, manifest, y, window, stride, min_overlap)
+
+        audit_csv_path = output_dir / f"{annotation_path.stem.lower()}_dataset_audit.csv"
+        write_example_audit(
+            audit_csv_path, manifest, y, annotations, stride, min_overlap
+        )
+        print(f"  Audit CSV:    {audit_csv_path}")
+
+    print()
+    print("#" * 90)
+    print("COMBINED AUDIT SUMMARY")
+    print("#" * 90)
+    print(f"  Videos:                    {len(pairs)}")
+    print(f"  Annotations:               {combined_annotations}")
+    print(f"  Excluded annotations:      {combined_excluded}")
+    print(f"  Examples:                  {combined_examples}")
+    for label, count in zip(LABELS, combined_counts):
+        print(f"  {label:24s}: {int(count):4d}")
+    print(f"  {'all-zero negative':24s}: {combined_negative:4d}")
+    print(f"  {'steep annotations':24s}: {combined_steep:4d} (audit-only)")
+    print()
+    print("NOTE: steep is intentionally not included in the five NN labels yet.")
+    print("      Unlabeled video is still NOT treated as negative.")
+    print("      Normal single-video dataset generation is unchanged.")
+
+
 def print_annotation_audit(annotations: list[Annotation]) -> None:
     print()
     print("=" * 90)
@@ -459,6 +569,8 @@ def print_annotation_audit(annotations: list[Annotation]) -> None:
             if ann.excluded
             else "+".join(ann.categories)
             if ann.categories
+            else "steep (audit-only)"
+            if ann.audit_categories
             else ("negative" if ann.mtb <= 2 else "ignored")
         )
 
@@ -1023,8 +1135,40 @@ def main() -> int:
         default=40,
         help="Number of generated examples to print (default: 40)",
     )
+    parser.add_argument(
+        "--audit-pair",
+        action="append",
+        metavar="FLOW_CSV=ANNOTATIONS_TXT",
+        help=(
+            "Add a flow CSV / annotation TXT pair for multi-video auditing. "
+            "Repeat for each video. Does not alter normal dataset generation."
+        ),
+    )
+    parser.add_argument(
+        "--audit-only",
+        action="store_true",
+        help="Run the multi-video audit only; requires --audit-pair.",
+    )
 
     args = parser.parse_args()
+
+    if args.audit_only:
+        if not args.audit_pair:
+            parser.error("--audit-only requires at least one --audit-pair")
+        try:
+            pairs = [parse_audit_pair(value) for value in args.audit_pair]
+        except ValueError as exc:
+            parser.error(str(exc))
+        audit_multiple_datasets(
+            pairs,
+            args.output_dir,
+            args.window,
+            args.stride,
+            args.dt_tolerance,
+            args.min_overlap,
+            args.flow_start,
+        )
+        return 0
 
     video_path, annotations = load_annotations(args.annotations)
     timestamps, feature_names, x = load_flow_csv(args.flow_csv)
