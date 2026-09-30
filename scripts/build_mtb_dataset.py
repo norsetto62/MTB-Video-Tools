@@ -1090,12 +1090,13 @@ def print_summary(manifest: list[dict], y: np.ndarray) -> None:
 
     print()
     print("By annotation:")
-    counts: dict[int, int] = {}
+    counts: dict[str, int] = {}
     for row in manifest:
-        counts[row["annotation_id"]] = counts.get(row["annotation_id"], 0) + 1
+        annotation_id = str(row["annotation_id"])
+        counts[annotation_id] = counts.get(annotation_id, 0) + 1
 
     for annotation_id, count in counts.items():
-        print(f"  annotation {annotation_id:>2}: {count:4d} windows")
+        print(f"  annotation {annotation_id:>4}: {count:4d} windows")
 
 
 def main() -> int:
