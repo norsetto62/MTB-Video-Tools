@@ -85,12 +85,12 @@ def main() -> int:
     parser.add_argument("--end", type=int, default=None)
 
     parser.add_argument(
-        "--label",
+        "--detected",
         choices=LABELS,
         help="Show only examples whose highest predicted label matches this label.",
     )
     parser.add_argument(
-        "--actual",
+        "--expected",
         choices=LABELS,
         help="Show only examples whose actual annotation contains this label.",
     )
@@ -188,7 +188,7 @@ def main() -> int:
     print()
 
     header = (
-        "example  start_time  end_time    actual"
+        "example  start_time  end_time    expected"
         "                 "
         "drop  rock_garden  switchback  stairs  technical_climb"
     )
@@ -209,10 +209,10 @@ def main() -> int:
         predicted_index = int(np.argmax(probs))
         predicted_label = LABELS[predicted_index]
 
-        if args.actual is not None and args.actual not in actual_labels:
+        if args.expected is not None and args.expected not in actual_labels:
             continue
 
-        if args.label is not None and predicted_label != args.label:
+        if args.detected is not None and predicted_label != args.detected:
             continue
 
         print(
@@ -226,7 +226,7 @@ def main() -> int:
             f"{probs[3]:.3f}     "
             f"{probs[4]:.3f}"
         )
-        
+
     return 0
 
 
