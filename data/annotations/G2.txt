@@ -1,6 +1,6 @@
                                                          Start	End	MTB	Video	Feature			Remarks
 D:\Prenestini\G2\DJI_20250730101007_0003_D.MP4                                                         
-                                                         00:06  00:11   1       1       Pause
+                                                         00:08  00:12   1       1       Drop
                                                          00:21  00:24   1       1       Pause
 							 00:41	00:52	2	2	Drop
 							 00:53	01:01	2	2	Rock garden
