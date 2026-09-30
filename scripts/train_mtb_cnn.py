@@ -61,7 +61,10 @@ class MTBTemporalCNN(nn.Module):
         return self.classifier(x)
 
 
-def load_dataset(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, list[str]]:
+def load_dataset(
+        paths: list[Path],
+        train_features: list[str],
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """Load and concatenate NPZ datasets, preserving each file as a group."""
     if not paths:
         raise ValueError("at least one --dataset is required")
@@ -77,8 +80,18 @@ def load_dataset(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, list[str]]:
 
             x = np.asarray(data["X"], dtype=np.float32)
             y = np.asarray(data["y"], dtype=np.float32)
+
             current_features = [str(v) for v in data["feature_names"]]
             current_labels = [str(v) for v in data["labels"]]
+
+            feature_indices = {name: i for i, name in enumerate(current_features)}
+            missing = [name for name in train_features if name not in feature_indices]
+            if missing:
+                raise ValueError(f"{path}: training feature(s) missing from dataset: {missing}")
+
+            indices = [feature_indices[name] for name in train_features]
+            x = x[:, :, indices]
+            current_features = train_features
 
         if x.ndim != 3:
             raise ValueError(f"{path}: X must have shape [N,T,F], got {x.shape}")
@@ -112,8 +125,10 @@ def load_dataset(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, list[str]]:
 def split_by_dataset(
     paths: list[Path],
     validation_index: int,
+    features: list[str],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Load datasets and hold out one complete dataset for validation."""
+
     if len(paths) < 2:
         raise ValueError("at least two --dataset files are required for video-level validation holdout")
 
@@ -123,14 +138,13 @@ def split_by_dataset(
     train_paths = [path for i, path in enumerate(paths) if i != validation_index]
     validation_path = paths[validation_index]
 
-    train_x, train_y, feature_names = load_dataset(train_paths)
-    val_x, val_y, val_features = load_dataset([validation_path])
+    train_x, train_y, feature_names = load_dataset(train_paths, features)
+    val_x, val_y, val_features = load_dataset([validation_path], features)
 
     if feature_names != val_features:
         raise ValueError("training and validation feature names differ")
 
     return train_x, train_y, val_x, val_y, feature_names
-
 
 def fit_normalizer(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     mean = X.reshape(-1, X.shape[-1]).mean(axis=0)
@@ -210,11 +224,14 @@ def train(
     threshold: float,
     pos_weight: torch.Tensor,
     device: torch.device,
-) -> list[dict]:
+) -> tuple [dict[str, torch.Tensor], list[dict]]:
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     history: list[dict] = []
+    best_val_loss = float("inf")
+    best_state = None
+    best_epoch = 0
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -237,10 +254,20 @@ def train(
             model, val_loader, criterion, threshold, device
         )
 
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_epoch = epoch
+            best_state = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+
         row = {
             "epoch": epoch,
+            "best_epoch":best_epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            "best_val_loss": best_val_loss,
             "val_accuracy": val_accuracy,
             "precision_mean": float(precision.mean()),
             "recall_mean": float(recall.mean()),
@@ -254,18 +281,23 @@ def train(
 
         print(
             f"epoch {epoch:3d}/{epochs} "
+            f"best epoch {best_epoch:3d}/{epochs} "
             f"train_loss={train_loss:.4f} "
             f"val_loss={val_loss:.4f} "
+            f"best val_loss={best_val_loss:.4f} "
             f"val_acc={val_accuracy:.3f} "
             f"{per_label}"
         )
 
-    return history
+    if best_state == None:
+        raise RuntimeError("No best model state was captured during validation.")
+    
+    return best_state, history
 
 
 def save_checkpoint(
     path: Path,
-    model: nn.Module,
+    model_state: dict[str, torch.Tensor],
     mean: np.ndarray,
     std: np.ndarray,
     feature_names: list[str],
@@ -274,7 +306,7 @@ def save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": model_state,
             "n_features": len(feature_names),
             "n_labels": len(LABELS),
             "labels": LABELS,
@@ -286,6 +318,20 @@ def save_checkpoint(
         path,
     )
 
+def load_feature_list(path: Path) -> list[str]:
+    features = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    if not features:
+        raise ValueError(f"No features found in {path}")
+
+    if len(features) != len(set(features)):
+        raise ValueError(f"Duplicate feature names found in {path}")
+
+    return features
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train temporal 1D CNN for MTB features.")
@@ -297,11 +343,14 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("output/mtb_temporal_cnn.pt"))
+    parser.add_argument("--features", type=Path, default=Path("data/features/mtb_training_features.txt"))
 
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    features = load_feature_list(args.features)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using compute device: {device}")
@@ -310,7 +359,11 @@ def main() -> int:
 
     validation_index = len(args.dataset) - 1 if args.validation_index == -1 else args.validation_index
 
-    train_x, train_y, val_x, val_y, feature_names = split_by_dataset(args.dataset, validation_index)
+    train_x, train_y, val_x, val_y, feature_names = split_by_dataset(
+        args.dataset,
+        validation_index,
+        features,
+    )
 
     # Calculate class imbalance weights for BCEWithLogitsLoss
     pos_counts = train_y.sum(axis=0)
@@ -326,11 +379,11 @@ def main() -> int:
 
     model = MTBTemporalCNN(n_features=train_x.shape[-1], n_labels=len(LABELS)).to(device)
 
-    history = train(
+    best_state, history = train(
         model, train_loader, val_loader, args.epochs, args.learning_rate, args.threshold, pos_weight, device
     )
 
-    save_checkpoint(args.output, model, mean, std, feature_names, history)
+    save_checkpoint(args.output, best_state, mean, std, feature_names, history)
     print(f"\nSaved checkpoint to {args.output}")
 
     return 0
