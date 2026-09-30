@@ -84,6 +84,17 @@ def main() -> int:
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--end", type=int, default=None)
 
+    parser.add_argument(
+        "--label",
+        choices=LABELS,
+        help="Show only examples whose highest predicted label matches this label.",
+    )
+    parser.add_argument(
+        "--actual",
+        choices=LABELS,
+        help="Show only examples whose actual annotation contains this label.",
+    )
+
     args = parser.parse_args()
 
     checkpoint = torch.load(
@@ -195,6 +206,15 @@ def main() -> int:
         ]
         actual = "+".join(actual_labels) if actual_labels else "negative"
 
+        predicted_index = int(np.argmax(probs))
+        predicted_label = LABELS[predicted_index]
+
+        if args.actual is not None and args.actual not in actual_labels:
+            continue
+
+        if args.label is not None and predicted_label != args.label:
+            continue
+
         print(
             f"{i:7d}  "
             f"{float(row['start']):10.2f}  "
@@ -206,7 +226,7 @@ def main() -> int:
             f"{probs[3]:.3f}     "
             f"{probs[4]:.3f}"
         )
-
+        
     return 0
 
 
