@@ -14,8 +14,9 @@ data/event_inspection/
 data/flow_scores/
 data/autocut/
 
-# Generated datasets
+# Generated datasets and features
 data/datasets/
+data/features/
 
 # Generated output
 output/
