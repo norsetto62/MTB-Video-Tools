@@ -324,115 +324,105 @@ def make_windows(
 
     # Generate the temporal grid once. This prevents duplicate windows when
     # annotations overlap and allows several annotations to contribute labels.
-    start = video_start
-    while start + window <= video_end + 1e-9:
-        end = start + window
-
-        # Select exactly n_window_samples starting at the first flow sample
-        # at or after the requested window start.
-        first_index = int(
-            np.searchsorted(timestamp_array, start, side="left")
-        )
+    start_index = 0
+    while start_index + n_window_samples <= len(timestamp_array):
         indices = np.arange(
-            first_index,
-            first_index + n_window_samples,
+            start_index,
+            start_index + n_window_samples,
             dtype=np.int64,
         )
 
-        # The selected samples must actually fit inside the requested window.
-        if (
-            len(indices) == n_window_samples
-            and indices[-1] < len(timestamp_array)
-            and timestamp_array[indices[-1]] < end + 1e-9
-        ):
-            labels_vector = np.zeros(len(LABELS), dtype=np.float32)
-            target_matches: list[tuple[int, Annotation, float]] = []
-            negative_matches: list[tuple[int, Annotation, float]] = []
+        start = float(timestamp_array[start_index])
+        end = start + window
 
-            annotation_start = start + flow_start
-            annotation_end = end + flow_start
+        labels_vector = np.zeros(len(LABELS), dtype=np.float32)
+        target_matches: list[tuple[int, Annotation, float]] = []
+        negative_matches: list[tuple[int, Annotation, float]] = []
 
-            for ann_index, ann in enumerate(annotations, start=1):
-                # Slow/Dismounted occurrences are deliberately excluded from
-                # both positive and negative training data.
-                if ann.excluded:
-                    continue
+        annotation_start = start + flow_start
+        annotation_end = end + flow_start
 
-                overlap = max(
-                    0.0,
-                    min(annotation_end, ann.end) - max(annotation_start, ann.start),
+        for ann_index, ann in enumerate(annotations, start=1):
+            # Slow/Dismounted occurrences are deliberately excluded from
+            # both positive and negative training data.
+            if ann.excluded:
+                continue
+
+            overlap = max(
+                0.0,
+                min(annotation_end, ann.end) - max(annotation_start, ann.start),
+            )
+            overlap_fraction = overlap / window
+
+            if overlap_fraction + 1e-12 < min_overlap:
+                continue
+
+            if ann.categories:
+                target_matches.append(
+                    (ann_index, ann, overlap_fraction)
                 )
-                overlap_fraction = overlap / window
-
-                if overlap_fraction + 1e-12 < min_overlap:
-                    continue
-
-                if ann.categories:
-                    target_matches.append(
-                        (ann_index, ann, overlap_fraction)
-                    )
-                    for category in ann.categories:
-                        labels_vector[LABELS.index(category)] = 1.0
-                elif ann.mtb <= 2:
-                    negative_matches.append(
-                        (ann_index, ann, overlap_fraction)
-                    )
-
-            # Explicit negatives are used only when no target annotation
-            # covers the window. Target labels take precedence.
-            if target_matches:
-                selected = target_matches
-                category = "+".join(
-                    label
-                    for label in LABELS
-                    if labels_vector[LABELS.index(label)] == 1
-                )
-            elif negative_matches:
-                selected = negative_matches
-                category = "negative"
-            else:
-                selected = []
-
-            if selected:
-                annotation_ids = [item[0] for item in selected]
-                source_annotations = [item[1] for item in selected]
-                overlap_fractions = [item[2] for item in selected]
-
-                examples.append(x[indices])
-                labels.append(labels_vector)
-
-                manifest.append(
-                    {
-                        "example_id": len(manifest),
-                        "start": float(timestamp_array[indices[0]] + flow_start),
-                        "end": float(timestamp_array[indices[-1]] + flow_start),
-                        "requested_start": annotation_start,
-                        "requested_end": annotation_end,
-                        "duration": float(
-                            timestamp_array[indices[-1]]
-                            - timestamp_array[indices[0]]
-                        ),
-                        "annotation_id": ";".join(
-                            map(str, annotation_ids)
-                        ),
-                        "mtb": ";".join(
-                            str(a.mtb) for a in source_annotations
-                        ),
-                        "video": ";".join(
-                            str(a.video) for a in source_annotations
-                        ),
-                        "category": category,
-                        "remarks": " | ".join(
-                            a.remarks for a in source_annotations
-                        ),
-                        "overlap_fraction": ";".join(
-                            f"{v:.3f}" for v in overlap_fractions
-                        ),
-                        "n_samples": len(indices),
-                    }
+                for category in ann.categories:
+                    labels_vector[LABELS.index(category)] = 1.0
+            elif ann.mtb <= 2:
+                negative_matches.append(
+                    (ann_index, ann, overlap_fraction)
                 )
 
-        start += stride
+        # Explicit negatives are used only when no target annotation
+        # covers the window. Target labels take precedence.
+        if target_matches:
+            selected = target_matches
+            category = "+".join(
+                label
+                for label in LABELS
+                if labels_vector[LABELS.index(label)] == 1
+            )
+        elif negative_matches:
+            selected = negative_matches
+            category = "negative"
+        else:
+            selected = []
+
+        if selected:
+            annotation_ids = [item[0] for item in selected]
+            source_annotations = [item[1] for item in selected]
+            overlap_fractions = [item[2] for item in selected]
+
+            examples.append(x[indices])
+            labels.append(labels_vector)
+
+            manifest.append(
+                {
+                    "example_id": len(manifest),
+                    "start": float(timestamp_array[indices[0]] + flow_start),
+                    "end": float(timestamp_array[indices[-1]] + flow_start),
+                    "requested_start": annotation_start,
+                    "requested_end": annotation_end,
+                    "duration": float(
+                        timestamp_array[indices[-1]]
+                        - timestamp_array[indices[0]]
+                    ),
+                    "annotation_id": ";".join(
+                        map(str, annotation_ids)
+                    ),
+                    "mtb": ";".join(
+                        str(a.mtb) for a in source_annotations
+                    ),
+                    "video": ";".join(
+                        str(a.video) for a in source_annotations
+                    ),
+                    "category": category,
+                    "remarks": " | ".join(
+                        a.remarks for a in source_annotations
+                    ),
+                    "overlap_fraction": ";".join(
+                        f"{v:.3f}" for v in overlap_fractions
+                    ),
+                    "n_samples": len(indices),
+                }
+            )
+
+        start_index += int(round(stride / dt))
 
     if not examples:
         raise ValueError("no training windows were generated")
@@ -641,7 +631,10 @@ def audit_dataset(
         print(f"  {label:16s}: {count:4d} positive")
 
     negative_count = int(np.sum(np.all(y == 0, axis=1)))
-    print(f"  {'all-zero negative':16s}: {negative_count:4d}")
+    if manifest:
+        print(f"  Samples/example: {int(manifest[0]['n_samples'])}")
+    else:
+        print("  Samples/example: n/a (no generated windows)")
 
     annotation_counts: dict[str, int] = {}
     for row in manifest:
