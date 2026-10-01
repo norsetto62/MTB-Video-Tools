@@ -1,0 +1,38 @@
+		                                         Start	End	MTB	Remarks
+D:\Lucretili\Orvinio\DJI_20250721112822_0009_D.MP4					 
+							 00:00	02:51	1	Dirt path
+							 02:51	03:12	0	Stopped
+							 03:12	03:41	1	Dirt path
+							 03:41	04:12	2	Dirt path
+							 04:12	04:37	1	Dirt path
+							 04:37	05:10	0	Stopped
+							 05:10	05:23	3	Drops
+							 05:23	06:12	1	Dirt path
+							 06:12	06:23	2	Nose press
+							 06:23	06:49	1	Dirt path
+							 06:49	06:55	0	Camera check
+							 06:55	08:14	1	Dirt path
+							 08:14	08:20	0	Stopped
+							 08:20	08:58	1	Dirt path
+							 08:58	09:05	0	Stopped
+							 09:05	09:33	2	Rocky path
+							 09:33	09:43	0	Stopped
+							 09:43	10:29	2	Rocky switchbacks
+							 10:29	10:41	0	Stopped
+							 10:41	11:21	1	Rocky switchback slow
+							 11:21	12:28	0	Dismounted, creek crossing, pause
+							 12:28	13:07	2	Technical climb
+							 13:07	13:42	1	Path
+							 13:42	14:30	0	Pause
+
+
+
+
+
+
+
+
+
+
+
+
