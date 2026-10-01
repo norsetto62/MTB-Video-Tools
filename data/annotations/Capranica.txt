@@ -1,7 +1,10 @@
-                                                        Start	End	MTB	Video	Feature			Remarks
+                                                        Start	End	MTB	Remarks
 D:\Prenestini\Mentorella\DJI_20250710091244_0004_D.MP4
-							00:00	00:20	2	2	Start on Steep Climb
-							00:21	00:49	4	3	Technical Climb
-							00:59	01:01	4	3	Drop
-							02:18	02:27	4	2	Climb over rock
-							02:30	02:52	2	2	Dismount on climb	technical climb
+							00:00	00:21	0	Start on Steep Climb
+							00:21	00:48	3	Technical Climb
+							00:48	00:59	1	Rocky Path
+							00:59	01:01	3	Drop
+							01:01	02:17	1	Rocky/Dirt path
+							02:17	02:26	2	Climb over rock
+							02:26	02:30	1	
+							02:30	02:52	0	Dismount on technical climb

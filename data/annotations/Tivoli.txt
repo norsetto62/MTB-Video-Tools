@@ -1,7 +1,15 @@
-                                         Start	End	MTB	Video	Feature			Remarks
-D:\Tivoli\DJI_20251105104405_0005_D.MP4                                                         
-					 01:0	01:05	4	2	Bump			Small
-					 01:53	01:56   4	2      	Steep			Small
-					 02:00	02:10	4	2	Jump			Small
-					 04:45	05:0	4	2	Steep
+                                         Start	End	MTB	Remarks
+D:\Tivoli\DJI_20251105104405_0005_D.MP4  
+					 00:00	00:02	0	Start                                                       
+					 00:02	01:10	2	Flow on dirt path with 3 small jumps
+					 01:10	01:18	1	Flow on dirt path 
+					 01:18	01:20	2	Small drop
+					 01:20	01:52	1	Flow on dirt path 
+					 01:52	01:56   2	Steep Small
+					 01:56	02:10	1	Flow on dirt path with small jump
+					 02:10	03:07	1	Flow on dirt path 
+					 03:07	03:44	1	Flow on fire road
+					 03:44	04:45	0	Dismounted
+					 04:45	05:00	2	Steep
+					 05:00	06:12	0	Fire road, club hut and dismounting
 

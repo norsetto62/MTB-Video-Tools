@@ -1,4 +1,5 @@
-                                                         Start	End	MTB	Video	Feature			Remarks
-D:\Prenestini\G2\g2_steep.mp4                            00:00  00:35   2       1       Approach/Commit
-                                                         00:36  00:42   4       2       Steep
-							 00:42	01:00	3	2	Roll out
+                                                         Start	End	MTB	Remarks
+D:\Prenestini\G2\g2_steep.mp4                            00:00  00:35   1       Approach/Commit
+                                                         00:35  00:42   3       Steep
+							 00:42	00:45	2	Roll out
+							 00:45	01:00	1	Dirt path

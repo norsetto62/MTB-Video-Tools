@@ -1,8 +1,10 @@
-                                  		Start	End	MTB	Video	Feature			Remarks
+                                  		Start	End	MTB	Remarks
 D:\Castelli\DJI_20251115113912_0007_D.MP4
-						00:00	00:19	2	1	Camera Check		waiting to start
-						00:20	00:31	2	2	Start of flow path	Occasionally bumpy
-						00:31	00:54	4	3	Start of dh		Raise to technical position
-						00:55	01:01	4	3	dh			Raise to technical position
-						03:19	03:32	2	2	Technical passage	Slow
-						03:32	03:51	2	2	End of dh
+						00:00	00:11	0	Camera Check waiting to start
+						00:11	00:31	1	Start of flow path, occasionally bumpy
+						00:31	00:54	1	Start of dh, raise to technical position
+						00:54	01:29	2	dh, raise to technical position
+						01:29	03:19	1	Dirth path, bumpy
+						03:19	03:32	1	Technical passage, slow
+						03:32	03:51	1	End of dh
+						03:51	04:36	0	Dirth path

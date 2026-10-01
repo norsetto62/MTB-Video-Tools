@@ -1,15 +1,31 @@
-                                                         Start	End	MTB	Video	Feature			Remarks
-D:\Prenestini\G2\DJI_20250730101007_0003_D.MP4                                                         
-                                                         00:08  00:12   1       1       Drop
-                                                         00:21  00:24   1       1       Pause
-							 00:41	00:52	2	2	Drop
-							 00:53	01:01	2	2	Rock garden
-							 01:02 	01:04	2	2	Drop
-							 01:05	01:12	2	2	Rock Garden
-							 01:13	01:18	2	2	Drop
-							 01:20	01:41   2	2      	Drop			Continuous
-							 02:10	02:36   2	2      	Rock Garden (very slow)
-							 03:20	03:31	4	2	Rock Garden
-							 03:47	04:07	4	2	Rock Garden
-                                                         05:10  05:43	4      	2	Steep			This is the part which is not in cai515
-							 06:19	06:27	4	2	Drop 			copied (after which I dismount the bike)
+                                                         Start	End	MTB	Remarks
+D:\Prenestini\G2\DJI_20250730101007_0003_D.MP4           
+							 00:00	00:08	0	Start and Pause                                              
+                                                         00:08  00:12   1       Drop (Copied)
+							 00:12	00:21	1	Dirt path
+                                                         00:21  00:24   0       Pause
+							 00:24	00:41	1	Dirt path
+							 00:41	00:52	1	Drop
+							 00:52	01:01	2	Rock garden
+							 01:01 	01:04	2	Drop
+							 01:04	01:12	2	Rock Garden
+							 01:12	01:18	2	Drop
+							 01:18	01:20	0	Pause
+							 01:20	01:41   2      	Drop Continuous
+							 01:41	02:10	1	Dirt path
+							 02:10	02:36   2      	Rock Garden (very slow)
+							 02:36	03:20	1	Dirt path
+							 03:20	03:31	2	Rock Garden
+							 03:31	03:47	1	Dirt path
+							 03:47	04:07	2	Rock Garden
+							 04:07	04:30	1	Dirt path
+							 04:30	04:41	0	Stop/Choosing direction
+							 04:41	05:02	2	Rock Garden
+							 05:02	05:09	0	Stopped
+                                                         05:09  05:42	2	Steep: this is the part which is not in cai515
+							 05:42	05:50	0	Moving over tree trunk
+							 05:50	06:14	1	Dirt path
+							 06:14	06:19	0	Stopped
+							 06:19	06:27	2	Drop copied
+							 06:27	06:40	1	Dirt path
+							 06:40	07:08	0	Stopped/Dismounted
