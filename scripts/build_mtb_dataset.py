@@ -1091,6 +1091,241 @@ def print_summary(manifest: list[dict], y: np.ndarray) -> None:
     for annotation_id, count in counts.items():
         print(f"  annotation {annotation_id:>4}: {count:4d} windows")
 
+def load_interest_annotations(
+    path: Path,
+) -> tuple[Path, list[tuple[float, float, int, str]]]:
+    """Load simplified MTB-interest annotations with scores 0..3.
+
+    Expected format:
+
+        Start    End    MTB    Remarks
+
+    The source video path is on its own line.
+    Intervals are interpreted as [start, end).
+    """
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+
+    video_path: Path | None = None
+    annotations: list[tuple[float, float, int, str]] = []
+
+    for line_no, raw in enumerate(lines, start=1):
+        line = raw.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        lower = line.lower()
+
+        if all(token in lower for token in ("start", "end", "mtb")):
+            continue
+
+        if (
+            video_path is None
+            and len(line) >= 3
+            and line[1] == ":"
+            and line[2] in ("\\", "/")
+        ):
+            video_path = Path(line)
+            continue
+
+        parts = line.split(maxsplit=3)
+        if len(parts) < 3:
+            raise ValueError(
+                f"{path}:{line_no}: expected Start End MTB [Remarks]"
+            )
+
+        try:
+            start = parse_time(parts[0])
+            end = parse_time(parts[1])
+            mtb = int(parts[2])
+        except ValueError as exc:
+            raise ValueError(f"{path}:{line_no}: {exc}") from exc
+
+        if end <= start:
+            raise ValueError(
+                f"{path}:{line_no}: End must be greater than Start"
+            )
+        if not 0 <= mtb <= 3:
+            raise ValueError(
+                f"{path}:{line_no}: MTB must be 0..3"
+            )
+
+        remarks = parts[3].strip() if len(parts) == 4 else ""
+        annotations.append((start, end, mtb, remarks))
+
+    if video_path is None:
+        raise ValueError(f"{path}: source video path not found")
+
+    annotations.sort(key=lambda item: item[0])
+
+    previous_end: float | None = None
+    for start, end, _, _ in annotations:
+        if previous_end is not None and start < previous_end - 1e-9:
+            raise ValueError(
+                f"{path}: overlapping annotation intervals near "
+                f"{start:.3f}s"
+            )
+        previous_end = end
+
+    return video_path, annotations
+
+def format_clock(seconds: float) -> str:
+    """Format seconds as MM:SS or HH:MM:SS."""
+    total = max(0, int(round(seconds)))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def print_interest_report(
+    flow_csv: Path,
+    annotations_path: Path,
+    window: float,
+    stride: float,
+    preview: int,
+) -> None:
+    """Inspect windows generated from MTB-interest annotations.
+
+    This is deliberately report-only: it does not create an NPZ, manifest,
+    or training dataset.
+    """
+    video_path, annotations = load_interest_annotations(annotations_path)
+    timestamps, _, _ = load_flow_csv(flow_csv)
+
+    if window <= 0 or stride <= 0:
+        raise ValueError("window and stride must be > 0")
+
+    flow_start = float(timestamps[0])
+    flow_end = float(timestamps[-1])
+
+    annotation_start = min(a[0] for a in annotations)
+    annotation_end = max(a[1] for a in annotations)
+    annotation_span = sum(
+        end - start for start, end, _, _ in annotations
+    )
+
+    print()
+    print("=" * 90)
+    print(f"INTEREST DATASET REPORT: {annotations_path.stem}")
+    print("=" * 90)
+    print(f"Source video: {video_path}")
+    print(f"Flow CSV:     {flow_csv}")
+    print(
+        f"Flow range:   {format_clock(flow_start)} - "
+        f"{format_clock(flow_end)}"
+    )
+    print(f"Window:       {window:.2f}s")
+    print(f"Stride:       {stride:.2f}s")
+
+    print()
+    print("ANNOTATION COVERAGE")
+    print("-" * 90)
+    print(f"Annotated span: {annotation_span:.1f}s")
+    print(
+        f"Annotation range: {format_clock(annotation_start)} - "
+        f"{format_clock(annotation_end)}"
+    )
+
+    for score in range(4):
+        duration = sum(
+            end - start
+            for start, end, mtb, _ in annotations
+            if mtb == score
+        )
+        percentage = (
+            100.0 * duration / annotation_span
+            if annotation_span > 0
+            else 0.0
+        )
+        print(
+            f"MTB {score}: {duration:7.1f}s  ({percentage:5.1f}%)"
+        )
+
+    windows: list[dict] = []
+    start = flow_start
+
+    while start + window <= flow_end + 1e-9:
+        end = start + window
+        composition = [0.0, 0.0, 0.0, 0.0]
+
+        for ann_start, ann_end, mtb, _ in annotations:
+            overlap = max(
+                0.0,
+                min(end, ann_end) - max(start, ann_start),
+            )
+            composition[mtb] += overlap
+
+        covered = sum(composition)
+
+        if covered >= window - 1e-9:
+            target = sum(
+                score * duration
+                for score, duration in enumerate(composition)
+            ) / window
+
+            parts = [
+                f"{duration:.1f}s MTB{score}"
+                for score, duration in enumerate(composition)
+                if duration > 1e-9
+            ]
+
+            windows.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "target": target,
+                    "composition": " + ".join(parts),
+                }
+            )
+
+        start += stride
+
+    print()
+    print("GENERATED WINDOWS")
+    print("-" * 90)
+    print(f"Windows fully covered by annotations: {len(windows)}")
+    print()
+    print("window             target    composition")
+
+    for row in windows[:preview]:
+        print(
+            f"{format_clock(row['start'])}-"
+            f"{format_clock(row['end']):<10s} "
+            f"{row['target']:6.2f}    {row['composition']}"
+        )
+
+    if len(windows) > preview:
+        print(f"... {len(windows) - preview} more windows")
+
+    boundary_windows = []
+    for row in windows:
+        near_boundary = any(
+            abs(row["start"] - start) <= stride + 1e-9
+            or abs(row["end"] - end) <= stride + 1e-9
+            for start, end, _, _ in annotations
+        )
+        if near_boundary:
+            boundary_windows.append(row)
+
+    print()
+    print("BOUNDARY WINDOWS")
+    print("-" * 90)
+    print(
+        "Windows within one stride of an annotation boundary: "
+        f"{len(boundary_windows)}"
+    )
+
+    for row in boundary_windows[:preview]:
+        print(
+            f"{format_clock(row['start'])}-"
+            f"{format_clock(row['end']):<10s} "
+            f"{row['target']:6.2f}    {row['composition']}"
+        )
+
+    print()
+    print("REPORT COMPLETE")
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -1151,6 +1386,14 @@ def main() -> int:
         help="Number of generated examples to print (default: 40)",
     )
     parser.add_argument(
+        "--interest-report",
+        action="store_true",
+        help=(
+            "Report windows for simplified MTB 0..3 interest annotations "
+            "without creating a training dataset."
+        ),
+    )
+    parser.add_argument(
         "--audit-pair",
         action="append",
         metavar="FLOW_CSV=ANNOTATIONS_TXT",
@@ -1166,6 +1409,18 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    if args.interest_report:
+        if args.flow_csv is None:
+            parser.error("--interest-report requires --flow-csv")
+        print_interest_report(
+            args.flow_csv,
+            args.annotations,
+            args.window,
+            args.stride,
+            args.preview,
+        )
+        return 0
 
     if not args.audit_only and args.flow_csv is None:
         parser.error("--flow-csv is required unless --audit-only is used")
