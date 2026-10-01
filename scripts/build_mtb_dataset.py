@@ -771,6 +771,472 @@ def print_preview(
             f"... {len(manifest) - count} more windows"
         )
 
+def print_audit_transition_windows(
+    manifest: list[dict],
+    annotations: list[Annotation],
+    preview_context: float,
+) -> None:
+    """Print generated windows surrounding every annotation boundary."""
+
+    print()
+    print("=" * 80)
+    print("ANNOTATION TRANSITIONS")
+    print("=" * 80)
+
+    boundaries: list[tuple[float, str]] = []
+
+    for index in range(len(annotations) - 1):
+        left = annotations[index]
+        right = annotations[index + 1]
+
+        if left.end <= right.start:
+            boundaries.append(
+                (
+                    right.start,
+                    f"MTB {left.score} -> MTB {right.score}",
+                )
+            )
+
+    for annotation in annotations:
+        boundaries.append(
+            (
+                annotation.start,
+                f"start MTB {annotation.score}",
+            )
+        )
+
+        boundaries.append(
+            (
+                annotation.end,
+                f"end MTB {annotation.score}",
+            )
+        )
+
+    # Avoid printing duplicate boundaries at exactly the same timestamp.
+    unique_boundaries: dict[float, list[str]] = {}
+
+    for timestamp, description in boundaries:
+        unique_boundaries.setdefault(
+            timestamp,
+            [],
+        ).append(description)
+
+    for timestamp in sorted(unique_boundaries):
+        descriptions = unique_boundaries[timestamp]
+
+        print()
+        print(
+            f"{format_clock(timestamp)} "
+            f"({timestamp:.3f}s): "
+            f"{'; '.join(descriptions)}"
+        )
+
+        nearby = [
+            row
+            for row in manifest
+            if (
+                float(row["start"]) <= timestamp + preview_context
+                and float(row["end"]) >= timestamp - preview_context
+            )
+        ]
+
+        if not nearby:
+            print("  NO GENERATED WINDOWS")
+            continue
+
+        for row in nearby:
+            print(
+                f"  "
+                f"{format_clock(float(row['start']))}-"
+                f"{format_clock(float(row['end']))}  "
+                f"target={float(row['target']):.3f}  "
+                f"coverage={float(row['coverage']):.1%}  "
+                f"annotations={row['annotation_id']}"
+            )
+
+
+def print_annotation_coverage_audit(
+    annotations: list[Annotation],
+) -> None:
+    """Report gaps and overlaps between annotation intervals."""
+
+    print()
+    print("=" * 80)
+    print("ANNOTATION CONTINUITY")
+    print("=" * 80)
+
+    if not annotations:
+        print("No annotations.")
+        return
+
+    gaps: list[tuple[float, float]] = []
+    overlaps: list[tuple[float, float]] = []
+
+    for previous, current in zip(
+        annotations,
+        annotations[1:],
+    ):
+        delta = current.start - previous.end
+
+        if delta > 1e-9:
+            gaps.append(
+                (
+                    previous.end,
+                    current.start,
+                )
+            )
+        elif delta < -1e-9:
+            overlaps.append(
+                (
+                    current.start,
+                    previous.end,
+                )
+            )
+
+    if gaps:
+        print(f"GAPS: {len(gaps)}")
+        for start, end in gaps:
+            print(
+                f"  {format_clock(start)}-"
+                f"{format_clock(end)} "
+                f"({end - start:.3f}s)"
+            )
+    else:
+        print("GAPS:     none")
+
+    if overlaps:
+        print(f"OVERLAPS: {len(overlaps)}")
+        for start, end in overlaps:
+            print(
+                f"  {format_clock(start)}-"
+                f"{format_clock(end)} "
+                f"({end - start:.3f}s)"
+            )
+    else:
+        print("OVERLAPS: none")
+
+def audit_pair(
+    annotations_path: Path,
+    flow_csv: Path,
+    window: float,
+    stride: float,
+    flow_start: float,
+    dt_tolerance: float,
+    preview: int,
+) -> tuple[int, dict]:
+    """Audit one annotation/flow pair without writing dataset files."""
+
+    video_path, annotations = load_annotations(
+        annotations_path
+    )
+
+    timestamps, feature_names, features = load_flow_csv(
+        flow_csv
+    )
+
+    median_dt = check_sampling(
+        timestamps,
+        dt_tolerance,
+    )
+
+    X, y, manifest = build_windows(
+        timestamps,
+        features,
+        annotations,
+        window,
+        stride,
+        flow_start,
+    )
+
+    flow_start_time = float(
+        timestamps[0] + flow_start
+    )
+
+    flow_end_time = float(
+        timestamps[-1] + flow_start
+    )
+
+    annotated_start = min(
+        annotation.start
+        for annotation in annotations
+    )
+
+    annotated_end = max(
+        annotation.end
+        for annotation in annotations
+    )
+
+    print()
+    print("#" * 80)
+    print(
+        f"AUDIT: {annotations_path.stem}"
+    )
+    print("#" * 80)
+
+    print(
+        f"Source video: {video_path}"
+    )
+
+    print(
+        f"Annotations:  {annotations_path}"
+    )
+
+    print(
+        f"Flow CSV:     {flow_csv}"
+    )
+
+    print(
+        f"Flow range:   "
+        f"{flow_start_time:.3f}s - "
+        f"{flow_end_time:.3f}s"
+    )
+
+    print(
+        f"Flow rows:    {len(timestamps)}"
+    )
+
+    print(
+        f"Features:     {len(feature_names)}"
+    )
+
+    print(
+        f"Median dt:    {median_dt:.6f}s"
+    )
+
+    print(
+        f"Window:       {window:.2f}s"
+    )
+
+    print(
+        f"Stride:       {stride:.2f}s"
+    )
+
+    print_annotation_summary(
+        annotations
+    )
+
+    print_annotation_coverage_audit(
+        annotations
+    )
+
+    print()
+    print("=" * 80)
+    print("GENERATED DATASET")
+    print("=" * 80)
+
+    print(
+        f"Examples:     {len(manifest)}"
+    )
+
+    print(
+        f"X shape:      {X.shape}"
+    )
+
+    print(
+        f"Target range: "
+        f"{float(np.min(y)):.3f} .. "
+        f"{float(np.max(y)):.3f}"
+    )
+
+    print(
+        f"Target mean:  "
+        f"{float(np.mean(y)):.3f}"
+    )
+
+    intermediate = int(
+        np.sum(
+            ~np.isclose(y, np.round(y), atol=1e-6)
+        )
+    )
+
+    print(
+        f"Intermediate targets: "
+        f"{intermediate}"
+    )
+
+    for score in range(4):
+        count = int(
+            np.sum(
+                np.isclose(
+                    y,
+                    score,
+                    atol=1e-6,
+                )
+            )
+        )
+
+        print(
+            f"Exact target {score}: "
+            f"{count}"
+        )
+
+    print_preview(
+        manifest,
+        preview,
+    )
+
+    print_audit_transition_windows(
+        manifest,
+        annotations,
+        preview_context=max(
+            window,
+            stride * 2.0,
+        ),
+    )
+
+    print()
+    print(
+        f"Annotation range: "
+        f"{annotated_start:.3f}s - "
+        f"{annotated_end:.3f}s"
+    )
+
+    return len(manifest), {
+        "examples": len(manifest),
+        "targets": y,
+        "annotations": annotations,
+    }
+
+def audit_pairs(
+    pairs: list[tuple[Path, Path]],
+    window: float,
+    stride: float,
+    flow_start: float,
+    dt_tolerance: float,
+    preview: int,
+) -> None:
+    """Audit multiple annotation/flow pairs and print global totals."""
+
+    total_examples = 0
+    total_annotations = 0
+    total_duration = np.zeros(
+        4,
+        dtype=np.float64,
+    )
+    total_exact_windows = np.zeros(
+        4,
+        dtype=np.int64,
+    )
+    total_intermediate = 0
+
+    print()
+    print("#" * 80)
+    print("MTB DATASET AUDIT")
+    print("#" * 80)
+    print(
+        f"Pairs: {len(pairs)}"
+    )
+    print(
+        f"Window: {window:.2f}s"
+    )
+    print(
+        f"Stride: {stride:.2f}s"
+    )
+
+    for annotations_path, flow_csv in pairs:
+        examples, result = audit_pair(
+            annotations_path=annotations_path,
+            flow_csv=flow_csv,
+            window=window,
+            stride=stride,
+            flow_start=flow_start,
+            dt_tolerance=dt_tolerance,
+            preview=preview,
+        )
+
+        total_examples += examples
+
+        annotations = result["annotations"]
+        targets = result["targets"]
+
+        total_annotations += len(annotations)
+
+        for annotation in annotations:
+            total_duration[annotation.score] += (
+                annotation.end - annotation.start
+            )
+
+        for score in range(4):
+            total_exact_windows[score] += int(
+                np.sum(
+                    np.isclose(
+                        targets,
+                        score,
+                        atol=1e-6,
+                    )
+                )
+            )
+
+        total_intermediate += int(
+            np.sum(
+                ~np.isclose(
+                    targets,
+                    np.round(targets),
+                    atol=1e-6,
+                )
+            )
+
+        )
+
+    total_annotated_duration = float(
+        np.sum(total_duration)
+    )
+
+    print()
+    print("#" * 80)
+    print("GLOBAL AUDIT")
+    print("#" * 80)
+
+    print(
+        f"Pairs:             {len(pairs)}"
+    )
+
+    print(
+        f"Annotations:       {total_annotations}"
+    )
+
+    print(
+        f"Generated windows: {total_examples}"
+    )
+
+    print(
+        f"Annotated time:    "
+        f"{total_annotated_duration:.1f}s"
+    )
+
+    print()
+
+    for score in range(4):
+        percentage = (
+            100.0
+            * total_duration[score]
+            / total_annotated_duration
+            if total_annotated_duration > 0
+            else 0.0
+        )
+
+        print(
+            f"MTB {score}: "
+            f"{total_duration[score]:7.1f}s "
+            f"({percentage:5.1f}%)"
+        )
+
+    print()
+    print("Generated targets:")
+
+    for score in range(4):
+        print(
+            f"  Exact {score}: "
+            f"{total_exact_windows[score]}"
+        )
+
+    print(
+        f"  Intermediate: "
+        f"{total_intermediate}"
+    )
+
+    print()
+    print("AUDIT COMPLETE")
 
 def print_interest_report(
     flow_csv: Path,
@@ -1096,7 +1562,7 @@ def main() -> int:
     parser.add_argument(
         "--flow-csv",
         type=Path,
-        required=True,
+        default=None,
         help=(
             "Optical-flow CSV produced by "
             "analyze_bike_flow.py"
@@ -1186,8 +1652,61 @@ def main() -> int:
         ),
     )
 
+    parser.add_argument(
+        "--audit-only",
+        action="store_true",
+        help=(
+            "Audit one or more annotation/flow pairs without "
+            "writing datasets."
+        ),
+    )
+
+    parser.add_argument(
+        "--audit-pair",
+        nargs=2,
+        action="append",
+        metavar=("ANNOTATIONS", "FLOW_CSV"),
+        help=(
+            "Annotation file and matching flow CSV. "
+            "May be supplied multiple times."
+        ),
+    )
+
     args = parser.parse_args()
 
+    if args.audit_only:
+        if not args.audit_pair:
+            parser.error(
+                "--audit-only requires at least one --audit-pair"
+            )
+
+        audit_pairs(
+            pairs=[
+                (
+                    Path(annotation),
+                    Path(flow_csv),
+                )
+                for annotation, flow_csv in args.audit_pair
+            ],
+            window=args.window,
+            stride=args.stride,
+            flow_start=args.flow_start,
+            dt_tolerance=args.dt_tolerance,
+            preview=args.preview,
+        )
+
+        return 0
+
+    if args.audit_pair:
+        parser.error(
+            "--audit-pair requires --audit-only"
+        )
+
+    if args.flow_csv is None:
+        parser.error(
+            "--flow-csv is required unless --audit-only is used"
+        )
+        
     if args.window <= 0:
         parser.error("--window must be > 0")
 
@@ -1221,7 +1740,6 @@ def main() -> int:
     )
 
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
