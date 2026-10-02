@@ -1,393 +1,224 @@
 #!/usr/bin/env python3
 """
-Train a small temporal 1D CNN for the five-class MTB feature detector.
+train_mtb_cnn.py - End-to-end PyTorch training pipeline for MTB interest regression.
+
+Example usage:
+    python train_mtb.py \
+        --train-npz data/train_part1.npz data/train_part2.npz \
+        --val-npz data/val.npz \
+        --epochs 50 \
+        --batch-size 32 \
+        --lr 1e-3 \
+        --loss huber \
+        --output-dir ./checkpoints
 """
 
-from __future__ import annotations
-
 import argparse
+import sys
 from pathlib import Path
-
 import numpy as np
 import torch
-from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
 
 
-LABELS = [
-    "drop",
-    "rock_garden",
-    "switchback",
-    "stairs",
-    "technical_climb",
-]
+class MTBDataset(Dataset):
+    def __init__(self, npz_paths, feature_file=None):
+        X_list, y_list = [], []
+
+        # Load feature whitelist if provided
+        selected_features = None
+        if feature_file and Path(feature_file).exists():
+            with open(feature_file, "r") as f:
+                selected_features = [
+                    line.strip() for line in f if line.strip() and not line.startswith("#")
+                ]
+            print(f"[Dataset] Loaded {len(selected_features)} features from whitelist: {feature_file}")
+        elif feature_file:
+            print(f"[Warning] Feature file specified but not found: {feature_file}")
+
+        feature_indices = None
+
+        for path in npz_paths:
+            data = np.load(path, allow_pickle=True)
+            X = data["X"]  # Shape: (N, seq_len, num_features)
+            y = data["y"]  # Shape: (N,)
+
+            if selected_features is not None:
+                if "feature_names" in data and feature_indices is None:
+                    all_names = list(data["feature_names"])
+                    feature_indices = [
+                        all_names.index(feat) for feat in selected_features if feat in all_names
+                    ]
+                    missing = set(selected_features) - set(all_names)
+                    if missing:
+                        print(f"[Warning] {len(missing)} features in whitelist not found in NPZ.")
+                    print(f"[Dataset] Filtering input channels: {X.shape[-1]} -> {len(feature_indices)}")
+                
+                if feature_indices is not None:
+                    X = X[:, :, feature_indices]
+                else:
+                    # Fallback to positional slicing if feature_names array isn't inside NPZ
+                    X = X[:, :, : len(selected_features)]
+
+            X_list.append(X)
+            y_list.append(y)
+
+        self.X = torch.tensor(np.concatenate(X_list, axis=0), dtype=torch.float32)
+        self.y = torch.tensor(np.concatenate(y_list, axis=0), dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
 
-class MTBTemporalCNN(nn.Module):
-    """Temporal 1D CNN with expanded dilated receptive field."""
-
-    def __init__(self, n_features: int, n_labels: int = 5) -> None:
+class MTBInterestRegressor(nn.Module):
+    def __init__(self, in_channels, dropout=0.3):
         super().__init__()
-
         self.conv = nn.Sequential(
-            nn.Conv1d(n_features, 32, kernel_size=3, padding=1),
-            nn.BatchNorm1d(32),
-            nn.ReLU(),
-            
-            nn.Conv1d(32, 64, kernel_size=3, padding=2, dilation=2),
+            nn.Conv1d(in_channels, 64, kernel_size=3, padding=1),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            
-            nn.Conv1d(64, 64, kernel_size=3, padding=4, dilation=4),
-            nn.BatchNorm1d(64),
+            nn.Dropout(dropout),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.gru = nn.GRU(128, 64, batch_first=True, bidirectional=True)
+        self.fc = nn.Sequential(
+            nn.Linear(128, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, 1),
         )
 
-        self.pool = nn.AdaptiveMaxPool1d(1)
-
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Dropout(0.20),
-            nn.Linear(32, n_labels),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Input: [batch, time, features] -> Conv1d: [batch, features, time]
+    def forward(self, x):
+        # x shape: (B, T, C) -> Conv1d expects (B, C, T)
         x = x.transpose(1, 2)
         x = self.conv(x)
-        x = self.pool(x)
-        return self.classifier(x)
+        x = x.transpose(1, 2)  # (B, T, 128)
+        out, _ = self.gru(x)
+        out = self.fc(out[:, -1, :])  # Take last time step representation
+        return out.squeeze(-1)
 
 
-def load_dataset(
-        paths: list[Path],
-        train_features: list[str],
-    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Load and concatenate NPZ datasets, preserving each file as a group."""
-    if not paths:
-        raise ValueError("at least one --dataset is required")
-
-    all_x: list[np.ndarray] = []
-    all_y: list[np.ndarray] = []
-    feature_names: list[str] | None = None
-
-    for path in paths:
-        with np.load(path, allow_pickle=False) as data:
-            if not {"X", "y", "feature_names", "labels"} <= set(data.files):
-                raise ValueError(f"{path}: expected X, y, feature_names and labels")
-
-            x = np.asarray(data["X"], dtype=np.float32)
-            y = np.asarray(data["y"], dtype=np.float32)
-
-            current_features = [str(v) for v in data["feature_names"]]
-            current_labels = [str(v) for v in data["labels"]]
-
-            feature_indices = {name: i for i, name in enumerate(current_features)}
-            missing = [name for name in train_features if name not in feature_indices]
-            if missing:
-                raise ValueError(f"{path}: training feature(s) missing from dataset: {missing}")
-
-            indices = [feature_indices[name] for name in train_features]
-            x = x[:, :, indices]
-            current_features = train_features
-
-        if x.ndim != 3:
-            raise ValueError(f"{path}: X must have shape [N,T,F], got {x.shape}")
-        if y.ndim != 2 or y.shape[1] != len(LABELS):
-            raise ValueError(f"{path}: y must have shape [N,5], got {y.shape}")
-        if len(x) != len(y):
-            raise ValueError(f"{path}: X/y row counts differ")
-        if current_labels != LABELS:
-            raise ValueError(f"{path}: labels differ from expected order: {current_labels}")
-
-        if feature_names is None:
-            feature_names = current_features
-        elif current_features != feature_names:
-            raise ValueError(f"{path}: feature_names differ from other datasets")
-
-        if not np.isfinite(x).all() or not np.isfinite(y).all():
-            raise ValueError(f"{path}: X/y contains NaN or Inf")
-
-        all_x.append(x)
-        all_y.append(y)
-
-        print(f"Loaded {path}: X={x.shape}, y={y.shape}")
-
-    X = np.concatenate(all_x, axis=0)
-    y = np.concatenate(all_y, axis=0)
-
-    assert feature_names is not None
-    return X, y, feature_names
-
-
-def split_by_dataset(
-    paths: list[Path],
-    validation_index: int,
-    features: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
-    """Load datasets and hold out one complete dataset for validation."""
-
-    if len(paths) < 2:
-        raise ValueError("at least two --dataset files are required for video-level validation holdout")
-
-    if not 0 <= validation_index < len(paths):
-        raise ValueError("validation index is out of range")
-
-    train_paths = [path for i, path in enumerate(paths) if i != validation_index]
-    validation_path = paths[validation_index]
-
-    train_x, train_y, feature_names = load_dataset(train_paths, features)
-    val_x, val_y, val_features = load_dataset([validation_path], features)
-
-    if feature_names != val_features:
-        raise ValueError("training and validation feature names differ")
-
-    return train_x, train_y, val_x, val_y, feature_names
-
-def fit_normalizer(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    mean = X.reshape(-1, X.shape[-1]).mean(axis=0)
-    std = X.reshape(-1, X.shape[-1]).std(axis=0)
-    std[std < 1e-6] = 1.0
-    return mean.astype(np.float32), std.astype(np.float32)
-
-
-def normalize(X: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
-    return ((X - mean[None, None, :]) / std[None, None, :]).astype(np.float32)
-
-
-def make_loader(X: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
-    dataset = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-
-
-def positive_recall_precision(
-    logits: torch.Tensor, targets: torch.Tensor, threshold: float
-) -> tuple[np.ndarray, np.ndarray]:
-    predictions = torch.sigmoid(logits) >= threshold
-    precision, recall = [], []
-
-    for i in range(targets.shape[1]):
-        pred = predictions[:, i]
-        truth = targets[:, i].bool()
-
-        tp = (pred & truth).sum().item()
-        fp = (pred & ~truth).sum().item()
-        fn = (~pred & truth).sum().item()
-
-        precision.append(tp / (tp + fp) if tp + fp else 0.0)
-        recall.append(tp / (tp + fn) if tp + fn else 0.0)
-
-    return np.asarray(precision), np.asarray(recall)
+def train_one_epoch(model, dataloader, optimizer, criterion, device):
+    model.train()
+    total_loss = 0.0
+    for X, y in dataloader:
+        X, y = X.to(device), y.to(device)
+        optimizer.zero_grad()
+        preds = model(X)
+        loss = criterion(preds, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item() * len(y)
+    return total_loss / len(dataloader.dataset)
 
 
 @torch.no_grad()
-def evaluate(
-    model: nn.Module, loader: DataLoader, criterion: nn.Module, threshold: float, device: torch.device
-) -> tuple[float, float, np.ndarray, np.ndarray]:
+def evaluate(model, dataloader, criterion, device):
     model.eval()
-
-    total_loss, total_count = 0.0, 0
-    all_logits, all_targets = [], []
-
-    for X, y in loader:
+    total_loss = 0.0
+    all_preds, all_targets = [], []
+    for X, y in dataloader:
         X, y = X.to(device), y.to(device)
-        logits = model(X)
-        loss = criterion(logits, y)
+        preds = model(X)
+        loss = criterion(preds, y)
+        total_loss += loss.item() * len(y)
+        all_preds.append(preds.cpu().numpy())
+        all_targets.append(y.cpu().numpy())
 
-        count = len(X)
-        total_loss += float(loss.item()) * count
-        total_count += count
-        all_logits.append(logits)
-        all_targets.append(y)
+    all_preds = np.concatenate(all_preds)
+    all_targets = np.concatenate(all_targets)
 
-    logits = torch.cat(all_logits)
-    targets = torch.cat(all_targets)
+    mae = np.mean(np.abs(all_preds - all_targets))
+    rmse = np.sqrt(np.mean((all_preds - all_targets) ** 2))
+    ss_res = np.sum((all_targets - all_preds) ** 2)
+    ss_tot = np.sum((all_targets - np.mean(all_targets)) ** 2)
+    r2 = 1.0 - (ss_res / (ss_tot + 1e-8))
 
-    loss = total_loss / total_count
-    
-    preds = (torch.sigmoid(logits) >= threshold).bool()
-    accuracy = float((preds == targets.bool()).float().mean().item())
-    
-    precision, recall = positive_recall_precision(logits, targets, threshold)
-
-    return loss, accuracy, precision, recall
+    return total_loss / len(dataloader.dataset), mae, rmse, r2
 
 
-def train(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    epochs: int,
-    learning_rate: float,
-    threshold: float,
-    pos_weight: torch.Tensor,
-    device: torch.device,
-) -> tuple [dict[str, torch.Tensor], list[dict]]:
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+def main():
+    parser = argparse.ArgumentParser(description="Train 1D-CNN + BiGRU MTB Regressor")
+    parser.add_argument("--train-npz", nargs="+", required=True, help="List of training .npz files")
+    parser.add_argument("--val-npz", nargs="+", required=True, help="List of validation .npz files")
+    parser.add_argument("--feature-file", type=str, default=None, help="Path to feature whitelist text file")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of epochs")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate")
+    parser.add_argument("--weight-decay", type=float, default=1e-3, help="Weight decay L2 regularization")
+    parser.add_argument("--dropout", type=float, default=0.3, help="Dropout rate")
+    parser.add_argument("--loss", choices=["huber", "mse"], default="huber", help="Loss function")
+    parser.add_argument("--output-dir", type=str, default="./output/checkpoints", help="Output directory")
 
-    history: list[dict] = []
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Executing on device: {device}")
+
+    # Load datasets with feature whitelist support
+    train_ds = MTBDataset(args.train_npz, feature_file=args.feature_file)
+    val_ds = MTBDataset(args.val_npz, feature_file=args.feature_file)
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
+
+    num_features = train_ds.X.shape[-1]
+    print(f"Train Dataset: {len(train_ds)} samples | Seq Length: {train_ds.X.shape[1]} | Features: {num_features}")
+    print(f"Val Dataset:   {len(val_ds)} samples")
+
+    model = MTBInterestRegressor(in_channels=num_features, dropout=args.dropout).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    criterion = nn.HuberLoss(delta=0.5) if args.loss == "huber" else nn.MSELoss()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    best_checkpoint = output_dir / "mtb_temporal_cnn.pt"
+
     best_val_loss = float("inf")
-    best_state = None
-    best_epoch = 0
 
-    for epoch in range(1, epochs + 1):
-        model.train()
-        running_loss, count = 0.0, 0
+    print("\nStarting Training Loop...")
+    print("-" * 75)
+    print(f"{'Epoch':<7} | {'Train Loss':<10} | {'Val Loss':<10} | {'MAE':<10} | {'RMSE':<10} | {'R2':<8}")
+    print("-" * 75)
 
-        for X, y in train_loader:
-            X, y = X.to(device), y.to(device)
-            optimizer.zero_grad()
-            logits = model(X)
-            loss = criterion(logits, y)
-            loss.backward()
-            optimizer.step()
+    for epoch in range(1, args.epochs + 1):
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss, mae, rmse, r2 = evaluate(model, val_loader, criterion, device)
 
-            batch_count = len(X)
-            running_loss += float(loss.item()) * batch_count
-            count += batch_count
-
-        train_loss = running_loss / count
-        val_loss, val_accuracy, precision, recall = evaluate(
-            model, val_loader, criterion, threshold, device
-        )
+        print(f"{epoch:<7} | {train_loss:<10.4f} | {val_loss:<10.4f} | {mae:<10.4f} | {rmse:<10.4f} | {r2:<8.4f}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
-            best_state = {
-                key: value.detach().cpu().clone()
-                for key, value in model.state_dict().items()
-            }
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "mae": mae,
+                    "r2": r2,
+                    "num_features": num_features,
+                },
+                best_checkpoint,
+            )
 
-        row = {
-            "epoch": epoch,
-            "best_epoch":best_epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "best_val_loss": best_val_loss,
-            "val_accuracy": val_accuracy,
-            "precision_mean": float(precision.mean()),
-            "recall_mean": float(recall.mean()),
-        }
-        history.append(row)
-
-        per_label = " ".join(
-            f"{label}:P{precision[i]:.2f}/R{recall[i]:.2f}"
-            for i, label in enumerate(LABELS)
-        )
-
-        print(
-            f"epoch {epoch:3d}/{epochs} "
-            f"best epoch {best_epoch:3d}/{epochs} "
-            f"train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} "
-            f"best val_loss={best_val_loss:.4f} "
-            f"val_acc={val_accuracy:.3f} "
-            f"{per_label}"
-        )
-
-    if best_state == None:
-        raise RuntimeError("No best model state was captured during validation.")
-    
-    return best_state, history
-
-
-def save_checkpoint(
-    path: Path,
-    model_state: dict[str, torch.Tensor],
-    mean: np.ndarray,
-    std: np.ndarray,
-    feature_names: list[str],
-    history: list[dict],
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state_dict": model_state,
-            "n_features": len(feature_names),
-            "n_labels": len(LABELS),
-            "labels": LABELS,
-            "feature_names": feature_names,
-            "normalization_mean": mean,
-            "normalization_std": std,
-            "history": history,
-        },
-        path,
-    )
-
-def load_feature_list(path: Path) -> list[str]:
-    features = [
-        line.strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-    if not features:
-        raise ValueError(f"No features found in {path}")
-
-    if len(features) != len(set(features)):
-        raise ValueError(f"Duplicate feature names found in {path}")
-
-    return features
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Train temporal 1D CNN for MTB features.")
-    parser.add_argument("--dataset", type=Path, action="append", required=True)
-    parser.add_argument("--validation-index", type=int, default=-1)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--threshold", type=float, default=0.5)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output", type=Path, default=Path("output/mtb_temporal_cnn.pt"))
-    parser.add_argument("--features", type=Path, default=Path("data/features/mtb_training_features.txt"))
-
-    args = parser.parse_args()
-
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    features = load_feature_list(args.features)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    print(f"Using compute device: {device}")
-    if device.type == "cuda":
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-
-    validation_index = len(args.dataset) - 1 if args.validation_index == -1 else args.validation_index
-
-    train_x, train_y, val_x, val_y, feature_names = split_by_dataset(
-        args.dataset,
-        validation_index,
-        features,
-    )
-
-    # Calculate class imbalance weights for BCEWithLogitsLoss
-    pos_counts = train_y.sum(axis=0)
-    neg_counts = len(train_y) - pos_counts
-    pos_weight = torch.from_numpy(neg_counts / np.maximum(pos_counts, 1.0)).float().to(device)
-
-    mean, std = fit_normalizer(train_x)
-    train_x = normalize(train_x, mean, std)
-    val_x = normalize(val_x, mean, std)
-
-    train_loader = make_loader(train_x, train_y, args.batch_size, shuffle=True)
-    val_loader = make_loader(val_x, val_y, args.batch_size, shuffle=False)
-
-    model = MTBTemporalCNN(n_features=train_x.shape[-1], n_labels=len(LABELS)).to(device)
-
-    best_state, history = train(
-        model, train_loader, val_loader, args.epochs, args.learning_rate, args.threshold, pos_weight, device
-    )
-
-    save_checkpoint(args.output, best_state, mean, std, feature_names, history)
-    print(f"\nSaved checkpoint to {args.output}")
-
-    return 0
+    print("-" * 75)
+    print(f"Training Complete. Best Val Loss: {best_val_loss:.4f} at epoch: {best_epoch:3d}/{epoch:3d} saved to {best_checkpoint}")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n[!] Training interrupted by user (^C). Cleaning up GPU context...")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        sys.exit(0)
