@@ -48,6 +48,12 @@ manual annotations covering that window.
 
 Windows which are not covered by an annotation are NOT used.
 
+The flow CSV timestamps follow analyze_bike_flow.py semantics: each
+timestamp is the END of the frame-to-frame interval used to calculate
+that row's optical-flow features. The generator therefore derives the
+sampling interval from the CSV timestamps and maps N selected rows to
+the represented interval of N sampling periods.
+
 If a window overlaps more than one annotation, its target is the
 duration-weighted mean of the annotation scores.
 
@@ -412,10 +418,24 @@ def build_windows(
             "timestamps and feature matrix have different lengths"
         )
 
+    # analyze_bike_flow.py writes the END timestamp of each
+    # frame-to-frame flow interval. For example, at 2 FPS:
+    #
+    #   time=0.5 -> flow over [0.0, 0.5)
+    #   time=1.0 -> flow over [0.5, 1.0)
+    #
+    # Therefore N rows represent N * dt seconds, beginning one dt
+    # before the first row timestamp. Derive dt from the actual CSV
+    # timestamps; never assume a hard-coded FPS.
     dt = float(
         np.median(np.diff(timestamps))
     )
 
+    if dt <= 0:
+        raise ValueError(
+            "invalid flow sampling interval"
+        )
+    
     samples_per_window = int(
         round(window / dt)
     )
@@ -451,14 +471,18 @@ def build_windows(
             index + samples_per_window,
         )
 
+        # Each flow row is timestamped at the END of its
+        # frame-to-frame interval. Thus the first selected row
+        # represents [timestamps[index] - dt, timestamps[index]).
         relative_start = float(
-            timestamps[index]
+            timestamps[index] - dt
         )
 
         relative_end = (
-            relative_start + window
+            relative_start
+            + samples_per_window * dt
         )
-
+ 
         video_start = (
             relative_start + flow_start
         )
@@ -638,6 +662,104 @@ def write_manifest(
         writer.writeheader()
         writer.writerows(manifest)
 
+def write_example_audit(
+    path: Path,
+    manifest: list[dict],
+    y: np.ndarray,
+    annotations: list[Annotation],
+    stride: float,
+) -> None:
+    """Write one inspectable row per generated example."""
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fields = [
+        "example_id",
+        "start",
+        "end",
+        "duration",
+        "target",
+        "annotation_id",
+        "annotation_scores",
+        "covered_duration",
+        "coverage",
+        "remarks",
+        "n_samples",
+        "near_annotation_boundary",
+        "multiple_annotations",
+        "intermediate_target",
+        "suspicious",
+    ]
+
+    with path.open(
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fields,
+        )
+
+        writer.writeheader()
+
+        for i, row in enumerate(manifest):
+            start = float(row["start"])
+            end = float(row["end"])
+            target = float(row["target"])
+
+            annotation_ids = row[
+                "annotation_id"
+            ].split(";")
+
+            multiple_annotations = (
+                len(annotation_ids) > 1
+            )
+
+            near_boundary = any(
+                abs(start - annotation.start)
+                <= stride + 1e-9
+                or
+                abs(end - annotation.end)
+                <= stride + 1e-9
+                for annotation in annotations
+            )
+
+            intermediate_target = not np.isclose(
+                target,
+                round(target),
+                atol=1e-6,
+            )
+
+            suspicious = (
+                near_boundary
+                or multiple_annotations
+                or intermediate_target
+            )
+
+            output = dict(row)
+
+            output.update(
+                {
+                    "near_annotation_boundary": int(
+                        near_boundary
+                    ),
+                    "multiple_annotations": int(
+                        multiple_annotations
+                    ),
+                    "intermediate_target": int(
+                        intermediate_target
+                    ),
+                    "suspicious": int(
+                        suspicious
+                    ),
+                }
+            )
+
+            writer.writerow(output)
 
 def print_annotation_summary(
     annotations: list[Annotation],
@@ -948,8 +1070,10 @@ def audit_pair(
         flow_start,
     )
 
+    # Flow timestamps are END timestamps. The represented flow
+    # therefore starts one sampling interval before the first row.
     flow_start_time = float(
-        timestamps[0] + flow_start
+        timestamps[0] - median_dt + flow_start
     )
 
     flow_end_time = float(
@@ -1091,6 +1215,22 @@ def audit_pair(
         f"{annotated_end:.3f}s"
     )
 
+    audit_path = Path(
+        "output/datasets"
+    ) / f"{annotations_path.stem.lower()}_dataset_audit.csv"
+
+    write_example_audit(
+        audit_path,
+        manifest,
+        y,
+        annotations,
+        stride,
+    )
+
+    print(
+        f"Audit CSV:   {audit_path}"
+    )
+    
     return len(manifest), {
         "examples": len(manifest),
         "targets": y,
@@ -1292,7 +1432,7 @@ def print_interest_report(
 
     print(
         f"Flow range:   "
-        f"{format_clock(float(timestamps[0] + flow_start))}"
+        f"{format_clock(float(timestamps[0] - median_dt + flow_start))}"
         f" - "
         f"{format_clock(float(timestamps[-1] + flow_start))}"
     )
@@ -1326,8 +1466,9 @@ def print_interest_report(
     print("WINDOW COVERAGE")
     print("=" * 80)
 
+    # Include the interval represented by the first flow row.
     total_flow_duration = (
-        float(timestamps[-1] - timestamps[0])
+        float(timestamps[-1] - timestamps[0] + median_dt)
     )
 
     annotated_duration = sum(
