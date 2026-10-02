@@ -436,14 +436,36 @@ def build_windows(
             "invalid flow sampling interval"
         )
     
-    samples_per_window = int(
-        round(window / dt)
-    )
+    window_samples_float = window / dt
+    stride_samples_float = stride / dt
 
-    samples_per_stride = int(
-        round(stride / dt)
-    )
+    samples_per_window = int(round(window_samples_float))
+    samples_per_stride = int(round(stride_samples_float))
 
+    # Do not silently change the requested temporal geometry by rounding
+    # window/stride to a different number of flow samples.
+    if not np.isclose(
+        window_samples_float,
+        samples_per_window,
+        rtol=0.0,
+        atol=1e-6,
+    ):
+        raise ValueError(
+            f"window={window:.6f}s is not an integer multiple of "
+            f"flow dt={dt:.6f}s"
+        )
+
+    if not np.isclose(
+        stride_samples_float,
+        samples_per_stride,
+        rtol=0.0,
+        atol=1e-6,
+    ):
+        raise ValueError(
+            f"stride={stride:.6f}s is not an integer multiple of "
+            f"flow dt={dt:.6f}s"
+        )
+    
     if samples_per_window < 2:
         raise ValueError(
             f"window={window:.3f}s is too short "
@@ -557,7 +579,9 @@ def build_windows(
                     "example_id": len(manifest),
                     "start": video_start,
                     "end": video_end,
-                    "duration": window,
+                    "duration": (
+                        video_end - video_start
+                    ),
                     "target": target,
                     "annotation_id": ";".join(
                         annotation_ids
@@ -666,9 +690,6 @@ def write_manifest(
 def write_example_audit(
     path: Path,
     manifest: list[dict],
-    y: np.ndarray,
-    annotations: list[Annotation],
-    stride: float,
 ) -> None:
     """Write one inspectable row per generated example."""
 
@@ -683,16 +704,25 @@ def write_example_audit(
         "end",
         "duration",
         "target",
+        "expected_target",
+        "target_error",
         "annotation_id",
+        "expected_annotation_id",
         "annotation_scores",
+        "expected_annotation_scores",
         "covered_duration",
+        "expected_covered_duration",
         "coverage",
+        "expected_coverage",
+        "duration_error",
+        "coverage_error",
         "remarks",
         "n_samples",
-        "near_annotation_boundary",
-        "multiple_annotations",
-        "intermediate_target",
-        "suspicious",
+        "sample_count_expected",
+        "sample_count_ok",
+        "annotation_ids_ok",
+        "target_ok",
+        "valid",
     ]
 
     with path.open(
@@ -712,55 +742,210 @@ def write_example_audit(
             end = float(row["end"])
             target = float(row["target"])
 
-            annotation_ids = row[
-                "annotation_id"
-            ].split(";")
-
-            multiple_annotations = (
-                len(annotation_ids) > 1
-            )
-
-            near_boundary = any(
-                abs(start - annotation.start)
-                <= stride + 1e-9
-                or
-                abs(end - annotation.end)
-                <= stride + 1e-9
-                for annotation in annotations
-            )
-
-            intermediate_target = not np.isclose(
-                target,
-                round(target),
-                atol=1e-6,
-            )
-
-            suspicious = (
-                near_boundary
-                or multiple_annotations
-                or intermediate_target
-            )
-
             output = dict(row)
+            writer.writerow(output)
 
-            output.update(
-                {
-                    "near_annotation_boundary": int(
-                        near_boundary
-                    ),
-                    "multiple_annotations": int(
-                        multiple_annotations
-                    ),
-                    "intermediate_target": int(
-                        intermediate_target
-                    ),
-                    "suspicious": int(
-                        suspicious
-                    ),
-                }
+
+def validate_generated_examples(
+    manifest: list[dict],
+    annotations: list[Annotation],
+    window: float,
+    flow_dt: float,
+    tolerance: float = 1e-6,
+) -> tuple[list[dict], int]:
+    """
+    Independently validate every generated example against the annotations.
+
+    This deliberately does not call build_windows(). It reconstructs the
+    expected annotation coverage and duration-weighted target directly from
+    each generated window's start/end timestamps.
+    """
+
+    expected_samples = int(round(window / flow_dt))
+
+    if expected_samples < 1:
+        raise ValueError(
+            f"invalid expected sample count for window={window:.6f}s "
+            f"and flow dt={flow_dt:.6f}s"
+        )
+
+    validated = []
+    invalid_count = 0
+
+    for row in manifest:
+        start = float(row["start"])
+        end = float(row["end"])
+        duration = float(row["duration"])
+        target = float(row["target"])
+        covered_duration = float(row["covered_duration"])
+        coverage = float(row["coverage"])
+        n_samples = int(row["n_samples"])
+
+        expected_matches = []
+        expected_covered = 0.0
+        expected_weighted_score = 0.0
+
+        for annotation_id, annotation in enumerate(
+            annotations,
+            start=1,
+        ):
+            overlap = annotation_overlap(
+                start,
+                end,
+                annotation,
             )
 
-            writer.writerow(output)
+            if overlap <= 0:
+                continue
+
+            expected_matches.append(
+                (annotation_id, annotation, overlap)
+            )
+
+            expected_covered += overlap
+            expected_weighted_score += (
+                overlap * annotation.score
+            )
+
+        expected_annotation_ids = ";".join(
+            str(item[0])
+            for item in expected_matches
+        )
+
+        expected_annotation_scores = ";".join(
+            str(item[1].score)
+            for item in expected_matches
+        )
+
+        expected_target = (
+            expected_weighted_score / expected_covered
+            if expected_covered > 0
+            else float("nan")
+        )
+
+        expected_coverage = (
+            expected_covered / duration
+            if duration > 0
+            else float("nan")
+        )
+
+        expected_duration = end - start
+
+        duration_error = abs(
+            duration - expected_duration
+        )
+
+        covered_duration_error = abs(
+            covered_duration - expected_covered
+        )
+
+        coverage_error = (
+            abs(coverage - expected_coverage)
+            if np.isfinite(expected_coverage)
+            else float("inf")
+        )
+
+        target_error = (
+            abs(target - expected_target)
+            if np.isfinite(expected_target)
+            else float("inf")
+        )
+
+        generated_annotation_ids = str(
+            row["annotation_id"]
+        )
+
+        generated_annotation_scores = str(
+            row["annotation_scores"]
+        )
+
+        expected_duration_from_samples = (
+            expected_samples * flow_dt
+        )
+
+        geometry_error = abs(
+            expected_duration_from_samples
+            - expected_duration
+        )
+
+        checks = {
+            "duration_ok": duration_error <= tolerance,
+            "sample_count_ok": (
+                n_samples == expected_samples
+            ),
+            "sample_geometry_ok": (
+                geometry_error <= tolerance
+            ),
+            "annotation_ids_ok": (
+                generated_annotation_ids
+                == expected_annotation_ids
+            ),
+            "annotation_scores_ok": (
+                generated_annotation_scores
+                == expected_annotation_scores
+            ),
+            "covered_duration_ok": (
+                covered_duration_error <= tolerance
+            ),
+            "coverage_ok": (
+                coverage_error <= tolerance
+            ),
+            "target_ok": (
+                target_error <= tolerance
+            ),
+            "target_range_ok": (
+                -tolerance <= target <= 3.0 + tolerance
+            ),
+        }
+
+        valid = all(checks.values())
+
+        if not valid:
+            invalid_count += 1
+
+        output = dict(row)
+
+        output.update(
+            {
+                "expected_target": (
+                    expected_target
+                    if np.isfinite(expected_target)
+                    else ""
+                ),
+                "target_error": target_error,
+                "expected_annotation_id": (
+                    expected_annotation_ids
+                ),
+                "expected_annotation_scores": (
+                    expected_annotation_scores
+                ),
+                "expected_covered_duration": (
+                    expected_covered
+                ),
+                "expected_coverage": (
+                    expected_coverage
+                    if np.isfinite(expected_coverage)
+                    else ""
+                ),
+                "duration_error": duration_error,
+                "coverage_error": coverage_error,
+                "sample_count_expected": expected_samples,
+                "sample_count_ok": int(
+                    checks["sample_count_ok"]
+                ),
+                "annotation_ids_ok": int(
+                    checks["annotation_ids_ok"]
+                ),
+                "target_ok": int(
+                    checks["target_ok"]
+                ),
+                "valid": int(valid),
+            }
+        )
+
+        validated.append(output)
+
+    return validated, invalid_count
 
 
 def print_annotation_summary(
@@ -1221,18 +1406,37 @@ def audit_pair(
         "output/datasets"
     ) / f"{annotations_path.stem.lower()}_dataset_audit.csv"
 
+    validated_manifest, validation_failures = (
+        validate_generated_examples(
+            manifest=manifest,
+            annotations=annotations,
+            window=window,
+            flow_dt=median_dt,
+        )
+    )
+
     write_example_audit(
         audit_path,
-        manifest,
-        y,
-        annotations,
-        stride,
+        validated_manifest,
+    )
+
+    print(
+        f"Validation:   "
+        f"{len(manifest) - validation_failures} valid / "
+        f"{validation_failures} invalid"
     )
 
     print(
         f"Audit CSV:   {audit_path}"
     )
 
+    if validation_failures:
+        raise ValueError(
+            f"{annotations_path}: "
+            f"{validation_failures} generated examples failed "
+            "independent validation"
+        )
+    
     return len(manifest), {
         "examples": len(manifest),
         "targets": y,
@@ -1631,9 +1835,33 @@ def build_dataset(
         ),
     )
 
+    metadata = {
+        "source_annotations": str(annotations_path),
+        "source_flow_csv": str(flow_csv),
+        "window": window,
+        "stride": stride,
+        "flow_start": flow_start,
+        "flow_dt": median_dt,
+    }
+
+    _, validation_failures = validate_generated_examples(
+        manifest=manifest,
+        annotations=annotations,
+        window=window,
+        flow_dt=median_dt,
+    )
+
+    if validation_failures:
+        raise ValueError(
+            f"{annotations_path}: "
+            f"{validation_failures} generated examples failed "
+            "independent validation"
+        )
+
     write_manifest(
-        manifest_path,
-        manifest,
+         manifest_path,
+         manifest,
+        metadata,
     )
 
     print()
