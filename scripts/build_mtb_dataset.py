@@ -662,6 +662,7 @@ def write_manifest(
         writer.writeheader()
         writer.writerows(manifest)
 
+
 def write_example_audit(
     path: Path,
     manifest: list[dict],
@@ -760,6 +761,7 @@ def write_example_audit(
             )
 
             writer.writerow(output)
+
 
 def print_annotation_summary(
     annotations: list[Annotation],
@@ -1230,7 +1232,7 @@ def audit_pair(
     print(
         f"Audit CSV:   {audit_path}"
     )
-    
+
     return len(manifest), {
         "examples": len(manifest),
         "targets": y,
