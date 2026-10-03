@@ -1,295 +1,958 @@
+#!/usr/bin/env python3
+
 import argparse
-import sys
+import random
 from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, ConcatDataset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 
 
 # ==============================================================================
-# 1. TARGET SCALER (Per-Fold Standardization)
+# CONFIGURATION
 # ==============================================================================
-class TargetScaler:
-    """Zero-mean, unit-variance scaler for regression targets to prevent mean bias."""
-    def __init__(self):
-        self.mean = 0.0
-        self.std = 1.0
 
-    def fit(self, y_tensor):
-        y_np = y_tensor.numpy()
-        self.mean = float(np.mean(y_np))
-        self.std = float(np.std(y_np))
-        if self.std < 1e-6:
-            self.std = 1.0  # Prevent division by zero
+DEFAULT_HIDDEN_DIM = 128
+CLASSIFIER_MID_DIM = 64
+DEFAULT_NUM_CLASSES = 3
+DEFAULT_DROPOUT = 0.4
 
-    def transform(self, y_tensor):
-        return (y_tensor - self.mean) / self.std
+CLASS_WEIGHTS = [0.2, 1.0, 5.0]
+LABEL_SMOOTHING = 0.1
 
-    def inverse_transform(self, y_scaled):
-        if isinstance(y_scaled, torch.Tensor):
-            return y_scaled * self.std + self.mean
-        return y_scaled * self.std + self.mean
+DEFAULT_EPOCHS = 15
+DEFAULT_BATCH_SIZE = 32
+DEFAULT_LR = 1e-3
+DEFAULT_WEIGHT_DECAY = 1e-2
+
+DEFAULT_SEED = 42
 
 
 # ==============================================================================
-# 2. DATASET DEFINITION
+# REPRODUCIBILITY
 # ==============================================================================
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    # Deterministic behavior where possible.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ==============================================================================
+# DATASET
+# ==============================================================================
+
 class MTBDataset(Dataset):
+    """
+    Load one generated MTB dataset.
+
+    Continuous targets 0..3 are converted to the production
+    three-class formulation:
+
+        class 0: target < 0.5
+        class 1: 0.5 <= target < 2.5
+        class 2: target >= 2.5
+    """
+
     def __init__(self, npz_file, feature_mask=None):
         data = np.load(npz_file, allow_pickle=True)
-        
-        X = data["X"]  # Shape: (Samples, Window_Length, Features)
-        y = data["y"]  # Shape: (Samples,)
+
+        X = data["X"]
+        y = data["y"]
 
         if feature_mask is not None and "feature_names" in data:
             all_names = list(data["feature_names"])
-            valid_indices = [all_names.index(f) for f in feature_mask if f in all_names]
+
+            valid_indices = [
+                all_names.index(name)
+                for name in feature_mask
+                if name in all_names
+            ]
+
             if valid_indices:
                 X = X[:, :, valid_indices]
 
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.float32)
+        y_class = np.zeros(len(y), dtype=np.int64)
+
+        y_class[
+            (y >= 0.5) & (y < 2.5)
+        ] = 1
+
+        y_class[
+            y >= 2.5
+        ] = 2
+
+        self.X = torch.tensor(
+            X,
+            dtype=torch.float32,
+        )
+
+        self.y = torch.tensor(
+            y_class,
+            dtype=torch.long,
+        )
 
     def __len__(self):
         return len(self.y)
 
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+    def __getitem__(self, index):
+        return self.X[index], self.y[index]
 
 
 # ==============================================================================
-# 3. MODEL ARCHITECTURE (Dilated 1D-TCN)
+# MODEL
 # ==============================================================================
-class MTBConvNet(nn.Module):
-    """1D Dilated Temporal Convolutional Network with GroupNorm."""
-    def __init__(self, in_channels, dropout=0.4):
+
+class MTBClassifier(nn.Module):
+
+    def __init__(
+        self,
+        feature_dim,
+        hidden_dim=DEFAULT_HIDDEN_DIM,
+        num_classes=DEFAULT_NUM_CLASSES,
+        dropout=DEFAULT_DROPOUT,
+    ):
         super().__init__()
-        self.net = nn.Sequential(
-            # Layer 1: Standard Receptive Field
-            nn.Conv1d(in_channels, 64, kernel_size=3, padding=1, dilation=1),
-            nn.GroupNorm(num_groups=8, num_channels=64),
-            nn.ReLU(),
+
+        self.backbone = nn.LSTM(
+            input_size=feature_dim,
+            hidden_size=hidden_dim,
+            batch_first=True,
+            bidirectional=True,
+        )
+
+        self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            
-            # Layer 2: Expanded Dilated Receptive Field (Dilation = 2)
-            nn.Conv1d(64, 32, kernel_size=3, padding=2, dilation=2),
-            nn.GroupNorm(num_groups=4, num_channels=32),
+
+            nn.Linear(
+                hidden_dim * 2,
+                CLASSIFIER_MID_DIM,
+            ),
+
             nn.ReLU(),
-            
-            # Global Temporal Pooling
-            nn.AdaptiveAvgPool1d(1),  # Pools (Batch, 32, Time) -> (Batch, 32, 1)
-            nn.Flatten(),
-            nn.Linear(32, 1)
+
+            nn.Linear(
+                CLASSIFIER_MID_DIM,
+                num_classes,
+            ),
         )
 
     def forward(self, x):
-        # Input shape: (Batch, Sequence_Len, Features) -> (Batch, Features, Sequence_Len)
-        x = x.transpose(1, 2)
-        return self.net(x).squeeze(-1)
+
+        # x:
+        #   [batch, time, features]
+
+        out, _ = self.backbone(x)
+
+        # Mean temporal pooling.
+        pooled = torch.mean(
+            out,
+            dim=1,
+        )
+
+        logits = self.classifier(
+            pooled
+        )
+
+        return logits
 
 
 # ==============================================================================
-# 4. TRAINING AND EVALUATION HELPERS
+# METRICS
 # ==============================================================================
-def train_one_epoch(model, dataloader, optimizer, criterion, scaler, device):
+
+def calculate_metrics(
+    targets,
+    predictions,
+    num_classes=3,
+):
+    targets = np.asarray(targets)
+    predictions = np.asarray(predictions)
+
+    accuracy = float(
+        np.mean(predictions == targets)
+    )
+
+    confusion = np.zeros(
+        (num_classes, num_classes),
+        dtype=np.int64,
+    )
+
+    for true, pred in zip(
+        targets,
+        predictions,
+    ):
+        confusion[true, pred] += 1
+
+    recalls = []
+    precisions = []
+    f1s = []
+
+    for cls in range(num_classes):
+
+        tp = confusion[cls, cls]
+
+        fn = (
+            np.sum(confusion[cls, :])
+            - tp
+        )
+
+        fp = (
+            np.sum(confusion[:, cls])
+            - tp
+        )
+
+        if tp + fn > 0:
+            recall = tp / (tp + fn)
+        else:
+            recall = 0.0
+
+        if tp + fp > 0:
+            precision = tp / (tp + fp)
+        else:
+            precision = 0.0
+
+        if precision + recall > 0:
+            f1 = (
+                2.0
+                * precision
+                * recall
+                / (precision + recall)
+            )
+        else:
+            f1 = 0.0
+
+        recalls.append(recall)
+        precisions.append(precision)
+        f1s.append(f1)
+
+    balanced_accuracy = float(
+        np.mean(recalls)
+    )
+
+    macro_f1 = float(
+        np.mean(f1s)
+    )
+
+    return {
+        "accuracy": accuracy,
+        "balanced_accuracy": balanced_accuracy,
+        "macro_f1": macro_f1,
+        "precision": precisions,
+        "recall": recalls,
+        "f1": f1s,
+        "confusion": confusion,
+    }
+
+
+# ==============================================================================
+# TRAINING
+# ==============================================================================
+
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    criterion,
+    device,
+):
     model.train()
-    total_loss = 0.0
 
-    for X_batch, y_batch in dataloader:
-        X_batch = X_batch.to(device)
-        # Transform target to scaled space for gradient step
-        y_scaled = scaler.transform(y_batch).to(device)
+    total_loss = 0.0
+    total_samples = 0
+
+    for X, y in loader:
+
+        X = X.to(device)
+        y = y.to(device)
 
         optimizer.zero_grad()
-        predictions = model(X_batch)
-        loss = criterion(predictions, y_scaled)
+
+        logits = model(X)
+
+        loss = criterion(
+            logits,
+            y,
+        )
+
         loss.backward()
+
         optimizer.step()
 
-        total_loss += loss.item() * len(y_batch)
+        batch_size = len(y)
 
-    return total_loss / len(dataloader.dataset)
+        total_loss += (
+            loss.item()
+            * batch_size
+        )
+
+        total_samples += batch_size
+
+    return total_loss / total_samples
 
 
-def evaluate(model, dataloader, criterion, scaler, device):
+# ==============================================================================
+# EVALUATION
+# ==============================================================================
+
+@torch.no_grad()
+def evaluate(
+    model,
+    loader,
+    criterion,
+    device,
+):
     model.eval()
+
     total_loss = 0.0
-    all_preds_orig = []
-    all_targets_orig = []
+    total_samples = 0
 
-    with torch.no_grad():
-        for X_batch, y_batch in dataloader:
-            X_batch = X_batch.to(device)
-            y_scaled = scaler.transform(y_batch).to(device)
+    all_targets = []
+    all_predictions = []
 
-            preds_scaled = model(X_batch)
-            loss = criterion(preds_scaled, y_scaled)
+    for X, y in loader:
 
-            total_loss += loss.item() * len(y_batch)
+        X = X.to(device)
+        y = y.to(device)
 
-            # Inverse-transform predictions back to true target scale for metrics
-            preds_orig = scaler.inverse_transform(preds_scaled.cpu()).numpy()
-            targets_orig = y_batch.numpy()
+        logits = model(X)
 
-            all_preds_orig.extend(preds_orig)
-            all_targets_orig.extend(targets_orig)
+        loss = criterion(
+            logits,
+            y,
+        )
 
-    all_preds_orig = np.array(all_preds_orig)
-    all_targets_orig = np.array(all_targets_orig)
+        batch_size = len(y)
 
-    val_loss = total_loss / len(dataloader.dataset)
-    mae = np.mean(np.abs(all_preds_orig - all_targets_orig))
-    rmse = np.sqrt(np.mean((all_preds_orig - all_targets_orig) ** 2))
+        total_loss += (
+            loss.item()
+            * batch_size
+        )
 
-    # Variance-safe R2 calculation in original target units
-    target_variance = np.var(all_targets_orig)
-    if target_variance < 1e-6:
-        r2 = 0.0
-    else:
-        ss_res = np.sum((all_targets_orig - all_preds_orig) ** 2)
-        ss_tot = np.sum((all_targets_orig - np.mean(all_targets_orig)) ** 2)
-        r2 = 1.0 - (ss_res / ss_tot)
+        total_samples += batch_size
 
-    return val_loss, mae, rmse, r2
+        predictions = torch.argmax(
+            logits,
+            dim=1,
+        )
+
+        all_targets.extend(
+            y.cpu().numpy()
+        )
+
+        all_predictions.extend(
+            predictions.cpu().numpy()
+        )
+
+    metrics = calculate_metrics(
+        all_targets,
+        all_predictions,
+    )
+
+    metrics["loss"] = (
+        total_loss
+        / total_samples
+    )
+
+    return metrics
 
 
 # ==============================================================================
-# 5. LEAVE-ONE-VIDEO-OUT CROSS VALIDATION HARNESS
+# ONE LOVO FOLD
 # ==============================================================================
-def run_lovo_cv(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[+] Using Device: {device}")
 
-    data_path = Path(args.data_dir)
-    dataset_files = sorted(list(data_path.glob("*.npz")))
+def run_fold(
+    dataset_files,
+    val_path,
+    args,
+    device,
+):
 
-    if not dataset_files:
-        raise FileNotFoundError(f"No .npz files found in: {args.data_dir}")
+    train_paths = [
+        path
+        for path in dataset_files
+        if path != val_path
+    ]
 
-    print(f"[+] Found {len(dataset_files)} video datasets for LOVO CV.")
+    train_datasets = [
+        MTBDataset(
+            path,
+            args.feature_mask,
+        )
+        for path in train_paths
+    ]
 
-    feature_mask = None
-    if args.feature_file and Path(args.feature_file).exists():
-        with open(args.feature_file, "r") as f:
-            feature_mask = [line.strip() for line in f if line.strip()]
-        print(f"[+] Loaded feature mask with {len(feature_mask)} whitelist features.")
+    val_dataset = MTBDataset(
+        val_path,
+        args.feature_mask,
+    )
 
-    fold_results = []
+    train_dataset = ConcatDataset(
+        train_datasets
+    )
 
-    for fold_idx, val_path in enumerate(dataset_files):
-        val_name = val_path.stem
-        train_paths = [p for p in dataset_files if p != val_path]
+    # --------------------------------------------------------------------------
+    # Data loaders
+    # --------------------------------------------------------------------------
 
-        # 1. Load training datasets per video
-        train_datasets = [MTBDataset(p, feature_mask) for p in train_paths]
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+    )
 
-        # 2. Calculate sample weights for dataset size balancing
-        sample_weights = []
-        for ds in train_datasets:
-            ds_len = len(ds)
-            weight_per_sample = 1.0 / ds_len
-            sample_weights.extend([weight_per_sample] * ds_len)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+    )
 
-        train_dataset = ConcatDataset(train_datasets)
-        val_dataset = MTBDataset(val_path, feature_mask)
+    feature_dim = (
+        train_datasets[0]
+        .X
+        .shape[-1]
+    )
 
-        # 3. Fit Target Scaler strictly on training targets (no data leakage)
-        train_y_concat = torch.cat([ds.y for ds in train_datasets])
-        scaler = TargetScaler()
-        scaler.fit(train_y_concat)
+    # --------------------------------------------------------------------------
+    # Model
+    # --------------------------------------------------------------------------
 
-        num_features = train_datasets[0].X.shape[-1]
+    model = MTBClassifier(
+        feature_dim=feature_dim,
+        hidden_dim=DEFAULT_HIDDEN_DIM,
+        num_classes=DEFAULT_NUM_CLASSES,
+        dropout=args.dropout,
+    ).to(device)
 
-        sampler = WeightedRandomSampler(
-            weights=torch.DoubleTensor(sample_weights),
-            num_samples=len(sample_weights),
-            replacement=True
+    class_weights = torch.tensor(
+        CLASS_WEIGHTS,
+        dtype=torch.float32,
+        device=device,
+    )
+
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=LABEL_SMOOTHING,
+    )
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+
+    # --------------------------------------------------------------------------
+    # Training
+    #
+    # IMPORTANT:
+    # Best epoch is selected using TRAINING loss only.
+    #
+    # The held-out video is therefore never used to decide which
+    # epoch/model is selected.
+    # --------------------------------------------------------------------------
+
+    best_train_loss = float("inf")
+    best_state = None
+    best_epoch = 0
+
+    for epoch in range(
+        1,
+        args.epochs + 1,
+    ):
+
+        train_loss = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
         )
 
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=args.batch_size,
-            sampler=sampler,
-            shuffle=False
+        if train_loss < best_train_loss:
+
+            best_train_loss = train_loss
+            best_epoch = epoch
+
+            best_state = {
+                key: value.detach().cpu().clone()
+                for key, value
+                in model.state_dict().items()
+            }
+
+        if (
+            epoch == 1
+            or epoch % 5 == 0
+            or epoch == args.epochs
+        ):
+            print(
+                f"    Epoch "
+                f"{epoch:2d}/{args.epochs} | "
+                f"Train loss: "
+                f"{train_loss:.4f}"
+            )
+
+    # --------------------------------------------------------------------------
+    # Restore best training-loss model
+    # --------------------------------------------------------------------------
+
+    model.load_state_dict(
+        best_state
+    )
+
+    metrics = evaluate(
+        model,
+        val_loader,
+        criterion,
+        device,
+    )
+
+    return (
+        best_epoch,
+        best_train_loss,
+        metrics,
+    )
+
+
+# ==============================================================================
+# COMPLETE LOVO RUN
+# ==============================================================================
+
+def run_lovo(
+    label,
+    data_dir,
+    args,
+    device,
+):
+
+    data_dir = Path(data_dir)
+
+    dataset_files = sorted(
+        data_dir.glob("*.npz")
+    )
+
+    if len(dataset_files) != 8:
+        raise RuntimeError(
+            f"{label}: expected 8 dataset files, "
+            f"found {len(dataset_files)} in "
+            f"{data_dir}"
         )
-        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-        # 4. Instantiate Model & Optimizer
-        model = MTBConvNet(in_channels=num_features, dropout=args.dropout).to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
-        criterion = nn.HuberLoss(delta=1.0)
+    print()
+    print("=" * 90)
+    print(
+        f"LOVO EXPERIMENT: {label}"
+    )
+    print("=" * 90)
 
-        best_val_loss = float("inf")
-        best_metrics = (0.0, 0.0, 0.0)
-        best_epoch = 0
+    print(
+        f"Dataset directory: {data_dir}"
+    )
 
-        # 5. Training Loop
-        for epoch in range(1, args.epochs + 1):
-            train_loss = train_one_epoch(model, train_loader, optimizer, criterion, scaler, device)
-            val_loss, mae, rmse, r2 = evaluate(model, val_loader, criterion, scaler, device)
-            scheduler.step()
+    print(
+        f"Videos: {len(dataset_files)}"
+    )
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_metrics = (mae, rmse, r2)
-                best_epoch = epoch
+    results = []
+
+    for fold_index, val_path in enumerate(
+        dataset_files,
+        start=1,
+    ):
+
+        print()
+        print("-" * 90)
 
         print(
-            f"Fold {fold_idx + 1:2d}/{len(dataset_files)} | "
-            f"Held-out: {val_name:<22} | Best Loss: {best_val_loss:.4f} @ Ep {best_epoch:2d}/{args.epochs:2d} | "
-            f"MAE: {best_metrics[0]:.4f} | RMSE: {best_metrics[1]:.4f} | R2: {best_metrics[2]:.4f}"
+            f"Fold {fold_index}/"
+            f"{len(dataset_files)}"
         )
-        fold_results.append((val_name, best_val_loss, *best_metrics, best_epoch))
 
-    # Print Summary Table
-    print("\n" + "=" * 92)
-    print("LEAVE-ONE-VIDEO-OUT CROSS-VALIDATION SUMMARY (WITH TARGET SCALING)")
-    print("=" * 92)
-    print(f"{'Held-Out Video':<24} | {'Val Loss':<10} | {'Best Epoch':<10} | {'MAE':<10} | {'RMSE':<10} | {'R2':<8}")
-    print("-" * 92)
-    for name, loss, mae, rmse, r2, epoch in fold_results:
-        print(f"{name:<24} | {loss:<10.4f} | {epoch:<10} | {mae:<10.4f} | {rmse:<10.4f} | {r2:<8.4f}")
+        print(
+            f"Held out: "
+            f"{val_path.stem}"
+        )
 
-    avg_loss = np.mean([r[1] for r in fold_results])
-    avg_mae = np.mean([r[2] for r in fold_results])
-    avg_rmse = np.mean([r[3] for r in fold_results])
-    avg_r2 = np.mean([r[4] for r in fold_results])
-    avg_epoch = np.mean([r[5] for r in fold_results])
+        # Same seed at every fold and for both FPS experiments.
+        set_seed(
+            args.seed
+        )
 
-    print("-" * 92)
-    print(f"{'MEAN ACROSS ALL FOLDS':<24} | {avg_loss:<10.4f} | {int(avg_epoch):<10} | {avg_mae:<10.4f} | {avg_rmse:<10.4f} | {avg_r2:<8.4f}")
-    print("=" * 92)
+        best_epoch, train_loss, metrics = (
+            run_fold(
+                dataset_files,
+                val_path,
+                args,
+                device,
+            )
+        )
 
+        results.append(
+            {
+                "video": val_path.stem,
+                "epoch": best_epoch,
+                "train_loss": train_loss,
+                **metrics,
+            }
+        )
 
-# ==============================================================================
-# 6. CLI ENTRYPOINT
-# ==============================================================================
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LOVO Cross-Validation with Target Scaling and Dilated Conv1D")
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=r"C:\VideoTools\MTB-Video-Tools\output\datasets",
-        help="Path to directory containing .npz dataset files",
+        print(
+            f"    Accuracy:          "
+            f"{metrics['accuracy']:.4f}"
+        )
+
+        print(
+            f"    Balanced accuracy: "
+            f"{metrics['balanced_accuracy']:.4f}"
+        )
+
+        print(
+            f"    Macro F1:           "
+            f"{metrics['macro_f1']:.4f}"
+        )
+
+        print(
+            f"    Recall "
+            f"[0,1,2]: "
+            f"{metrics['recall'][0]:.3f}, "
+            f"{metrics['recall'][1]:.3f}, "
+            f"{metrics['recall'][2]:.3f}"
+        )
+
+        print(
+            f"    F1 "
+            f"[0,1,2]: "
+            f"{metrics['f1'][0]:.3f}, "
+            f"{metrics['f1'][1]:.3f}, "
+            f"{metrics['f1'][2]:.3f}"
+        )
+
+        print(
+            "    Confusion matrix:"
+        )
+
+        print(
+            metrics["confusion"]
+        )
+
+    # --------------------------------------------------------------------------
+    # Summary
+    # --------------------------------------------------------------------------
+
+    print()
+    print("=" * 90)
+    print(
+        f"{label} — LOVO SUMMARY"
     )
+    print("=" * 90)
+
+    print(
+        f"{'Held-out':<20}"
+        f"{'Acc':>9}"
+        f"{'BalAcc':>9}"
+        f"{'MacroF1':>9}"
+        f"{'F1-0':>8}"
+        f"{'F1-1':>8}"
+        f"{'F1-2':>8}"
+    )
+
+    print("-" * 90)
+
+    for result in results:
+
+        print(
+            f"{result['video']:<20}"
+            f"{result['accuracy']:>9.4f}"
+            f"{result['balanced_accuracy']:>9.4f}"
+            f"{result['macro_f1']:>9.4f}"
+            f"{result['f1'][0]:>8.4f}"
+            f"{result['f1'][1]:>8.4f}"
+            f"{result['f1'][2]:>8.4f}"
+        )
+
+    mean_accuracy = np.mean(
+        [r["accuracy"] for r in results]
+    )
+
+    mean_balanced_accuracy = np.mean(
+        [r["balanced_accuracy"] for r in results]
+    )
+
+    mean_macro_f1 = np.mean(
+        [r["macro_f1"] for r in results]
+    )
+
+    mean_f1 = np.mean(
+        [
+            r["f1"]
+            for r in results
+        ],
+        axis=0,
+    )
+
+    print("-" * 90)
+
+    print(
+        f"{'MEAN':<20}"
+        f"{mean_accuracy:>9.4f}"
+        f"{mean_balanced_accuracy:>9.4f}"
+        f"{mean_macro_f1:>9.4f}"
+        f"{mean_f1[0]:>8.4f}"
+        f"{mean_f1[1]:>8.4f}"
+        f"{mean_f1[2]:>8.4f}"
+    )
+
+    print("=" * 90)
+
+    return {
+        "label": label,
+        "results": results,
+        "mean_accuracy": mean_accuracy,
+        "mean_balanced_accuracy": mean_balanced_accuracy,
+        "mean_macro_f1": mean_macro_f1,
+        "mean_f1": mean_f1,
+    }
+
+
+# ==============================================================================
+# FPS COMPARISON
+# ==============================================================================
+
+def print_fps_comparison(
+    result_2fps,
+    result_10fps,
+):
+
+    print()
+    print()
+    print("#" * 100)
+    print("2 FPS vs 10 FPS — LOVO COMPARISON")
+    print("#" * 100)
+
+    print()
+    print(
+        f"{'Video':<20}"
+        f"{'2FPS Acc':>11}"
+        f"{'10FPS Acc':>12}"
+        f"{'Delta':>10}"
+        f"{'2FPS F1':>11}"
+        f"{'10FPS F1':>12}"
+        f"{'Delta':>10}"
+    )
+
+    print("-" * 100)
+
+    by_video_2 = {
+        r["video"]: r
+        for r in result_2fps["results"]
+    }
+
+    by_video_10 = {
+        r["video"]: r
+        for r in result_10fps["results"]
+    }
+
+    for video in by_video_2:
+
+        a = by_video_2[video]
+        b = by_video_10[video]
+
+        acc_delta = (
+            b["accuracy"]
+            - a["accuracy"]
+        )
+
+        f1_delta = (
+            b["macro_f1"]
+            - a["macro_f1"]
+        )
+
+        print(
+            f"{video:<20}"
+            f"{a['accuracy']:>11.4f}"
+            f"{b['accuracy']:>12.4f}"
+            f"{acc_delta:>+10.4f}"
+            f"{a['macro_f1']:>11.4f}"
+            f"{b['macro_f1']:>12.4f}"
+            f"{f1_delta:>+10.4f}"
+        )
+
+    print("-" * 100)
+
+    print(
+        f"{'MEAN':<20}"
+        f"{result_2fps['mean_accuracy']:>11.4f}"
+        f"{result_10fps['mean_accuracy']:>12.4f}"
+        f"{result_10fps['mean_accuracy'] - result_2fps['mean_accuracy']:>+10.4f}"
+        f"{result_2fps['mean_macro_f1']:>11.4f}"
+        f"{result_10fps['mean_macro_f1']:>12.4f}"
+        f"{result_10fps['mean_macro_f1'] - result_2fps['mean_macro_f1']:>+10.4f}"
+    )
+
+    print()
+    print(
+        "Class-2 F1 (technical/interesting) is especially important:"
+    )
+
+    print(
+        f"  2 FPS : "
+        f"{result_2fps['mean_f1'][2]:.4f}"
+    )
+
+    print(
+        f"  10 FPS: "
+        f"{result_10fps['mean_f1'][2]:.4f}"
+    )
+
+    print(
+        f"  Delta : "
+        f"{result_10fps['mean_f1'][2] - result_2fps['mean_f1'][2]:+.4f}"
+    )
+
+    print("#" * 100)
+
+
+# ==============================================================================
+# MAIN
+# ==============================================================================
+
+def main():
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compare 2 FPS and 10 FPS MTB "
+            "interest classifiers using "
+            "leave-one-video-out cross-validation."
+        )
+    )
+
+    parser.add_argument(
+        "--data-dir-2fps",
+        type=Path,
+        default=Path(
+            r"C:\VideoTools\MTB-Video-Tools\output\datasets_2fps"
+        ),
+    )
+
+    parser.add_argument(
+        "--data-dir-10fps",
+        type=Path,
+        default=Path(
+            r"C:\VideoTools\MTB-Video-Tools\output\datasets_10fps"
+        ),
+    )
+
     parser.add_argument(
         "--feature-file",
-        type=str,
-        default=None,
-        help="Path to txt file containing feature whitelist",
+        type=Path,
+        default=Path(
+            r"C:\VideoTools\MTB-Video-Tools\data\features\mtb_training_features.txt"
+        ),
     )
-    parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs per fold")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--weight-decay", type=float, default=1e-2, help="Weight decay for AdamW")
-    parser.add_argument("--dropout", type=float, default=0.4, help="Dropout probability")
+
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=DEFAULT_EPOCHS,
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+    )
+
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=DEFAULT_LR,
+    )
+
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=DEFAULT_WEIGHT_DECAY,
+    )
+
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=DEFAULT_DROPOUT,
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+    )
 
     args = parser.parse_args()
 
-    try:
-        run_lovo_cv(args)
-    except KeyboardInterrupt:
-        print("\n[!] Execution interrupted by user.")
-        sys.exit(0)
+    if args.feature_file.exists():
+
+        with open(
+            args.feature_file,
+            "r",
+            encoding="utf-8",
+        ) as file:
+
+            args.feature_mask = [
+                line.strip()
+                for line in file
+                if line.strip()
+            ]
+
+        print(
+            f"[+] Feature whitelist: "
+            f"{len(args.feature_mask)} features"
+        )
+
+    else:
+
+        args.feature_mask = None
+
+        print(
+            "[!] Feature whitelist not found; "
+            "using all features."
+        )
+
+    device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
+    )
+
+    print(
+        f"[+] Device: {device}"
+    )
+
+    result_2fps = run_lovo(
+        "2 FPS",
+        args.data_dir_2fps,
+        args,
+        device,
+    )
+
+    result_10fps = run_lovo(
+        "10 FPS",
+        args.data_dir_10fps,
+        args,
+        device,
+    )
+
+    print_fps_comparison(
+        result_2fps,
+        result_10fps,
+    )
+
+
+if __name__ == "__main__":
+    main()

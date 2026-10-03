@@ -1823,6 +1823,15 @@ def build_dataset(
         / f"{stem}_dataset_manifest.csv"
     )
 
+    metadata = {
+        "source_annotations": str(annotations_path),
+        "source_flow_csv": str(flow_csv),
+        "window": window,
+        "stride": stride,
+        "flow_start": flow_start,
+        "flow_dt": median_dt,
+    }
+
     np.savez_compressed(
         npz_path,
         X=X,
@@ -1833,16 +1842,8 @@ def build_dataset(
         labels=np.asarray(
             ["interest"]
         ),
+        metadata=np.asarray(metadata, dtype=object),
     )
-
-    metadata = {
-        "source_annotations": str(annotations_path),
-        "source_flow_csv": str(flow_csv),
-        "window": window,
-        "stride": stride,
-        "flow_start": flow_start,
-        "flow_dt": median_dt,
-    }
 
     _, validation_failures = validate_generated_examples(
         manifest=manifest,
@@ -1859,9 +1860,8 @@ def build_dataset(
         )
 
     write_manifest(
-         manifest_path,
-         manifest,
-        metadata,
+        manifest_path,
+        manifest,
     )
 
     print()
