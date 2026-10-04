@@ -532,8 +532,41 @@ def run_fold(
     )
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # --------------------------------------------------------------------------
+    # Temporal configuration
+    # --------------------------------------------------------------------------
+
+    if label == "2 FPS":
+        flow_fps = 2.0
+    elif label == "10 FPS":
+        flow_fps = 10.0
+    else:
+        raise ValueError(
+            f"Unknown FPS label: {label}"
+        )
+
+    val_data = np.load(
+        val_path,
+        allow_pickle=True,
+    )
+
+    if "metadata" not in val_data:
+        raise ValueError(
+            f"Dataset {val_path} does not contain metadata."
+        )
+
+    metadata = val_data["metadata"].item()
+
+    if "window" not in metadata or "stride" not in metadata:
+        raise ValueError(
+            f"Dataset {val_path} is missing window/stride metadata."
+        )
+
+    window_duration = float(metadata["window"])
+    window_stride = float(metadata["stride"])
+
     checkpoint = {
-        "checkpoint_version": 1,
+        "checkpoint_version": "1.1",
 
         "model_state_dict": model.state_dict(),
 
@@ -555,6 +588,12 @@ def run_fold(
             "lr": args.lr,
             "weight_decay": args.weight_decay,
             "seed": args.seed,
+        },
+
+        "data_config": {
+            "flow_fps": flow_fps,
+            "window": window_duration,
+            "stride": window_stride,
         },
 
         "lovo": {
