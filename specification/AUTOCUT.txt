@@ -1,0 +1,624 @@
+			AUTOCUT
+
+Top Level Specification/Architectural Requirement Document
+
+V0.04 DRAFT
+
+Purpose and Scope
+-----------------
+
+The Autocut software suite shall be a self contained software suite with additional general public libraries.
+Given a set of MTB POV videos, with or without user specified segments,
+shall produce a video of the "best" segments together with an (optional) background music.
+Best its intended to mean, segments which will interest an human observer, including but not limited to:
+
+- Fast flow riding with or without berms, on flat or (very) steep tracks
+- Drops and jumps
+- Rock Gardens, Stairs, Roots, or in general riding on rough terrain
+- Switchback on rocky or dirt tracks, possibly steep and tight
+- Terrain rich of rocky and/or stony surfaces
+- Tight passages through vegetation (including brooms, needles and brambles)
+
+It shall also be possible to include atmospheric passages, like mountainous landscapes, encounter with animals, or any other type of video
+segment that the user deems to be mandatory.
+
+Requirements
+------------
+
+1. The suite shall be written in Python 3.14
+2. The suite shall require the following packages to be installed:
+
+- csv, cv2
+- pandas
+- ffmpeg, moviepy
+- numpy
+- torch
+- json (TBC)
+
+and all their required libraries (for instance librosa), as well as standard python libraries (argparse, random, Path, math, subprocess, sys, hashlib,
+tempfile, shutil and dataclasses)
+Note that PyTorch and OpenCV C++ bindings often lag behind pre-release Python versions; ensure target deployment on this Python release
+to ensure CUDA wheel availability.
+
+Nota Bene: MoviePy/FFmpeg-python is essential for precise video cutting, stitching, and crossfading audio tracks.
+
+3. The software shall be architectured as a python modular project, where each module has a limited scope and a well definite function.
+The purpose is to:
+
+Isolate Failure Modes: For instance if Tier 2 oversamples early in long videos, we only need to modify editing/timeline.py without risking
+breaking PyTorch inference or feature extraction.
+
+Easy Testing: We can write unit tests for assemble_highlight_timeline with synthetic mock arrays without loading PyTorch or GPU models.
+
+Reusability: The video cutting and feature extraction components can be reused for batch datasets, batch processing scripts, or web interfaces.
+
+We propose to use this architectural layout:
+
+MTB-Video-Tools/
+├── config/
+│   ├── __init__.py
+│   └── settings.py          # Project-wide immutables, paths, default thresholds
+├── core/
+│   ├── __init__.py
+│   ├── state.py             # Mutable runtime state, job status, session cache
+│   └── io.py                # File handling, validation, loading/saving .npz & metadata
+├── processing/
+│   ├── __init__.py
+│   ├── optical_flow.py      # Motion & flow feature computation
+│   └── dataset_builder.py   # Dataset compilation & feature windowing
+├── inference/
+│   ├── __init__.py
+│   ├── model.py             # Model initialization, architecture, and forward pass
+│   └── evaluator.py         # Windowed inference, batch scoring, probability output
+├── editing/
+│   ├── __init__.py
+│   ├── timeline.py          # Tier 1/2 gap-bridging, quantile sampling & clip assembly
+│   └── video_exporter.py    # MoviePy/FFmpeg rendering & lossless clip cutting
+├── scripts/
+│   ├── autocut.py            # CLI entry point for feature extraction, dataset assembly, timeline assembly & editing
+│   ├── analyze_flow.py       # CLI entry point for feature extraction
+│   ├── build_dataset.py      # CLI entry point for dataset assembly
+│   └── extract_highlights.py # CLI entry point for timeline assembly & editing
+│   └── train_lovo.py         # LOVO model trainer
+│   └── train_production.py   # Production model trainer
+└── main.py                   # Optional unified pipeline launcher
+
+Core Module Implementations
+---------------------------
+
+3.1. Configuration (config/settings.py)
+Keep project-wide constants, default parameters, and file path definitions strictly immutable.
+
+"""Immutables and default configurations across the MTB Video Tools suite."""
+from pathlib import Path
+from dataclasses import dataclass
+
+ROOT_DIR: Path = Path(__file__).resolve().parent.parent
+OUTPUT_DIR: Path = ROOT_DIR / "output"
+MODELS_DIR: Path = OUTPUT_DIR / "models"
+DATASETS_DIR: Path = OUTPUT_DIR / "datasets"
+
+@dataclass(frozen=True)
+class AssemblyConfig:
+    """Default highlight assembly parameters."""
+    target_duration: float = 120.0
+    tier1_threshold: float = 0.65
+    tier2_threshold: float = 0.35
+    max_gap_seconds: float = 5.0
+    min_clip_seconds: float = 3.0
+    padding_seconds: float = 1.0
+
+DEFAULT_CONFIG = AssemblyConfig()
+
+3.2. Runtime State (core/state.py)
+Manage runtime arguments, dynamic processing flags, and pipeline execution status safely without global variables scattered across files.
+
+"""Runtime mutable state tracker."""
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+import torch
+
+@dataclass
+class ProcessingState:
+    """Tracks active execution state across pipeline steps."""
+    active_device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    current_file: Optional[str] = None
+    total_windows: int = 0
+    tier1_selected: int = 0
+    tier2_selected: int = 0
+    generated_clips: List[Dict[str, float]] = field(default_factory=list)
+
+    def reset(self):
+        self.current_file = None
+        self.total_windows = 0
+        self.tier1_selected = 0
+        self.tier2_selected = 0
+        self.generated_clips.clear()
+
+3.3. I/O & Dataset Loading (core/io.py)
+Encapsulate all reading/writing of .npz feature files and ground-truth annotations.
+
+"""Input/Output operations for datasets and video files."""
+from pathlib import Path
+import numpy as np
+from typing import Dict, Any
+
+def load_npz_dataset(filepath: str | Path) -> Dict[str, np.ndarray]:
+    """Loads and validates an MTB feature dataset (.npz)."""
+    path = Path(filepath)
+    if not path.exists():
+        raise FileNotFoundError(f"Dataset file not found: {path}")
+    
+    data = np.load(path)
+    required_keys = {"features", "timestamps"}
+    if not required_keys.issubset(data.files):
+        raise KeyError(f"NPZ missing required keys. Found {data.files}, need {required_keys}")
+        
+    return {"features": data["features"], "timestamps": data["timestamps"]}
+
+3.4. Model Inference (inference/evaluator.py)
+Decouple model execution from timeline assembly. This module accepts raw features and returns window-level probabilities.
+
+"""Inference engine for MTB interest classification."""
+import torch
+import numpy as np
+from typing import Tuple
+
+def run_windowed_inference(
+    model: torch.nn.Module, 
+    features: np.ndarray, 
+    device: torch.device
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Runs inference across sequence windows.
+    
+    Returns:
+        p_technical (np.ndarray): Level 3 technical probabilities per window.
+        p_flow (np.ndarray): Level 1/2 flow probabilities per window.
+    """
+    model.eval()
+    inputs = torch.from_numpy(features).float().to(device)
+    
+    with torch.no_grad():
+        logits = model(inputs)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()
+        
+    # Assuming class indices: 0=Stop, 1=Flow, 2=Technical Flow, 3=Extreme Technical
+    p_technical = probs[:, 3]
+    p_flow = probs[:, 1] + probs[:, 2]
+    
+    return p_technical, p_flow
+
+3.5. Timeline Assembly (editing/timeline.py)
+Encapsulate all highlight rules (Tier 1 technical features, global quantile sampling for Tier 2 flow, gap-bridging, and micro-clip pruning).
+
+"""Logic for assembling continuous highlight timelines."""
+import numpy as np
+from typing import List, Tuple
+from config.settings import AssemblyConfig
+
+def assemble_highlight_timeline(
+    p_tech: np.ndarray, 
+    p_flow: np.ndarray, 
+    timestamps: np.ndarray,
+    config: AssemblyConfig = AssemblyConfig()
+) -> List[Tuple[float, float]]:
+    """Assembles optimal continuous timestamp intervals based on probability tiers."""
+    # 1. Tier 1 Selection (Technical Features)
+    tier1_mask = p_tech >= config.tier1_threshold
+    
+    # 2. Tier 2 Selection (Global Quantile Sampling to prevent early budget exhaustion)
+    # Sort remaining candidates by flow probability across the entire video duration
+    remaining_budget = config.target_duration - (np.sum(tier1_mask) * 1.0)
+    
+    # ... Assemble intervals, bridge gaps < max_gap_seconds, drop < min_clip_seconds ...
+    
+    clips = [(5.0, 48.0), (107.0, 123.0), (318.0, 365.0)] # Example returned intervals
+    return clips
+
+3.6. Clean CLI Script (scripts/extract_highlights.py)
+The main execution script becomes a lightweight, human-readable CLI wrapper that composes these modules.
+
+"""CLI tool to extract highlight clips from MTB dataset features."""
+import argparse
+from config.settings import DEFAULT_CONFIG, MODELS_DIR
+from core.state import ProcessingState
+from core.io import load_npz_dataset
+from inference.model import load_mtb_model
+from inference.evaluator import run_windowed_inference
+from editing.timeline import assemble_highlight_timeline
+
+def main():
+    parser = argparse.ArgumentParser(description="MTB Video Highlight Extractor")
+    parser.add_argument("--input-npz", type=str, required=True, help="Path to input dataset .npz")
+    parser.add_argument("--model-path", type=str, default=str(MODELS_DIR / "mtb_interest_model.pt"))
+    args = parser.parse_args()
+
+    state = ProcessingState()
+    print(f"[+] Active Device: {state.active_device}")
+
+    # Load resources
+    dataset = load_npz_dataset(args.input_npz)
+    model = load_mtb_model(args.model_path, device=state.active_device)
+
+    # Run pipeline steps
+    p_tech, p_flow = run_windowed_inference(model, dataset["features"], state.active_device)
+    clips = assemble_highlight_timeline(p_tech, p_flow, dataset["timestamps"], DEFAULT_CONFIG)
+
+    print(f"\n[SUCCESS] Assembled {len(clips)} continuous highlight clips.")
+    for idx, (start, end) in enumerate(clips, 1):
+        print(f"  Clip {idx:02d}: {start:06.1f}s --> {end:06.1f}s (Duration: {end-start:.1f}s)")
+
+if __name__ == "__main__":
+    main()
+
+4. System architecture
+----------------------
+
+The complete pipeline shall follow this flow:
+
+Raw MTB Video(s)
+      │
+      ▼
+Video Analysis / Optical Flow ◀-- Annotations.txt
+      │
+      ▼
+Feature CSV
+      │
+      ▼        
+BiLSTM Interest Model ◀-- Trained model
+      │
+      ▼
+Production Checkpoint
+      │
+      ▼
+Highlight Extraction
+      │
+      ▼
+ML Annotation File
+      │
+      ▼
+AutoCut ◀- Music
+      │
+      ▼
+Final Intro Video
+
+At this stage its not clear if and what intermediate products need to be cached locally.
+For example, store generated feature CSVs/Audio analysis in output/cache hashed by source file size and hashlib.md5 checksum.
+
+5. Data Models
+--------------
+
+This section formalizes all file schemas, data types, tensor shapes, and contract specifications used across the AutoCut suite.
+
+5.1 Motion & Feature CSV Schema (Optical Flow Output)
+-----------------------------------------------------
+* Format: Comma-Separated Values (.csv) with header row.
+* File Naming: <video_stem>_flow_features.csv
+* Sampling Rate: 2 FPS (1 frame every 0.5s).
+* Schema Definition:
+  - timestamp (float32): Video timestamp in seconds (e.g., 12.5).
+  - frame_idx (uint32): Zero-based video frame index.
+  - mean_flow_magnitude (float32): Global motion intensity.
+  - flow_std_dev (float32): Motion variance/turbulence across frame.
+  - vertical_flow_component (float32): Downward/upward pitch motion proxy.
+  - horizontal_flow_component (float32): Yaw/turning motion proxy.
+  - camera_shake_score (float32): High-frequency jitter magnitude (used for MTB0 detection).
+  - [f_00 ... f_47] (float32): Remaining 48 spatial/frequency motion descriptor features (total 54 features per sample).
+
+5.2 Annotations Manifest Schema (Annotations.txt)
+-----------------------------------------------
+* Format: Plain UTF-8 Text File (.txt).
+* Structure:
+  - Line 1 (Optional): "Music: <absolute_path_to_audio> [*]"
+    * ' *' flag denotes background-only replacement (mutes original video audio).
+    * If '*' is omitted, background music and source audio are mixed.
+  - Video Block:
+    * Path Line: Absolute video path (e.g., "D:\Ascoli\DJI_0005.MP4").
+    * Indented Range Lines (Optional): "<start_time> <end_time> [*]"
+      - Formats accepted: "hh:mm:ss" or "mm:ss" (e.g., "01:23  01:28 *").
+      - Range ' *' flag marks a MANDATORY segment passed directly to assembly.
+      - If no range lines follow a video path, the full duration is processed.
+
+5.3 Dataset NPZ Schema (Feature Windows)
+----------------------------------------
+* Format: NumPy Compressed Archive (.npz).
+* Tensor Dimensions & Types:
+  - features (ndarray, float32): Shape (N_windows, Window_Size, Num_Features)
+    * Default Production Shape: (N_windows, 8, 54) representing 4-second sequence 
+      windows at 2 FPS (8 frames/window) across 54 motion features.
+  - timestamps (ndarray, float32): Shape (N_windows, 2)
+    * Each row contains [start_time_sec, end_time_sec] corresponding to window center/bounds.
+  - labels (ndarray, int64, Optional): Shape (N_windows,)
+    * Class targets: 0 = Stopped/Dismounted (Hard Negative), 1 = Standard Flow, 2 = Technical Flow, 3 = Extreme Technical.
+  - metadata (dict/JSON string, Optional): Source video paths, FPS, window stride (default 2.0s).
+
+5.4 PyTorch Model Checkpoint Schema (.pt)
+-----------------------------------------
+* Format: PyTorch Model State File (.pt / .pth).
+* Keys Dictionary:
+  - "model_state_dict" (OrderedDict): Model weights and biases for BiLSTM architecture.
+  - "feature_mask" (List[int]): Explicit list of feature indices used during training (e.g., 54-feature mask).
+  - "class_mapping" (Dict[int, str]): Target index definitions ({0: "STOP", 1: "FLOW", 2: "TECH_FLOW", 3: "EXTREME_TECH"}).
+  - "training_config" (Dict): Epochs, batch size, loss metrics, temporal window size (4.0s), and stride (2.0s).
+  - "schema_version" (str): Checkpoint version tag (e.g., "v1.2").
+
+5.5 Extractor Output / ML Annotation JSON Schema
+------------------------------------------------
+* Format: JSON (.json).
+* Purpose: Intermediate representation of model predictions before timeline editing.
+* Structure:
+  {
+    "source_video": "D:\\Ascoli\\DJI_0005.MP4",
+    "total_duration_sec": 870.0,
+    "window_size_sec": 4.0,
+    "stride_sec": 2.0,
+    "predictions": [
+      {
+        "window_idx": 0,
+        "start_sec": 0.0,
+        "end_sec": 4.0,
+        "p_stop": 0.02,
+        "p_flow": 0.85,
+        "p_tech": 0.13,
+        "predicted_class": 1
+      },
+      ...
+    ]
+  }
+
+5.6 AutoCut Assembly Timeline Output Schema
+--------------------------------------------
+* Format: JSON / Structured Python List.
+* Purpose: Final cut-list passed to video_exporter.py for FFmpeg/MoviePy rendering.
+* Structure:
+  {
+    "output_target_duration": 120.0,
+    "actual_generated_duration": 118.5,
+    "source_audio_mode": "MIX" | "REPLACE_BG_ONLY" | "ORIGINAL_ONLY",
+    "background_music_path": "C:\\Music\\track.mp3",
+    "cuts": [
+      {
+        "clip_id": 1,
+        "source_video": "D:\\Ascoli\\DJI_0005.MP4",
+        "start_sec": 123.0,
+        "end_sec": 137.0,
+        "duration_sec": 14.0,
+        "is_mandatory": false,
+        "selection_tier": 1
+      },
+      ...
+    ]
+  }
+
+Key Architectural Benefits of This Schema
+Explicit Window Shape (N_windows, 8, 54): Eliminates ambiguity about feature dimensions between processing/optical_flow.py and inference/model.py.
+Metadata-Rich Checkpoints: Saving the feature_mask and class_mapping directly inside .pt checkpoints prevents runtime errors when switching model architectures.
+Decoupled JSON Layers: Exporting prediction JSONs before rendering allows you to debug highlight choices without re-running PyTorch inference.
+
+5.7 Annotations.txt Specification
+---------------------------------
+The Annotations.txt file serves as the top-level orchestration manifest for AutoCut.
+
+Syntax Rules:
+1. Directives & Options:
+   - "Music: <path> [*]": Optional background audio path. If appended with '*', 
+     original video audio is muted. If omitted, original audio mixes with music.
+2. Video Input Lines:
+   - Absolute file path to source video(s) (e.g., "D:\Ascoli\clip.mp4").
+3. Timestamp Segments (Optional):
+   - Format: "hh:mm:ss  hh:mm:ss [*]" or "mm:ss  mm:ss [*]".
+   - If no timestamps follow a video path, the entire video duration is processed.
+   - Segments appended with '*' are marked MANDATORY and passed directly to 
+     assembly without ML filtering.
+
+Budget & Deduplication Interaction:
+- Mandatory clip duration is calculated first and subtracted from target_duration.
+- Tier 1 and Tier 2 ML inference masks out windows overlapping with mandatory segments.
+
+Warning or errors shall be given if any mandatory input data is missing or if data is malformed (for instance File not Found,
+time of 01:72:02, negative start times or end times longer than video duration).
+Since the use of flags for "background audio only" or "mandatory clip pass-through" is intuitive but can become ambiguous if a line has trailing spaces
+it is recommended to use strict parsing regex (e.g., ^\s*(?P<start>\d+:\d+(?::\d+)?)\s+(?P<end>\d+:\d+(?::\d+)?)\s*(?P<mandatory>\*)?).
+
+An example of a semantically valid Annotations.txt is given for reference.
+
+filename: Test.txt
+<<start content>>
+Music: C:\Users\cesar\Music\Don't Worry, Ride Happy.mp3 *
+D:\Ascoli\DJI_20250923122005_0005_D.MP4 
+					00:00	01:07
+                                        01:07	01:23
+					01:23	01:28 *
+					01:28	01:42
+                                        01:42	02:38
+D:\Prenestini\Mentorella\DJI_20250710091244_0004_D.MP4
+<<end content>>
+
+Nota Bene: * for the music file means background only. If * is omitted music and original audio mixed.
+The video segment 01:23 to 01:38 of D:\Ascoli\DJI_20250923122005_0005_D.MP4 shall be passed as is
+to the final assembly stage. The whole D:\Prenestini\Mentorella\DJI_20250710091244_0004_D.MP4
+shall be processed while only 5 segments for D:\Ascoli\DJI_20250923122005_0005_D.MP4 shall be processed,
+of which one passed as is to the final assembly stage.
+
+Nota Bene: time ranges like 01:23 - 01:28 * are internally parsed into absolute float seconds (e.g., 83.0s to 88.0s)
+immediately upon reading to maintain mathematical consistency.
+
+6. ML Specification
+-------------------
+
+This section formalizes the machine learning models, feature transformations, labeling rules, and validation protocols for interest classification in AutoCut.
+
+6.1 Target Taxonomy & Class Definitions
+---------------------------------------
+The core model operates as a multi-class sequence classifier predicting frame-window interest levels. 
+
+Class Index | Internal Label | Technical Description | Action / Handling
+------------|----------------|-----------------------|------------------
+0           | MTB0           | Hard Negative: Stopped, dismounted, walking bike, camera adjustment, waiting at trailheads, or extreme stationary lens shake. | Hard Exclusion (Never selected for highlights; used to anchor negative baseline).
+1           | MTB1           | Baseline Flow: Smooth dirt paths, low-gradient rolling terrain, fire roads, standard baseline riding. | Tier 2 Candidate (Selected via global quantile sampling when Tier 1 budget remains).
+2           | MTB2           | Technical Flow: Moderate technical features, rocky paths, berms, flowy jumps, tight vegetation passages, or high-speed rough terrain. | Tier 2 High-Priority / Tier 1 (Context dependent).
+3           | MTB3           | Extreme Technical: Drops, jumps, steep rock gardens, technical switchbacks, stairs, nose presses, or high-risk features. | Tier 1 Priority (Guaranteed inclusion in highlight assembly).
+
+*Hard Negative Policy:* MTB0 is explicitly treated as a informative hard-negative class rather than noise to be removed from training. This prevents false positive triggers caused by high camera motion during dismounts, helmet adjustments, or bike pushing.
+
+6.2 Feature Pipeline & Temporal Windowing
+-----------------------------------------
+* Sampling Rate: Optical flow and motion features are extracted at 2 FPS (1 sample per 0.5s).
+* Window Length: Fixed 4.0-second temporal sliding windows (8 contiguous frames per sequence).
+* Stride: 2.0-second stride between consecutive windows (50% temporal overlap).
+* Feature Vector Mask: 54 scalar features per frame (Global flow magnitude, horizontal/vertical components, flow directional entropy, spatial std dev, camera jitter index, frequency energy).
+* Tensor Input Shape: (Batch_Size, 8, 54) representing (N, Window_Frames, Features).
+
+6.3 Architecture Specification
+------------------------------
+* Core Architecture: Bidirectional Long Short-Term Memory Network (BiLSTM).
+* Input Dimension: 54 features.
+* Hidden Dimension: 128 hidden units per direction (256 concatenated output dimension).
+* Recurrent Layers: 2 stacked BiLSTM layers with Dropout (p = 0.3).
+* Output Layer: Linear layer mapping from 256 dimensions to 4 output logits (MTB0, MTB1, MTB2, MTB3), followed by Softmax for probability generation.
+
+6.4 Loss Function & Training Methodology
+----------------------------------------
+* Loss Function: Weighted Cross-Entropy Loss to counteract natural dataset class imbalance (MTB3 extreme technical events are sparse compared to MTB1 baseline riding).
+* Class Weights: Inverse frequency weighting calculated on the active training split:
+  $$w_c = \frac{N_{\text{samples}}}{K \cdot N_c}$$
+  where $K=4$ classes and $N_c$ is the count of samples for class $c$.
+* Optimizer: AdamW (Learning Rate = $1\text{e}{-3}$, Weight Decay = $1\text{e}{-4}$).
+* Learning Rate Scheduler: ReduceLROnPlateau (Factor = 0.5, Patience = 3 epochs based on Validation Macro F1).
+
+6.5 Data Splitting & Leakage Guardrails
+---------------------------------------
+To ensure true generalization across unseen riders and trail conditions:
+
+1. Grouped Strategy (Video-Level Splitting):
+   - Overlapping 4-second windows from the same video MUST NOT span across both training and validation/test splits.
+   - All temporal windows derived from a single source video file belong exclusively to either Train, Validation, or Test splits.
+
+2. Leave-One-Video-Out (LOVO) Validation:
+   - Evaluated during development using `train_lovo.py` across core golden datasets (e.g., Mentorella, Rosara, Cascata, Ascoli, Orvinio).
+   - Serves as the primary indicator for generalization across different camera angles and terrain conditions.
+
+3. Production Split (`train_production.py`):
+   - Once hyper-parameters are frozen via LOVO, production models are trained on 100% of validated annotations to generate production checkpoints (`output/models/mtb_interest_model.pt`).
+
+6.6 Determinism & Reproducibility
+---------------------------------
+* Seed Control: Global random seed configuration across `random`, `numpy`, and `torch` (e.g., `seed = 42`).
+* PyTorch Determinism Settings:
+  - `torch.manual_seed(42)`
+  - `torch.cuda.manual_seed_all(42)`
+  - `torch.backends.cudnn.deterministic = True`
+  - `torch.backends.cudnn.benchmark = False`
+* Checkpoint Traceability: Every saved `.pt` file must include model state weights, feature mask list, training metadata, and Git commit hash if available.
+
+7. Highlight Selection Specification
+-----------------------------------
+
+For example:
+
+Model
+   ↓
+P(interesting)
+   ↓
+candidate windows
+   ↓
+tiering
+   ↓
+padding
+   ↓
+gap merging
+   ↓
+duration allocation
+   ↓
+ordered highlight timeline
+
+Execution Workflow:
+1. Parse Annotations.txt & Extract Mandatory Clips (*).
+2. Calculate Effective Budget:
+   Budget_ML = Max(0, AssemblyConfig.target_duration - Total_Mandatory_Duration)
+3. Tier 1 Technical Selection:
+   Select all windows where P(technical) >= tier1_threshold.
+4. Tier 2 Flow Selection (Global Quantile Rank):
+   Rank remaining non-mandatory candidates globally by P(flow) across the full video.
+   Select top N candidates fitting remaining Budget_ML.
+5. Gap Merging & Micro-Clip Pruning:
+   Merge intervals separated by < max_gap_seconds.
+   Discard residual clips < min_clip_seconds unless marked mandatory.
+
+Standardize candidate window selection using global quantile/score sorting across the entire video length rather
+than simple sequential accumulation. This ensures that later technical sections (e.g., late rock gardens or switchbacks)
+receive budget even in long continuous recordings.
+The interaction between mandatory clips (*) and automatic ML selection needs explicit budgeting rules
+
+Budget Deduction Rule: If a user specifies mandatory clips (e.g., 15 seconds of forced inclusion), the timeline generator must subtract that duration from AssemblyConfig.target_duration before running global quantile selection for Tier 2 filler.
+
+Deduplication: ML probabilities should be masked out ($P=0$) over time ranges already covered by mandatory clips to prevent duplicate rendering or overlapping window extraction.
+
+8. CLI specification
+
+Every script should have:
+
+* required arguments
+* optional arguments
+* defaults
+* input/output contracts
+* error behavior
+* examples
+
+This will prevent the CLI from gradually becoming inconsistent.
+
+9. Quality requirements
+
+**Functional**
+
+* no silent data corruption
+* deterministic model training given a seed
+* reproducible dataset generation
+* checkpoint/data compatibility validation
+
+**ML**
+
+* grouped/temporal validation
+* no leakage through overlapping windows
+* production model trained only from approved datasets
+
+**Video**
+
+* selected intervals must remain inside source video
+* minimum clip duration
+* target duration tolerance
+* deterministic timeline generation
+
+**Operational**
+
+* clear logging
+* meaningful errors
+* Windows/PowerShell compatibility
+* no hard-coded developer-specific paths where avoidable
+
+10. Testing strategy
+
+Testing will be performed at several levels:
+
+Unit tests
+    ↓
+Dataset/audit tests
+    ↓
+Model validation
+    ↓
+Extraction tests
+    ↓
+End-to-end video test
+    ↓
+Human visual evaluation
+
+And importantly, preserve a small set of **golden videos** such as Mentorella, Rosara, Cascata and Ascoli for regression testing.
+
+11. Versioning and compatibility
+
+Schema, format and schema shall be versioned and compatibility ensured:
+
+Dataset schema
+Checkpoint schema
+Annotation format
+Extractor interface
