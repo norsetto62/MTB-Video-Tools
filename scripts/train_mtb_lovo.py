@@ -19,13 +19,17 @@ CLASSIFIER_MID_DIM = 64
 DEFAULT_NUM_CLASSES = 3
 DEFAULT_DROPOUT = 0.4
 
-CLASS_WEIGHTS = [0.2, 1.0, 5.0]
-LABEL_SMOOTHING = 0.1
+DEFAULT_CLASS_WEIGHTS = [0.2, 1.0, 5.0]
+DEFAULT_LABEL_SMOOTHING = 0.1
 
 DEFAULT_EPOCHS = 15
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_LR = 1e-3
 DEFAULT_WEIGHT_DECAY = 1e-2
+
+DEFAULT_MODEL_DIR = Path(
+    r"C:\VideoTools\MTB-Video-Tools\output\checkpoints"
+)
 
 DEFAULT_SEED = 42
 
@@ -375,6 +379,7 @@ def run_fold(
     val_path,
     args,
     device,
+    label,
 ):
 
     train_paths = [
@@ -428,20 +433,20 @@ def run_fold(
 
     model = MTBClassifier(
         feature_dim=feature_dim,
-        hidden_dim=DEFAULT_HIDDEN_DIM,
-        num_classes=DEFAULT_NUM_CLASSES,
+        hidden_dim=args.hidden_dim,
+        num_classes=args.num_classes,
         dropout=args.dropout,
     ).to(device)
 
     class_weights = torch.tensor(
-        CLASS_WEIGHTS,
+        args.class_weights,
         dtype=torch.float32,
         device=device,
     )
 
     criterion = nn.CrossEntropyLoss(
         weight=class_weights,
-        label_smoothing=LABEL_SMOOTHING,
+        label_smoothing=args.label_smoothing,
     )
 
     optimizer = torch.optim.Adam(
@@ -513,6 +518,65 @@ def run_fold(
         val_loader,
         criterion,
         device,
+    )
+
+    # --------------------------------------------------------------------------
+    # Save the exact best model together with its complete configuration.
+    # This checkpoint can be used directly by extract_video_highlights.py.
+    # --------------------------------------------------------------------------
+
+    held_out_name = val_path.stem.lower()
+    fps_name = label.lower().replace(" ", "")
+    checkpoint_path = (
+        args.model_dir / f"model_lovo_{held_out_name}_{fps_name}.pt"
+    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    checkpoint = {
+        "checkpoint_version": 1,
+
+        "model_state_dict": model.state_dict(),
+
+        "feature_dim": feature_dim,
+        "feature_mask": args.feature_mask,
+
+        "model_config": {
+            "hidden_dim": args.hidden_dim,
+            "classifier_mid_dim": CLASSIFIER_MID_DIM,
+            "num_classes": args.num_classes,
+            "dropout": args.dropout,
+        },
+
+        "training_config": {
+            "class_weights": list(args.class_weights),
+            "label_smoothing": args.label_smoothing,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "weight_decay": args.weight_decay,
+            "seed": args.seed,
+        },
+
+        "lovo": {
+            "held_out_video": val_path.stem,
+            "held_out_dataset": str(val_path),
+            "training_datasets": [
+                str(path)
+                for path in train_paths
+            ],
+            "best_epoch": best_epoch,
+            "best_train_loss": best_train_loss,
+        },
+    }
+
+    torch.save(
+        checkpoint,
+        checkpoint_path,
+    )
+
+    print(
+        f"    Saved checkpoint: "
+        f"{checkpoint_path}"
     )
 
     return (
@@ -592,6 +656,7 @@ def run_lovo(
                 val_path,
                 args,
                 device,
+                label,
             )
         )
 
@@ -856,6 +921,38 @@ def main():
         default=Path(
             r"C:\VideoTools\MTB-Video-Tools\data\features\mtb_training_features.txt"
         ),
+    )
+
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=DEFAULT_HIDDEN_DIM,
+    )
+
+    parser.add_argument(
+        "--num-classes",
+        type=int,
+        default=DEFAULT_NUM_CLASSES,
+    )
+
+    parser.add_argument(
+        "--class-weights",
+        type=float,
+        nargs=3,
+        default=DEFAULT_CLASS_WEIGHTS,
+        metavar=("W0", "W1", "W2"),
+    )
+
+    parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        default=DEFAULT_LABEL_SMOOTHING,
+    )
+
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=DEFAULT_MODEL_DIR,
     )
 
     parser.add_argument(

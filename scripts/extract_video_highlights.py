@@ -17,27 +17,34 @@ DEFAULT_DROPOUT_RATE = 0.35
 # MODEL ARCHITECTURE (Matches Training Definition)
 # ==============================================================================
 class MTBClassifier(nn.Module):
-    def __init__(self, feature_dim, hidden_dim=DEFAULT_HIDDEN_DIM, num_classes=DEFAULT_NUM_CLASSES, dropout=DEFAULT_DROPOUT_RATE):
+    def __init__(
+        self,
+        feature_dim,
+        hidden_dim=128,
+        classifier_mid_dim=64,
+        num_classes=3,
+        dropout=0.4,
+    ):
         super().__init__()
         self.backbone = nn.LSTM(
             input_size=feature_dim,
             hidden_size=hidden_dim,
             batch_first=True,
-            bidirectional=True
+            bidirectional=True,
         )
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, CLASSIFIER_MID_DIM),
+            nn.Linear(hidden_dim * 2, classifier_mid_dim),
             nn.ReLU(),
-            nn.Linear(CLASSIFIER_MID_DIM, num_classes)  # [L0, L1/2, L3]
+            nn.Linear(classifier_mid_dim, num_classes),
         )
 
     def forward(self, x):
         out, _ = self.backbone(x)
-        pooled = torch.mean(out, dim=1)  # Temporal pooling
+        pooled = torch.mean(out, dim=1)
         logits = self.classifier(pooled)
         return logits
-
+    
 # ==============================================================================
 # TIERED SELECTION & TIMELINE ASSEMBLY
 # ==============================================================================
@@ -200,16 +207,38 @@ def extract_highlights(args):
     print(f"[+] Active Device: {device}")
 
     # 1. Load Model Checkpoint
-    checkpoint_path = Path(args.model_path)
+    checkpoint_path = args.model_dir / args.model_name
+
     if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Model checkpoint not found at: {checkpoint_path}")
-
+        raise FileNotFoundError(
+            f"Model checkpoint not found at: {checkpoint_path}"
+        )
+    
     print(f"[+] Loading model checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    feature_mask = checkpoint.get("feature_mask", None)
-    feature_dim = checkpoint["feature_dim"]
 
-    model = MTBClassifier(feature_dim=feature_dim, hidden_dim=128, num_classes=3).to(device)
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location=device,
+        weights_only=False,
+    )
+
+    feature_mask = checkpoint["feature_mask"]
+    feature_dim = checkpoint["feature_dim"]
+    model_config = checkpoint["model_config"]
+
+    print(f"[+] Checkpoint version: {checkpoint.get('checkpoint_version', 'unknown')}")
+    print(f"[+] Feature dimension: {feature_dim}")
+    print(f"[+] Feature mask: {len(feature_mask)} features")
+    print(f"[+] Model configuration: {model_config}")
+
+    model = MTBClassifier(
+        feature_dim=feature_dim,
+        hidden_dim=model_config["hidden_dim"],
+        classifier_mid_dim=model_config["classifier_mid_dim"],
+        num_classes=model_config["num_classes"],
+        dropout=model_config["dropout"],
+    ).to(device)
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -225,9 +254,24 @@ def extract_highlights(args):
     # Filter features using the model's saved feature_mask whitelist
     if feature_mask is not None and "feature_names" in data:
         all_names = list(data["feature_names"])
+
+        missing_features = [
+            f for f in feature_mask if f not in all_names
+        ]
+        if missing_features:
+            raise ValueError(
+                f"Input NPZ is missing {len(missing_features)} required "
+                f"features: {missing_features}"
+            )
+                
         valid_indices = [all_names.index(f) for f in feature_mask if f in all_names]
         X = X[:, :, valid_indices]
 
+    if X.shape[2] != feature_dim:
+        raise ValueError(
+            f"Feature dimension mismatch: checkpoint expects {feature_dim} "
+            f"features, but input NPZ produced {X.shape[2]}"
+        )
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
 
     # 3. Predict 3-Class Probabilities
@@ -263,7 +307,8 @@ def extract_highlights(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract MTB Video Highlights using 3-Class Tiered Logic")
     parser.add_argument("--input-npz", type=str, required=True, help="Path to input video .npz feature file")
-    parser.add_argument("--model-path", type=str, default=r"C:\VideoTools\MTB-Video-Tools\output\models\mtb_interest_model.pt")
+    parser.add_argument("--model-dir", type=Path, default=Path(r"C:\VideoTools\MTB-Video-Tools\output\checkpoints"), help="Directory containing model checkpoints")
+    parser.add_argument("--model-name", type=str, required=True,  help="Checkpoint filename to load")
     parser.add_argument("--target-duration", type=int, default=120, help="Target intro duration in seconds")
     parser.add_argument("--l3-threshold", type=float, default=0.60, help="Probability threshold for Tier 1 Level 3 selection")
     parser.add_argument("--l2-threshold", type=float, default=0.40, help="Probability threshold for Tier 2 Level 1-2 selection")

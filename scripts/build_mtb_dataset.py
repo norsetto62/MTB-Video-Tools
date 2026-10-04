@@ -480,37 +480,79 @@ def build_windows(
 
     examples: list[np.ndarray] = []
     targets: list[float] = []
-    manifest: list[dict] = []
+    manifest: list[dict] = []    # The flow CSV can end at slightly different times at different
+    # FPS because the final frame-to-frame interval is quantized
+    # differently.  Do not let that determine the training-window
+    # grid.
+    #
+    # The represented flow interval is:
+    #
+    #   [flow_start, flow_start + len(timestamps) * dt)
+    #
+    # We deliberately truncate the usable duration to the largest
+    # complete stride boundary.  This makes independently generated
+    # datasets at different FPS use the same canonical window grid.
+    represented_duration = (
+        len(timestamps) * dt
+    )
 
-    index = 0
+    canonical_duration = (
+        np.floor(
+            (represented_duration + 1e-9) / stride
+        )
+        * stride
+    )
+    flow_relative_start = float(timestamps[0] - dt)
+    flow_relative_end = float(timestamps[-1])
 
-    while (
-        index + samples_per_window
-        <= len(timestamps)
-    ):
+    represented_duration = (
+        flow_relative_end - flow_relative_start
+    )
+
+    max_start_offset = (
+        represented_duration - window
+    )
+
+    if max_start_offset < -1e-9:
+        raise ValueError(
+            f"flow duration={represented_duration:.6f}s is shorter "
+            f"than window={window:.6f}s"
+        )
+
+    # Number of complete canonical windows.
+    n_windows = (
+        int(
+            np.floor(
+                (max_start_offset + 1e-9) / stride
+            )
+        )
+        + 1
+    )
+
+    for window_number in range(n_windows):
+        index = (
+            window_number
+            * samples_per_stride
+        )
+
         sample_indices = np.arange(
             index,
             index + samples_per_window,
         )
 
-        # Each flow row is timestamped at the END of its
-        # frame-to-frame interval. Thus the first selected row
-        # represents [timestamps[index] - dt, timestamps[index]).
-        relative_start = float(
-            timestamps[index] - dt
-        )
-
-        relative_end = (
-            relative_start
-            + samples_per_window * dt
-        )
- 
+        # Window times come from the canonical temporal grid, NOT
+        # from floating-point arithmetic on CSV timestamps.
+        #
+        # The first flow row represents [flow_start, flow_start+dt),
+        # so row index i represents a window starting at
+        # flow_start + i*dt.
         video_start = (
-            relative_start + flow_start
+            flow_start
+            + index * dt
         )
 
         video_end = (
-            relative_end + flow_start
+            video_start + window
         )
 
         covered_duration = 0.0
@@ -597,8 +639,6 @@ def build_windows(
                     "n_samples": samples_per_window,
                 }
             )
-
-        index += samples_per_stride
 
     if not examples:
         raise ValueError(
