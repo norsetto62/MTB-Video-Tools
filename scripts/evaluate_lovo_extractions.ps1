@@ -3,36 +3,39 @@ $ErrorActionPreference = "Stop"
 # ==============================================================================
 # LOVO EXTRACTOR EVALUATION
 #
-# Runs each held-out LOVO checkpoint through the production extractor and
-# evaluates the resulting timestamp clips against the original 0..3 annotations.
+# Reads the final clip CSVs produced by the production extractor and evaluates
+# them against the original 0..3 annotations.
 #
-# Current evaluation:
-#   - 10 FPS datasets
+# Evaluation:
+#   - 2 FPS and 10 FPS extractions
 #   - 4s ML window
 #   - 2s prediction stride
 #   - 120s target
 #
+# Input:
+#   output\extractions\<video>_2fps.csv
+#   output\extractions\<video>_10fps.csv
+#
 # Metrics:
 #   SelectedSeconds
+#   ClipCount
 #   MTB3Seconds
+#   MTB3TotalSeconds
 #   MTB3Recall
 #   MTB3Precision
 #   MTB23Seconds
+#   MTB23TotalSeconds
 #   MTB23Precision
 #   MTB0Seconds
 #   MTB0Contamination
 #
-# No project files are modified.
+# No project files are modified except the output CSV.
 # ==============================================================================
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
-$Extractor = Join-Path $RepoRoot "scripts\extract_video_highlights.py"
-$DatasetDir = Join-Path $RepoRoot "output\datasets_10fps"
-$CheckpointDir = Join-Path $RepoRoot "output\checkpoints"
+$ExtractionDir = Join-Path $RepoRoot "output\extractions"
 $AnnotationDir = Join-Path $RepoRoot "data\annotations"
-
-$TargetDuration = 120
 
 $Videos = @(
     "Ascoli",
@@ -43,6 +46,11 @@ $Videos = @(
     "Mentorella",
     "Orvinio",
     "Tivoli"
+)
+
+$FPSValues = @(
+    "2fps",
+    "10fps"
 )
 
 # ------------------------------------------------------------------------------
@@ -64,7 +72,10 @@ function Convert-ToSeconds {
     $parts = $Value.Split(":")
 
     if ($parts.Count -eq 2) {
-        return ([double]$parts[0] * 60.0) + [double]$parts[1]
+        return (
+            [double]$parts[0] * 60.0 +
+            [double]$parts[1]
+        )
     }
 
     if ($parts.Count -eq 3) {
@@ -108,6 +119,7 @@ function Read-Annotations {
 
         # Expected:
         # Start End MTB Remarks
+
         $parts = $text -split "\s+", 4
 
         if ($parts.Count -lt 3) {
@@ -138,6 +150,44 @@ function Read-Annotations {
 }
 
 # ------------------------------------------------------------------------------
+# Read clip CSV
+# ------------------------------------------------------------------------------
+
+function Read-ClipCsv {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path
+    )
+
+    $clips = @()
+
+    foreach ($row in Import-Csv -LiteralPath $Path) {
+
+        try {
+            $start = [double]$row.start
+            $end   = [double]$row.end
+        }
+        catch {
+            throw "Invalid clip CSV row in $Path"
+        }
+
+        if ($end -le $start) {
+            throw (
+                "Invalid clip interval in $Path`: " +
+                "start=$start end=$end"
+            )
+        }
+
+        $clips += [PSCustomObject]@{
+            Start = $start
+            End   = $end
+        }
+    }
+
+    return $clips
+}
+
+# ------------------------------------------------------------------------------
 # Interval overlap
 # ------------------------------------------------------------------------------
 
@@ -160,40 +210,6 @@ function Get-Overlap {
 }
 
 # ------------------------------------------------------------------------------
-# Parse extractor clips
-# ------------------------------------------------------------------------------
-
-function Parse-Clips {
-    param(
-        [string[]]$OutputLines
-    )
-
-    $clips = @()
-
-    foreach ($line in $OutputLines) {
-
-        if (
-            $line -match
-            "Clip\s+\d+:\s+(\d+(?:\.\d+)?)s\s+-->\s+(\d+(?:\.\d+)?)s"
-        ) {
-            $start = [double]$Matches[1]
-            $end   = [double]$Matches[2]
-
-            if ($end -le $start) {
-                throw "Invalid extractor clip: $line"
-            }
-
-            $clips += [PSCustomObject]@{
-                Start = $start
-                End   = $end
-            }
-        }
-    }
-
-    return $clips
-}
-
-# ------------------------------------------------------------------------------
 # Calculate metrics
 # ------------------------------------------------------------------------------
 
@@ -212,7 +228,6 @@ function Evaluate-Selection {
     $mtb3Seconds  = 0.0
     $mtb23Seconds = 0.0
     $mtb0Seconds  = 0.0
-    $annotatedSelectedSeconds = 0.0
 
     foreach ($clip in $Clips) {
 
@@ -228,8 +243,6 @@ function Evaluate-Selection {
                 continue
             }
 
-            $annotatedSelectedSeconds += $overlap
-
             if ($annotation.Score -eq 3) {
                 $mtb3Seconds += $overlap
             }
@@ -244,9 +257,9 @@ function Evaluate-Selection {
         }
     }
 
-    $totalMTB3Seconds = 0.0
+    $totalMTB3Seconds  = 0.0
     $totalMTB23Seconds = 0.0
-    $totalMTB0Seconds = 0.0
+    $totalMTB0Seconds  = 0.0
 
     foreach ($annotation in $Annotations) {
 
@@ -300,179 +313,155 @@ function Evaluate-Selection {
 
         MTB23Seconds             = $mtb23Seconds
         MTB23TotalSeconds        = $totalMTB23Seconds
-        MTB23Precision            = $mtb23Precision
+        MTB23Precision           = $mtb23Precision
 
         MTB0Seconds              = $mtb0Seconds
         MTB0Contamination        = $mtb0Contamination
-
-        AnnotatedSelectedSeconds = $annotatedSelectedSeconds
     }
 }
 
 # ------------------------------------------------------------------------------
-# Run one evaluation
+# Run evaluation
 # ------------------------------------------------------------------------------
 
 $results = @()
 
 Write-Host ""
 Write-Host ("=" * 80)
-Write-Host "LOVO EXTRACTOR EVALUATION"
+Write-Host "LOVO EXTRACTOR EVALUATION — 2 FPS vs 10 FPS"
 Write-Host ("=" * 80)
 Write-Host ""
 
 foreach ($video in $Videos) {
 
-    Write-Host ""
-    Write-Host ("-" * 80)
-    Write-Host "EVALUATING: $video"
-    Write-Host ("-" * 80)
-
-    $dataset = Join-Path `
-        $DatasetDir `
-        ("{0}_dataset.npz" -f $video.ToLower())
-
-    $checkpoint = Join-Path `
-        $CheckpointDir `
-        ("model_lovo_{0}_dataset_10fps.pt" -f $video.ToLower())
-
-    $annotations = Join-Path `
+    $annotationsPath = Join-Path `
         $AnnotationDir `
         ("{0}.txt" -f $video)
 
-    if (-not (Test-Path $dataset)) {
-        Write-Warning "Dataset not found: $dataset"
+    if (-not (Test-Path $annotationsPath)) {
+        Write-Warning "Annotations not found: $annotationsPath"
         continue
     }
 
-    if (-not (Test-Path $checkpoint)) {
-        Write-Warning "Checkpoint not found: $checkpoint"
-        continue
-    }
-
-    if (-not (Test-Path $annotations)) {
-        Write-Warning "Annotations not found: $annotations"
-        continue
-    }
-
-    Write-Host "Dataset:     $dataset"
-    Write-Host "Checkpoint:  $checkpoint"
-    Write-Host "Annotations: $annotations"
-    Write-Host ""
-
-    # Run extractor.
-    #
-    # IMPORTANT:
-    # The extractor itself is the source of truth for the actual selected
-    # timestamps. We do not reconstruct them from model predictions here.
-    $output = @(
-        & python $Extractor `
-            --input-npz $dataset `
-            --model-dir $CheckpointDir `
-            --model-name (Split-Path $checkpoint -Leaf) `
-            --target-duration $TargetDuration 2>&1
-    )
-
-    $exitCode = $LASTEXITCODE
-
-    # Echo extractor output.
-    $output | ForEach-Object {
-        Write-Host $_
-    }
-
-    if ($exitCode -ne 0) {
-        throw "Extractor failed for $video with exit code $exitCode"
-    }
-
-    $clips = Parse-Clips -OutputLines $output
-
-    if ($clips.Count -eq 0) {
-        throw "No timestamp clips found in extractor output for $video"
-    }
-
-    $annotationData = Read-Annotations $annotations
+    $annotationData = Read-Annotations $annotationsPath
 
     if ($annotationData.Count -eq 0) {
         throw "No annotations found for $video"
     }
 
-    $metrics = Evaluate-Selection `
-        -Clips $clips `
-        -Annotations $annotationData
+    foreach ($fps in $FPSValues) {
 
-    # Sanity check: extractor must respect target duration.
-    if ($metrics.SelectedSeconds -gt ($TargetDuration + 0.001)) {
-        throw (
-            "$video produced $($metrics.SelectedSeconds.ToString("F1"))s, " +
-            "exceeding target $TargetDuration`s"
-        )
+        Write-Host ""
+        Write-Host ("-" * 80)
+        Write-Host "EVALUATING: $video — $fps"
+        Write-Host ("-" * 80)
+
+        $clipCsv = Join-Path `
+            $ExtractionDir `
+            ("{0}_{1}.csv" -f $video.ToLower(), $fps)
+
+        if (-not (Test-Path $clipCsv)) {
+            Write-Warning "Clip CSV not found: $clipCsv"
+            continue
+        }
+
+        Write-Host "Clips:       $clipCsv"
+        Write-Host "Annotations: $annotationsPath"
+        Write-Host ""
+
+        $clips = Read-ClipCsv $clipCsv
+
+        if ($clips.Count -eq 0) {
+            throw "No clips found in $clipCsv"
+        }
+
+        $metrics = Evaluate-Selection `
+            -Clips $clips `
+            -Annotations $annotationData
+
+        $result = [PSCustomObject]@{
+            Video = $video
+            FPS   = $fps
+
+            SelectedSeconds = [Math]::Round(
+                $metrics.SelectedSeconds,
+                2
+            )
+
+            ClipCount = $metrics.ClipCount
+
+            MTB3Seconds = [Math]::Round(
+                $metrics.MTB3Seconds,
+                2
+            )
+
+            MTB3TotalSeconds = [Math]::Round(
+                $metrics.MTB3TotalSeconds,
+                2
+            )
+
+            MTB3Recall = [Math]::Round(
+                $metrics.MTB3Recall * 100.0,
+                2
+            )
+
+            MTB3Precision = [Math]::Round(
+                $metrics.MTB3Precision * 100.0,
+                2
+            )
+
+            MTB23Seconds = [Math]::Round(
+                $metrics.MTB23Seconds,
+                2
+            )
+
+            MTB23TotalSeconds = [Math]::Round(
+                $metrics.MTB23TotalSeconds,
+                2
+            )
+
+            MTB23Precision = [Math]::Round(
+                $metrics.MTB23Precision * 100.0,
+                2
+            )
+
+            MTB0Seconds = [Math]::Round(
+                $metrics.MTB0Seconds,
+                2
+            )
+
+            MTB0Contamination = [Math]::Round(
+                $metrics.MTB0Contamination * 100.0,
+                2
+            )
+        }
+
+        $results += $result
+
+        Write-Host "RESULT:"
+        Write-Host ("  Selected:        {0:F1}s" -f `
+            $metrics.SelectedSeconds)
+        Write-Host ("  Clips:           {0}" -f `
+            $metrics.ClipCount)
+        Write-Host ("  MTB3 captured:   {0:F1}s / {1:F1}s" -f `
+            $metrics.MTB3Seconds,
+            $metrics.MTB3TotalSeconds)
+        Write-Host ("  MTB3 recall:     {0:F1}%" -f `
+            ($metrics.MTB3Recall * 100.0))
+        Write-Host ("  MTB3 precision:  {0:F1}%" -f `
+            ($metrics.MTB3Precision * 100.0))
+        Write-Host ("  MTB2+3 captured: {0:F1}s / {1:F1}s" -f `
+            $metrics.MTB23Seconds,
+            $metrics.MTB23TotalSeconds)
+        Write-Host ("  MTB2+3 precision:{0:F1}%" -f `
+            ($metrics.MTB23Precision * 100.0))
+        Write-Host ("  MTB0 contam.:    {0:F1}%" -f `
+            ($metrics.MTB0Contamination * 100.0))
     }
-
-    $result = [PSCustomObject]@{
-        Video = $video
-
-        SelectedSeconds = [Math]::Round(
-            $metrics.SelectedSeconds, 2
-        )
-
-        ClipCount = $metrics.ClipCount
-
-        MTB3Seconds = [Math]::Round(
-            $metrics.MTB3Seconds, 2
-        )
-
-        MTB3TotalSeconds = [Math]::Round(
-            $metrics.MTB3TotalSeconds, 2
-        )
-
-        MTB3Recall = [Math]::Round(
-            $metrics.MTB3Recall * 100.0, 2
-        )
-
-        MTB3Precision = [Math]::Round(
-            $metrics.MTB3Precision * 100.0, 2
-        )
-
-        MTB23Seconds = [Math]::Round(
-            $metrics.MTB23Seconds, 2
-        )
-
-        MTB23Precision = [Math]::Round(
-            $metrics.MTB23Precision * 100.0, 2
-        )
-
-        MTB0Seconds = [Math]::Round(
-            $metrics.MTB0Seconds, 2
-        )
-
-        MTB0Contamination = [Math]::Round(
-            $metrics.MTB0Contamination * 100.0, 2
-        )
-    }
-
-    $results += $result
-
-    Write-Host ""
-    Write-Host "RESULT:"
-    Write-Host ("  Selected:       {0:F1}s" -f $metrics.SelectedSeconds)
-    Write-Host ("  Clips:          {0}" -f $metrics.ClipCount)
-    Write-Host ("  MTB3 captured:  {0:F1}s / {1:F1}s" -f `
-        $metrics.MTB3Seconds,
-        $metrics.MTB3TotalSeconds)
-    Write-Host ("  MTB3 recall:    {0:F1}%" -f `
-        ($metrics.MTB3Recall * 100.0))
-    Write-Host ("  MTB3 precision: {0:F1}%" -f `
-        ($metrics.MTB3Precision * 100.0))
-    Write-Host ("  MTB2+3 captured:{0:F1}s" -f `
-        $metrics.MTB23Seconds)
-    Write-Host ("  MTB2+3 precision:{0:F1}%" -f `
-        ($metrics.MTB23Precision * 100.0))
-    Write-Host ("  MTB0 contam.:   {0:F1}%" -f `
-        ($metrics.MTB0Contamination * 100.0))
 }
 
 # ------------------------------------------------------------------------------
-# Summary
+# Detailed summary
 # ------------------------------------------------------------------------------
 
 Write-Host ""
@@ -483,9 +472,10 @@ Write-Host ("=" * 80)
 Write-Host ""
 
 $results |
-    Sort-Object MTB3Recall -Descending |
+    Sort-Object Video, FPS |
     Format-Table `
         Video,
+        FPS,
         SelectedSeconds,
         ClipCount,
         MTB3Seconds,
@@ -501,34 +491,57 @@ $results |
 
 if ($results.Count -gt 0) {
 
-    $avgSelected = (
-        $results | Measure-Object SelectedSeconds -Average
-    ).Average
+    foreach ($fps in $FPSValues) {
 
-    $avgMTB3Recall = (
-        $results | Measure-Object MTB3Recall -Average
-    ).Average
+        $fpsResults = @(
+            $results | Where-Object {
+                $_.FPS -eq $fps
+            }
+        )
 
-    $avgMTB3Precision = (
-        $results | Measure-Object MTB3Precision -Average
-    ).Average
+        if ($fpsResults.Count -eq 0) {
+            continue
+        }
 
-    $avgMTB23Precision = (
-        $results | Measure-Object MTB23Precision -Average
-    ).Average
+        $avgSelected = (
+            $fpsResults |
+                Measure-Object SelectedSeconds -Average
+        ).Average
 
-    $avgMTB0 = (
-        $results | Measure-Object MTB0Contamination -Average
-    ).Average
+        $avgMTB3Recall = (
+            $fpsResults |
+                Measure-Object MTB3Recall -Average
+        ).Average
 
-    Write-Host ""
-    Write-Host "MEAN ACROSS HELD-OUT VIDEOS"
-    Write-Host "---------------------------"
-    Write-Host ("Mean selected duration:   {0:F1}s" -f $avgSelected)
-    Write-Host ("Mean MTB3 recall:         {0:F1}%" -f $avgMTB3Recall)
-    Write-Host ("Mean MTB3 precision:      {0:F1}%" -f $avgMTB3Precision)
-    Write-Host ("Mean MTB2+3 precision:    {0:F1}%" -f $avgMTB23Precision)
-    Write-Host ("Mean MTB0 contamination:  {0:F1}%" -f $avgMTB0)
+        $avgMTB3Precision = (
+            $fpsResults |
+                Measure-Object MTB3Precision -Average
+        ).Average
+
+        $avgMTB23Precision = (
+            $fpsResults |
+                Measure-Object MTB23Precision -Average
+        ).Average
+
+        $avgMTB0 = (
+            $fpsResults |
+                Measure-Object MTB0Contamination -Average
+        ).Average
+
+        Write-Host ""
+        Write-Host "MEAN — $fps"
+        Write-Host "---------------------------"
+        Write-Host ("Mean selected duration:   {0:F1}s" -f `
+            $avgSelected)
+        Write-Host ("Mean MTB3 recall:         {0:F1}%" -f `
+            $avgMTB3Recall)
+        Write-Host ("Mean MTB3 precision:      {0:F1}%" -f `
+            $avgMTB3Precision)
+        Write-Host ("Mean MTB2+3 precision:    {0:F1}%" -f `
+            $avgMTB23Precision)
+        Write-Host ("Mean MTB0 contamination:  {0:F1}%" -f `
+            $avgMTB0)
+    }
 }
 
 # ------------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 import argparse
 from pathlib import Path
+import csv
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -532,6 +534,48 @@ def extract_highlights(args):
             f"(Duration: {end - start:.1f}s)"
         )
 
+    if args.output_clips:
+        output_path = Path(args.output_clips)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        clips = [
+            {
+                "clip": i,
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "duration": round(end - start, 3),
+            }
+            for i, (start, end) in enumerate(intervals, 1)
+        ]
+
+        suffix = output_path.suffix.lower()
+
+        if suffix == ".csv":
+            with output_path.open(
+                "w",
+                newline="",
+                encoding="utf-8",
+            ) as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=("clip", "start", "end", "duration"),
+                )
+                writer.writeheader()
+                writer.writerows(clips)
+
+        elif suffix == ".json":
+            with output_path.open(
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(clips, f, indent=2)
+
+        else:
+            raise ValueError(
+                "--output-clips must use a .csv or .json extension."
+            )
+
+        print(f"[+] Saved clip timestamps: {output_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -622,6 +666,15 @@ if __name__ == "__main__":
         type=float,
         default=3.0,
         help="Drops micro-clips shorter than this",
+    )
+
+    parser.add_argument(
+        "--output-clips",
+        type=str,
+        default=None,
+        help=(
+            "Optional output file for final clip timestamps (.csv or .json)"
+        ),
     )
 
     args = parser.parse_args()
