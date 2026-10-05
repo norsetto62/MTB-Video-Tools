@@ -1,181 +1,238 @@
+"""Parsing and validation of AutoCut annotation manifests."""
+
+import logging
 from pathlib import Path
+
+from .config import Config
 from .utils import convert_hms_to_s
-from .config import min_clip
 
-def load_annotations(annotation_file):
+logger = logging.getLogger(__name__)
+
+_AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi"}
+
+
+def _resolve_source_path(value: str, annotation_file: Path) -> Path:
+    """Resolve a source path relative to the annotation file when needed."""
+    path = Path(value)
+
+    if not path.is_absolute():
+        path = annotation_file.parent / path
+
+    return path
+
+
+def _is_audio(value: str) -> bool:
+    return Path(value).suffix.lower() in _AUDIO_EXTENSIONS
+
+
+def _is_video(value: str) -> bool:
+    return Path(value).suffix.lower() in _VIDEO_EXTENSIONS
+
+
+def _looks_numeric(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+
+    return True
+
+
+def load_annotations(
+    annotation_file: str | Path,
+    config: Config | None = None,
+):
+    """Load and validate an AutoCut annotation manifest.
+
+    Returns:
+        A tuple ``(video_clip_list, audio_config)``.
+
+        ``audio_config`` is ``None`` when no music is specified.
     """
-    Load annotation file.
-
-    Supported formats:
-
-    Standalone audio filename (optional):
-        D:\\path\\audio.mp3 *
-
-    Standalone video filename:
-        D:\\path\\video.mp4
-
-    Followed by intervals:
-        00:00   01:19   *
-
-    Or full rows:
-        D:\\path\\video.mp4   00:00   01:19   *
-    """
-
+    config = config or Config()
     annotation_file = Path(annotation_file)
+
+    if not annotation_file.is_file():
+        raise FileNotFoundError(
+            f"Annotation file not found: {annotation_file}"
+        )
 
     clips = []
     last_video_name = None
+    audio_config = None
 
     with annotation_file.open(
         "r",
         encoding="utf-8-sig",
     ) as f:
-
-        for raw_line in f:
+        for line_number, raw_line in enumerate(f, start=1):
             line = raw_line.strip()
 
-            # Ignore empty lines
-            if not line:
+            if not line or line.startswith("#"):
                 continue
 
-            # Ignore comments
-            if line.startswith("#"):
-                continue
-
-            parts = line.split(
-                maxsplit=4
-            )
-
-            if not parts:
-                continue
-
+            parts = line.split(maxsplit=4)
             num_parts = len(parts)
 
-            # ---------------------------------------------------------------
-            # Audio filename
-            # ---------------------------------------------------------------
-            
-            mix = False
-            if (
-                num_parts == 1
-                and (
-                    parts[0].lower().endswith(".mp3")
-                    or parts[0].lower().endswith(".wav")
-                    or parts[0].lower().endswith(".ogg")
-                    or parts[0].lower().endswith(".flac")
+            # ---------------------------------------------------------
+            # Audio directive
+            # ---------------------------------------------------------
+            if num_parts in (1, 2) and _is_audio(parts[0]):
+                audio_path = _resolve_source_path(
+                    parts[0],
+                    annotation_file,
                 )
-            ):
-                audio_name = parts[0]
-                audio_config = {"audio_filename}":audio_name,
-                                "mix":mix,}
-                continue
 
-            if (
-                num_parts == 2
-                and (
-                    parts[0].lower().endswith(".mp3")
-                    or parts[0].lower().endswith(".wav")
-                    or parts[0].lower().endswith(".ogg")
-                    or parts[0].lower().endswith(".flac")
-                )
-            ):
-                audio_name = parts[0]
-                if parts[1].strip() == "*":
-                    mix = True
-                audio_config = {"audio_filename}":audio_name,
-                                "mix":mix,}
-                continue
-
-            # ---------------------------------------------------------------
-            # Standalone video filename
-            # ---------------------------------------------------------------
-
-            if (
-                num_parts == 1
-                and (
-                    parts[0].lower().endswith(".mp4")
-                    or parts[0].lower().endswith(".mov")
-                    or parts[0].lower().endswith(".mkv")
-                    or parts[0].lower().endswith(".avi")
-                )
-            ):
-                last_video_name = parts[0]
-                continue
-
-            # ---------------------------------------------------------------
-            # Case 1:
-            # Video name omitted.
-            #
-            # Example:
-            # 00:00  01:19  *
-            # ---------------------------------------------------------------
-
-            if (
-                ":" in parts[0]
-                or parts[0].replace(".", "", 1).isdigit()
-            ):
-
-                if last_video_name is None:
-                    raise ValueError(
-                        f"First row in annotations omits video filename: '{line}'"
+                if not audio_path.is_file():
+                    raise FileNotFoundError(
+                        f"Audio file not found on line "
+                        f"{line_number}: {audio_path}"
                     )
 
-                if num_parts < 2:
+                if num_parts == 2 and parts[1].strip() != "*":
                     raise ValueError(
-                        f"Invalid annotation row: '{line}'"
+                        f"Invalid audio directive on line "
+                        f"{line_number}: '{line}'"
+                    )
+
+                mix = num_parts == 2
+
+                if audio_config is not None:
+                    logger.warning(
+                        "Multiple audio files specified; replacing "
+                        "'%s' with '%s'.",
+                        audio_config["path"],
+                        audio_path,
+                    )
+
+                audio_config = {
+                    "path": str(audio_path.resolve()),
+                    "mix": mix,
+                }
+
+                continue
+
+            # ---------------------------------------------------------
+            # Standalone video filename
+            # ---------------------------------------------------------
+            if num_parts == 1 and _is_video(parts[0]):
+                video_path = _resolve_source_path(
+                    parts[0],
+                    annotation_file,
+                )
+
+                if not video_path.is_file():
+                    raise FileNotFoundError(
+                        f"Video file not found on line "
+                        f"{line_number}: {video_path}"
+                    )
+
+                last_video_name = str(video_path.resolve())
+
+                continue
+
+            # ---------------------------------------------------------
+            # Interval using previously declared video
+            #
+            #   start end
+            #   start end *
+            # ---------------------------------------------------------
+            if ":" in parts[0] or _looks_numeric(parts[0]):
+                if last_video_name is None:
+                    raise ValueError(
+                        f"Interval on line {line_number} omits a "
+                        f"video filename before any video was declared: "
+                        f"'{line}'"
+                    )
+
+                if num_parts not in (2, 3):
+                    raise ValueError(
+                        f"Invalid annotation row on line "
+                        f"{line_number}: '{line}'"
                     )
 
                 video_name = last_video_name
+                start_text = parts[0]
+                end_text = parts[1]
 
-                start = convert_hms_to_s(parts[0])
-                end = convert_hms_to_s(parts[1])
+                mandatory = num_parts == 3
 
-                mandatory = False
-                if num_parts == 3:
-                    if parts[2].strip() == "*":
-                        mandatory = True
-
-            # ---------------------------------------------------------------
-            # Case 2:
-            # Video name explicitly provided on same row.
-            #
-            # Example:
-            # video.mp4  00:00  01:19  *
-            # ---------------------------------------------------------------
-
-            else:
-
-                if len(parts) < 3:
+                if mandatory and parts[2].strip() != "*":
                     raise ValueError(
-                        f"Invalid annotation row: '{line}'"
+                        f"Invalid annotation directive on line "
+                        f"{line_number}: '{line}'"
                     )
 
-                video_name = parts[0]
+            # ---------------------------------------------------------
+            # Interval with explicit video
+            #
+            #   video start end
+            #   video start end *
+            # ---------------------------------------------------------
+            else:
+                if num_parts not in (3, 4):
+                    raise ValueError(
+                        f"Invalid annotation row on line "
+                        f"{line_number}: '{line}'"
+                    )
+
+                video_path = _resolve_source_path(
+                    parts[0],
+                    annotation_file,
+                )
+
+                if not video_path.is_file():
+                    raise FileNotFoundError(
+                        f"Video file not found on line "
+                        f"{line_number}: {video_path}"
+                    )
+
+                video_name = str(video_path.resolve())
                 last_video_name = video_name
 
-                start = convert_hms_to_s(parts[1])
-                end = convert_hms_to_s(parts[2])
+                start_text = parts[1]
+                end_text = parts[2]
 
-                mandatory = False
-                if num_parts == 4:
-                    if parts[3].strip() == "*":
-                        mandatory = True
+                mandatory = num_parts == 4
 
-            # ---------------------------------------------------------------
-            # Validate
-            # ---------------------------------------------------------------
+                if mandatory and parts[3].strip() != "*":
+                    raise ValueError(
+                        f"Invalid annotation directive on line "
+                        f"{line_number}: '{line}'"
+                    )
+
+            # ---------------------------------------------------------
+            # Time conversion / validation
+            # ---------------------------------------------------------
+            try:
+                start = convert_hms_to_s(start_text)
+                end = convert_hms_to_s(end_text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid timestamp on line "
+                    f"{line_number}: '{line}'"
+                ) from exc
 
             if end <= start:
-                print(
-                    f"WARNING: ignoring invalid interval: {line}"
+                raise ValueError(
+                    f"End time must be greater than start time "
+                    f"on line {line_number}: '{line}'"
                 )
-                continue
 
             duration = end - start
 
-            if duration < min_clip:
-                print(
-                    f"WARNING: ignoring very short interval: {line}"
+            # ---------------------------------------------------------
+            # Minimum clip duration
+            # ---------------------------------------------------------
+            if duration < config.min_clip:
+                logger.warning(
+                    "Ignoring short interval on line %d "
+                    "(%.3fs < %.3fs): %s",
+                    line_number,
+                    duration,
+                    config.min_clip,
+                    line,
                 )
                 continue
 
@@ -189,4 +246,4 @@ def load_annotations(annotation_file):
                 }
             )
 
-    return {audio_config, clips}
+    return clips, audio_config
