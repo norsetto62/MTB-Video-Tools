@@ -1,6 +1,6 @@
 # AUTOCUT — Top Level Specification / Architectural Requirement Document
 
-**Version:** 0.05 — Draft  
+**Version:** 0.06 — Draft  
 **Document:** `AUTOCUT_SPEC.md`  
 **Status:** Architectural foundation for the AutoCut refactoring
 
@@ -44,54 +44,85 @@ Development/maintenance commands such as `autocut audit`, `autocut train` and `a
 
 ## 3. Target Package Structure
 
-The refactored project should converge toward:
+The refactored project shall use a `src/` layout. This is not strictly required by Python, but it prevents accidental imports from the repository root and provides a clean separation between application source code and project data/artifacts.
+
+The target structure is:
 
 ```text
 MTB-Video-Tools/
-├── autocut/
-│   ├── __init__.py
-│   ├── cli.py
-│   ├── pipeline.py
-│   ├── config.py
-│   ├── errors.py
-│   ├── logging.py
-│   ├── annotations.py
-│   ├── models.py
-│   ├── manifests.py
-│   ├── video/
-│   │   ├── probe.py
-│   │   ├── reader.py
-│   │   └── renderer.py
-│   ├── motion/
-│   │   ├── flow.py
-│   │   └── features.py
-│   ├── dataset/
-│   │   ├── windows.py
-│   │   ├── targets.py
-│   │   ├── builder.py
-│   │   └── audit.py
-│   ├── ml/
-│   │   ├── model.py
-│   │   ├── scaling.py
-│   │   ├── checkpoint.py
-│   │   ├── training.py
-│   │   └── inference.py
-│   ├── selection/
-│   │   ├── candidates.py
-│   │   ├── ranking.py
-│   │   ├── budget.py
-│   │   └── timeline.py
-│   ├── audio/
-│   │   └── music.py
-│   └── cache.py
+├── pyproject.toml
+├── README.md
+├── src/
+│   └── autocut/
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── cli.py
+│       ├── pipeline.py
+│       ├── config.py
+│       ├── errors.py
+│       ├── logging_utils.py
+│       ├── annotations.py
+│       ├── models.py
+│       ├── manifests.py
+│       ├── video/
+│       │   ├── __init__.py
+│       │   ├── probe.py
+│       │   ├── reader.py
+│       │   └── renderer.py
+│       ├── motion/
+│       │   ├── __init__.py
+│       │   ├── flow.py
+│       │   └── features.py
+│       ├── dataset/
+│       │   ├── __init__.py
+│       │   ├── windows.py
+│       │   ├── targets.py
+│       │   ├── builder.py
+│       │   └── audit.py
+│       ├── ml/
+│       │   ├── __init__.py
+│       │   ├── model.py
+│       │   ├── scaling.py
+│       │   ├── checkpoint.py
+│       │   ├── training.py
+│       │   └── inference.py
+│       ├── selection/
+│       │   ├── __init__.py
+│       │   ├── candidates.py
+│       │   ├── ranking.py
+│       │   ├── budget.py
+│       │   └── timeline.py
+│       ├── audio/
+│       │   ├── __init__.py
+│       │   └── music.py
+│       └── cache.py
 ├── tests/
 ├── docs/
 ├── models/
 ├── output/
-└── pyproject.toml
+└── data/
 ```
 
 The exact file layout may evolve; the architectural responsibilities must remain stable.
+
+All directories that are intended to be Python packages, including `video`, `motion`, `dataset`, `ml`, `selection` and `audio`, should contain `__init__.py`. The top-level `models/`, `output/` and `data/` directories are data/artifact directories and are not Python packages.
+
+`__main__.py` shall support direct module execution: `python -m autocut`.
+
+The project must not define a local module named `logging.py`, which could shadow Python's standard-library `logging` module. `logging_utils.py` (or an equivalent unambiguous name) shall be used instead.
+
+The `data/` tree is intentionally separate from source code and final products. A recommended organization is:
+
+```text
+data/
+├── raw/
+├── annotations/
+├── flow/
+├── datasets/
+└── audit/
+```
+
+Generated datasets, flow artifacts, audit reports and temporary/intermediate development artifacts belong under `data/` rather than `output/`. `models/` contains trained model/checkpoint artifacts, while `output/` contains final generated videos and other user-facing products.
 
 ---
 
@@ -131,11 +162,41 @@ Validation shall cover file existence, timestamp syntax, non-negative times, `en
 
 Use explicit typed models for concepts including `VideoSource`, `VideoRange`, `Annotation`, `MusicDirective`, `FeatureSample`, `TemporalWindow`, `InterestTarget`, `Prediction`, `CandidateInterval`, `TimelineClip`, `Timeline`, `PipelineConfig` and `ResultManifest`.
 
-Serialization formats such as CSV, NPZ and JSON are adapters around these domain objects, not the definition of the domain model.
+`autocut.models` is the home for domain/data models. It must not become a generic container for neural-network implementations. ML architectures and their forward/inference behavior belong in `autocut.ml.model`; checkpoint handling belongs in `autocut.ml.checkpoint`.
+
+Serialization formats such as CSV, NPZ and JSON are adapters around these domain objects, not the definition of the domain model. Domain models should not expose third-party media-engine objects or otherwise couple the business model to MoviePy, OpenCV or a particular storage format.
 
 ---
 
-## 8. Video Inspection
+## 8. Pipeline Orchestration
+
+`autocut.pipeline` is the orchestration layer for the application. It coordinates the major stages but does not contain their detailed algorithms.
+
+Conceptually, the pipeline is:
+
+```text
+CLI
+ │
+ ▼
+pipeline
+ │
+ ├── annotations / manifests
+ ├── video
+ ├── motion
+ ├── dataset
+ ├── ml
+ ├── selection
+ ├── audio
+ └── rendering
+```
+
+The coordinator may invoke operations such as probing media, computing features, building datasets, running inference, generating candidates, constructing the timeline and rendering the result. The implementation of those operations remains in the corresponding package.
+
+The pipeline must remain thin enough that individual stages can be unit-tested and replaced without rewriting unrelated stages. It is the application's workflow coordinator, not a replacement for the domain modules.
+
+---
+
+## 9. Video Inspection
 
 Before processing, AutoCut shall inspect every referenced video and establish duration, frame rate, frame count where available, dimensions, pixel format where relevant, audio presence and relevant audio properties.
 
@@ -143,7 +204,7 @@ Video probing is centralized. Downstream modules receive typed video information
 
 ---
 
-## 9. Motion and Feature Analysis
+## 10. Motion and Feature Analysis
 
 The current proven baseline uses optical-flow-derived motion features at **2 FPS**, approximately one sample every 0.5 seconds.
 
@@ -153,7 +214,7 @@ Feature artifacts must identify the source, sampling configuration, feature sche
 
 ---
 
-## 10. Temporal Windowing
+## 11. Temporal Windowing
 
 The model operates on temporal windows rather than isolated frames.
 
@@ -170,7 +231,7 @@ Adjacent windows therefore overlap by approximately 50%. Window generation is in
 
 ---
 
-## 11. Training Data and Annotation Model
+## 12. Training Data and Annotation Model
 
 AutoCut uses **continuous MTB interestingness**, not five independent feature labels.
 
@@ -185,7 +246,7 @@ The scale is a scalar interest measure. Annotation descriptions are audit metada
 
 ---
 
-## 12. Window Target Generation
+## 13. Window Target Generation
 
 A window may overlap several annotation intervals. Its target is therefore derived from temporal overlap rather than from a single point or arbitrary annotation.
 
@@ -199,7 +260,7 @@ Accordingly, generated targets may be intermediate values between 0 and 3. This 
 
 ---
 
-## 13. Dataset Generation
+## 14. Dataset Generation
 
 Dataset generation shall load validated annotations, inspect source videos, load or generate motion/features, create windows, calculate duration-weighted targets, preserve provenance, validate schemas and write versioned dataset artifacts.
 
@@ -214,7 +275,7 @@ where `N` is the number of windows, `T` the samples per window and `F` the featu
 
 ---
 
-## 14. Dataset Audit
+## 15. Dataset Audit
 
 Audit is a first-class development capability. It shall expose annotation count/duration, target distributions, generated window counts, source-video distribution, exact/intermediate targets, temporal coverage, annotation transitions and malformed/missing source data.
 
@@ -222,7 +283,7 @@ It must be possible to inspect the actual generated examples around transitions,
 
 ---
 
-## 15. ML Model
+## 16. ML Model
 
 The model estimates continuous MTB interest over time:
 
@@ -238,7 +299,7 @@ The current sequence-model/BiLSTM prototype is a valid baseline to preserve duri
 
 ---
 
-## 16. Data Scaling
+## 17. Data Scaling
 
 Normalization/scaling parameters must be learned from training data only. They are part of the model/data contract.
 
@@ -246,7 +307,7 @@ A checkpoint/model package must identify feature schema and order, feature mask 
 
 ---
 
-## 17. Training and Validation
+## 18. Training and Validation
 
 Because overlapping windows cause substantial temporal leakage, random window-level splitting is not acceptable as the primary validation strategy.
 
@@ -256,7 +317,7 @@ After model configuration is frozen, a production model may be trained on the ap
 
 ---
 
-## 18. Inference
+## 19. Inference
 
 Inference converts feature windows into continuous interest predictions. Each prediction must retain enough information to map back to source video, temporal window, model/checkpoint and feature schema.
 
@@ -264,7 +325,7 @@ Inference produces evidence; it does not decide the final highlight timeline. Th
 
 ---
 
-## 19. Candidate Generation
+## 20. Candidate Generation
 
 Candidate generation converts interest estimates into candidate intervals. Candidates should contain source video, start, end, score, provenance, mandatory status and optional reason/selection metadata.
 
@@ -272,7 +333,7 @@ Candidate generation may use thresholds, local maxima, contiguous high-interest 
 
 ---
 
-## 20. Highlight Selection
+## 21. Highlight Selection
 
 Selection transforms candidates into a final timeline subject to target duration and user constraints.
 
@@ -288,7 +349,7 @@ The selector must never create duplicate or overlapping mandatory material.
 
 ---
 
-## 21. Human-Interest Ranking
+## 22. Human-Interest Ranking
 
 Model score is evidence of interest, not a complete definition of a good highlight. Selection should distinguish model interest from temporal coherence, clip usability, redundancy, diversity and mandatory status.
 
@@ -296,7 +357,7 @@ A slightly lower-scoring clip can therefore be preferable to a near-duplicate of
 
 ---
 
-## 22. Diversity and Temporal Distribution
+## 23. Diversity and Temporal Distribution
 
 The selector should avoid spending the entire budget on one small region unless explicitly configured to do so.
 
@@ -304,7 +365,7 @@ Selection should consider temporal spacing, overlap, similarity/redundancy, sour
 
 ---
 
-## 23. Multi-Video Assembly
+## 24. Multi-Video Assembly
 
 AutoCut may process multiple source videos in one invocation. Every timeline clip retains its source identity.
 
@@ -312,7 +373,7 @@ Selection must not assume that different videos share a time axis. Budgeting may
 
 ---
 
-## 24. Timeline Data Model
+## 25. Timeline Data Model
 
 The timeline is the authoritative description of what will be rendered.
 
@@ -334,7 +395,7 @@ The renderer consumes the authoritative timeline and does not recalculate select
 
 ---
 
-## 25. Rendering
+## 26. Rendering
 
 Rendering converts the final timeline into the output video. It validates boundaries, extracts requested intervals, concatenates them in timeline order, applies audio policy and reports the actual duration.
 
@@ -342,7 +403,7 @@ Rendering converts the final timeline into the output video. It validates bounda
 
 ---
 
-## 26. Audio
+## 27. Audio
 
 The manifest may specify background music. The audio stage supports original audio only, original audio mixed with background music, or background music replacing original audio.
 
@@ -350,7 +411,7 @@ Audio handling belongs at the audio/rendering boundary, not in ML selection logi
 
 ---
 
-## 27. Caching
+## 28. Caching
 
 Expensive stages should be cacheable, including video probing, optical flow, feature generation, dataset generation and model inference.
 
@@ -360,7 +421,7 @@ Cache entries must be invalidated when their defining contract changes.
 
 ---
 
-## 28. Intermediate Artifacts
+## 29. Intermediate Artifacts
 
 Useful intermediate artifacts include feature data, datasets, audit reports, checkpoints, predictions, candidate intervals, timelines and result manifests.
 
@@ -368,7 +429,7 @@ Artifacts should be inspectable and versioned, while avoiding unnecessary perman
 
 ---
 
-## 29. Result Manifest
+## 30. Result Manifest
 
 Every completed run should produce a machine-readable result manifest containing AutoCut version, configuration, source videos and identities, annotation manifest, model/checkpoint, feature schema, dataset identity where relevant, selected clips, mandatory clips, final duration, audio configuration, output path, artifact identities and Git revision where available.
 
@@ -376,7 +437,7 @@ The result manifest is the primary traceability record for a generated result.
 
 ---
 
-## 30. Logging and Diagnostics
+## 31. Logging and Diagnostics
 
 Logging must communicate progress through major stages, warnings, final selections, output location and duration during normal use.
 
@@ -384,7 +445,7 @@ Debug logging should allow diagnosis of annotation parsing, probing, feature ext
 
 ---
 
-## 31. Error Handling
+## 32. Error Handling
 
 Errors shall be explicit, actionable and associated with the relevant stage.
 
@@ -394,7 +455,7 @@ Fail early when continuation is unsafe. Do not silently substitute defaults for 
 
 ---
 
-## 32. Testing Strategy
+## 33. Testing Strategy
 
 Testing is layered:
 
@@ -420,7 +481,7 @@ Unit tests should avoid unnecessary video/GPU dependencies. Integration tests ve
 
 ---
 
-## 33. Golden Reference Videos
+## 34. Golden Reference Videos
 
 The current reference set includes **Mentorella, Rosara, Cascata and Ascoli**.
 
@@ -430,7 +491,7 @@ Golden tests should preserve expected behavior rather than relying exclusively o
 
 ---
 
-## 34. Known Failure Modes
+## 35. Known Failure Modes
 
 Known failure modes include optical-flow false positives caused by rider struggles or camera motion, a rider stuck in a rut, disentangling from vegetation, short interesting events requiring padding, repeated high-motion patterns, temporal leakage from overlapping windows, early concentration of the selection budget and duplicate candidates.
 
@@ -438,7 +499,7 @@ Hard negatives are important because large motion is not necessarily interesting
 
 ---
 
-## 35. Current Baseline and Refactoring Strategy
+## 36. Current Baseline and Refactoring Strategy
 
 The current repository is the baseline/reference implementation. The refactor is not a redesign detached from the working system.
 
@@ -461,7 +522,7 @@ Refactoring should be incremental and behavior should be compared with the previ
 
 ---
 
-## 36. Refactoring Rules
+## 37. Refactoring Rules
 
 1. Preserve proven behavior unless a change is deliberate.
 2. Document deliberate behavioral changes.
@@ -477,10 +538,14 @@ Refactoring should be incremental and behavior should be compared with the previ
 12. Prefer small explicit interfaces.
 13. Keep the pipeline coordinator thin.
 14. Do not preserve obsolete architectural concepts merely because they exist in old scripts.
+15. Keep the `src/` package boundary intact; do not rely on imports from the repository root.
+16. Keep generated datasets and intermediate artifacts under `data/`, trained models under `models/` and final products under `output/`.
+17. Keep domain models independent of ML implementations and media-engine objects.
+18. Keep the pipeline coordinator thin and stage-specific logic inside its owning package.
 
 ---
 
-## 37. Public vs Internal API
+## 38. Public vs Internal API
 
 The public API should remain deliberately small. The primary public entry point is the AutoCut CLI.
 
@@ -490,7 +555,7 @@ Versioned artifacts are stronger compatibility boundaries than incidental Python
 
 ---
 
-## 38. Versioning
+## 39. Versioning
 
 The following should be versioned independently where appropriate:
 
@@ -505,7 +570,7 @@ Schema versions describe contracts, not merely software releases.
 
 ---
 
-## 39. Compatibility
+## 40. Compatibility
 
 Compatibility must be checked before processing, including:
 
@@ -521,7 +586,7 @@ When compatibility cannot be established, the system must fail with a clear diag
 
 ---
 
-## 40. Reproducibility
+## 41. Reproducibility
 
 A run should be reproducible from source media, annotation manifest, configuration, model checkpoint, feature/schema versions, scaling parameters, software revision and random seed where applicable.
 
@@ -529,7 +594,7 @@ Training must explicitly control randomness. Production inference and selection 
 
 ---
 
-## 41. Platform Requirements
+## 42. Platform Requirements
 
 The initial target platform is **Windows**, with reliable PowerShell use.
 
@@ -537,7 +602,7 @@ Paths must be handled in a platform-safe manner. Developer-specific hard-coded p
 
 ---
 
-## 42. Python and Dependencies
+## 43. Python and Dependencies
 
 The project is Python-based. Dependencies should be declared centrally.
 
@@ -547,7 +612,7 @@ Specific third-party dependencies should not leak into domain models. The final 
 
 ---
 
-## 43. Security and File Handling
+## 44. Security and File Handling
 
 AutoCut operates on user-supplied local files. File handling must validate paths, avoid accidental overwrites unless explicitly requested, use safe temporary directories, clean temporary artifacts appropriately, avoid unsafe shell construction and report permission failures clearly.
 
@@ -555,7 +620,7 @@ Media paths must not be interpolated unsafely into shell commands.
 
 ---
 
-## 44. Performance
+## 45. Performance
 
 The architecture must preserve performance improvements already achieved in the prototype.
 
@@ -565,7 +630,7 @@ The current optimized optical-flow sampling approach must not regress to full-ra
 
 ---
 
-## 45. Acceptance Criteria
+## 46. Acceptance Criteria
 
 The refactored system is acceptable when:
 
@@ -583,10 +648,15 @@ The refactored system is acceptable when:
 12. Core logic can be unit tested without full video processing.
 13. The system remains usable from Windows/PowerShell.
 14. Existing proven behavior is preserved unless deliberately changed.
+15. The package is importable through the `src/` layout without accidental repository-root imports.
+16. `python -m autocut` works through `__main__.py`.
+17. Generated datasets/intermediates are separated from final output and trained models.
+18. Domain models are independent of ML architecture and media-engine implementations.
+19. The pipeline coordinator orchestrates stages without absorbing their implementation logic.
 
 ---
 
-## 46. Architectural Definition of Done
+## 47. Architectural Definition of Done
 
 The architecture is complete when:
 
@@ -608,11 +678,17 @@ The architecture is complete when:
 - artifacts are versioned;
 - tests cover important boundaries;
 - golden-video regression evaluation exists;
-- the normal user workflow remains simple.
+- the normal user workflow remains simple;
+- the `src/` package boundary is respected;
+- package directories have explicit `__init__.py` files where appropriate;
+- `python -m autocut` is supported;
+- `data/`, `models/` and `output/` have distinct responsibilities;
+- domain models remain separate from ML implementations;
+- the pipeline remains a thin orchestration layer.
 
 ---
 
-## 47. Guiding Principle
+## 48. Guiding Principle
 
 > **AutoCut is the system. The individual analysis, dataset, inference, selection and rendering components are internal parts of that system.**
 
