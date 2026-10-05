@@ -6,4 +6,6 @@ Requires-Python: >=3.11
 License-File: LICENSE
 Requires-Dist: numpy
 Requires-Dist: opencv-python
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
 Dynamic: license-file
