@@ -1,0 +1,7 @@
+LICENSE
+pyproject.toml
+src/mtb_video_tools.egg-info/PKG-INFO
+src/mtb_video_tools.egg-info/SOURCES.txt
+src/mtb_video_tools.egg-info/dependency_links.txt
+src/mtb_video_tools.egg-info/requires.txt
+src/mtb_video_tools.egg-info/top_level.txt
