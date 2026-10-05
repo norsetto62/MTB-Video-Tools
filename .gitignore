@@ -9,21 +9,10 @@ __pycache__/
 .idea/
 
 # Generated analysis data
-data/motion_scores/
-data/event_inspection/
-data/flow_scores/
-data/autocut/
-
-# Generated datasets and features
-data/datasets/
-data/features/
+data/
 
 # Generated output
 output/
-annotations_auto.txt
-
-# Local configuration
-intervals.txt
 
 # Python tooling
 .pytest_cache/
