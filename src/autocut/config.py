@@ -8,3 +8,4 @@ class Config:
     models_dir: Path = Path("models")
     output_dir: Path = Path("output")
     log_level: str = "INFO"
+    min_clip: float = 3.0
