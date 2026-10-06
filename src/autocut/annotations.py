@@ -226,16 +226,28 @@ def load_annotations(
             # Minimum clip duration
             # ---------------------------------------------------------
             if duration < config.min_clip:
-                logger.warning(
-                    "Ignoring short interval on line %d "
-                    "(%.3fs < %.3fs): %s",
-                    line_number,
-                    duration,
-                    config.min_clip,
-                    line,
-                )
-                continue
-
+                if mandatory:
+                    logger.warning(
+                        "Mandatory interval on line %d is shorter than "
+                        "min_clip (%.3fs < %.3fs); keeping it: %s",
+                        line_number,
+                        duration,
+                        config.min_clip,
+                        line,
+                    )
+                else:
+                    logger.warning(
+                        "Ignoring short interval on line %d "
+                        "(%.3fs < %.3fs): %s",
+                        line_number,
+                        duration,
+                        config.min_clip,
+                        line,
+                    )
+                    continue
+            # ---------------------------------------------------------
+            # Add clip to clips list
+            # ---------------------------------------------------------
             clips.append(
                 {
                     "video_name": video_name,
