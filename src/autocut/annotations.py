@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .config import Config
 from .utils import convert_hms_to_s
+from .data_models import Clip, AudioConfig
 
 logger = logging.getLogger(__name__)
 
@@ -102,14 +103,14 @@ def load_annotations(
                     logger.warning(
                         "Multiple audio files specified; replacing "
                         "'%s' with '%s'.",
-                        audio_config["path"],
+                        audio_config.path,
                         audio_path,
                     )
 
-                audio_config = {
-                    "path": str(audio_path.resolve()),
-                    "mix": mix,
-                }
+                audio_config = AudioConfig(
+                    path = str(audio_path.resolve()),
+                    mix = mix,
+                )
 
                 continue
 
@@ -249,13 +250,12 @@ def load_annotations(
             # Add clip to clips list
             # ---------------------------------------------------------
             clips.append(
-                {
-                    "video_name": video_name,
-                    "start": start,
-                    "end": end,
-                    "duration": duration,
-                    "mandatory": mandatory,
-                }
+                Clip(
+                    video_name = video_name,
+                    start = start,
+                    end = end,
+                    mandatory = mandatory,
+                )
             )
 
     return clips, audio_config

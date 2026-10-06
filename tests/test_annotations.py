@@ -5,7 +5,7 @@ import pytest
 
 from autocut.annotations import load_annotations
 from autocut.config import Config
-
+from autocut.data_models import Clip, AudioConfig
 
 def write_annotation_file(
     tmp_path: Path,
@@ -47,13 +47,12 @@ def test_load_annotations_returns_clips_and_no_audio(tmp_path):
     assert audio is None
     assert len(clips) == 1
 
-    clip = clips[0]
-
-    assert clip["video_name"] == str(video.resolve())
-    assert clip["start"] == 10.0
-    assert clip["end"] == 20.0
-    assert clip["duration"] == 10.0
-    assert clip["mandatory"] is False
+    assert clips[0] == Clip(
+        video_name = str(video.resolve()),
+        start = 10.0,
+        end = 20.0,
+        mandatory = False,
+    )
 
 
 def test_explicit_video_interval(tmp_path):
@@ -69,9 +68,9 @@ def test_explicit_video_interval(tmp_path):
     assert audio is None
     assert len(clips) == 1
 
-    assert clips[0]["video_name"] == str(video.resolve())
-    assert clips[0]["start"] == 10.0
-    assert clips[0]["end"] == 20.0
+    assert clips[0].video_name == str(video.resolve())
+    assert clips[0].start == 10.0
+    assert clips[0].end == 20.0
 
 
 def test_subsequent_intervals_use_previous_video(tmp_path):
@@ -88,7 +87,7 @@ def test_subsequent_intervals_use_previous_video(tmp_path):
 
     assert len(clips) == 2
     assert all(
-        clip["video_name"] == str(video.resolve())
+        clip.video_name == str(video.resolve())
         for clip in clips
     )
 
@@ -110,7 +109,7 @@ def test_mandatory_interval(tmp_path):
     clips, _ = load_annotations(annotation_file)
 
     assert len(clips) == 1
-    assert clips[0]["mandatory"] is True
+    assert clips[0].mandatory is True
 
 
 def test_non_mandatory_interval(tmp_path):
@@ -124,7 +123,7 @@ def test_non_mandatory_interval(tmp_path):
 
     clips, _ = load_annotations(annotation_file)
 
-    assert clips[0]["mandatory"] is False
+    assert clips[0].mandatory is False
 
 
 def test_invalid_mandatory_marker_is_rejected(tmp_path):
@@ -157,10 +156,10 @@ def test_mandatory_short_interval_is_kept(tmp_path, caplog):
 
     assert audio is None
     assert len(clips) == 1
-    assert clips[0]["start"] == 10.0
-    assert clips[0]["end"] == 11.0
-    assert clips[0]["duration"] == 1.0
-    assert clips[0]["mandatory"] is True
+    assert clips[0].start == 10.0
+    assert clips[0].end == 11.0
+    assert clips[0].duration == 1.0
+    assert clips[0].mandatory is True
     assert "shorter than min_clip" in caplog.text
     
 # ---------------------------------------------------------------------------
@@ -208,7 +207,7 @@ def test_relative_video_path_is_resolved_relative_to_annotation_file(
 
     clips, _ = load_annotations(annotation_file)
 
-    assert clips[0]["video_name"] == str(video.resolve())
+    assert clips[0].video_name == str(video.resolve())
 
 
 def test_missing_annotation_file_raises():
@@ -291,7 +290,7 @@ def test_short_clip_is_skipped_and_warning_is_logged(
         )
 
     assert len(clips) == 1
-    assert clips[0]["start"] == 20.0
+    assert clips[0].start == 20.0
 
     assert any(
         "Ignoring short interval" in record.message
@@ -316,7 +315,7 @@ def test_clip_at_minimum_duration_is_kept(tmp_path):
     )
 
     assert len(clips) == 1
-    assert clips[0]["duration"] == 3.0
+    assert clips[0].duration == 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -338,10 +337,10 @@ def test_audio_without_mix_flag(tmp_path):
     clips, audio_config = load_annotations(annotation_file)
 
     assert len(clips) == 1
-    assert audio_config == {
-        "path": str(audio.resolve()),
-        "mix": False,
-    }
+    assert audio_config == AudioConfig(
+    path=str(audio.resolve()),
+    mix=False,
+    )
 
 
 def test_audio_with_mix_flag(tmp_path):
@@ -357,10 +356,10 @@ def test_audio_with_mix_flag(tmp_path):
 
     _, audio_config = load_annotations(annotation_file)
 
-    assert audio_config == {
-        "path": str(audio.resolve()),
-        "mix": True,
-    }
+    assert audio_config == AudioConfig(
+        path = str(audio.resolve()),
+        mix = True,
+    )
 
 
 def test_missing_audio_raises(tmp_path):
@@ -396,10 +395,10 @@ def test_multiple_audio_files_warn_and_last_one_wins(
     with caplog.at_level(logging.WARNING):
         _, audio_config = load_annotations(annotation_file)
 
-    assert audio_config == {
-        "path": str(audio2.resolve()),
-        "mix": True,
-    }
+    assert audio_config == AudioConfig(
+        path = str(audio2.resolve()),
+        mix = True,
+    )
 
     assert any(
         "Multiple audio files specified" in record.message
