@@ -140,6 +140,29 @@ def test_invalid_mandatory_marker_is_rejected(tmp_path):
         load_annotations(annotation_file)
 
 
+def test_mandatory_short_interval_is_kept(tmp_path, caplog):
+    video = tmp_path / "ride.mp4"
+    video.touch()
+
+    annotation_file = tmp_path / "annotations.txt"
+    annotation_file.write_text(
+        "ride.mp4 00:10 00:11 *\n",
+        encoding="utf-8",
+    )
+
+    config = Config(min_clip=3.0)
+
+    with caplog.at_level(logging.WARNING):
+        clips, audio = load_annotations(annotation_file, config)
+
+    assert audio is None
+    assert len(clips) == 1
+    assert clips[0]["start"] == 10.0
+    assert clips[0]["end"] == 11.0
+    assert clips[0]["duration"] == 1.0
+    assert clips[0]["mandatory"] is True
+    assert "shorter than min_clip" in caplog.text
+    
 # ---------------------------------------------------------------------------
 # Comments / blank lines
 # ---------------------------------------------------------------------------
