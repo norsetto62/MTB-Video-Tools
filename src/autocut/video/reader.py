@@ -1,6 +1,7 @@
 """Sequential video frame reader backed by FFmpeg."""
 
-import logging
+from __future__ import annotations
+
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,7 +12,6 @@ import numpy as np
 from ..data_models import VideoInfo
 from .probe import get_video_info
 
-logger = logging.getLogger(__name__)
 
 DEFAULT_FFMPEG = Path(
     r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"
@@ -24,7 +24,8 @@ class VideoReader:
     FFmpeg is started when the reader context is entered. Each iteration
     yields one decoded frame together with its index and timestamp.
 
-    Timestamps are relative to the requested start position.
+    Timestamps are relative to the requested start position and are
+    determined by the output sampling rate.
     """
 
     def __init__(
@@ -35,15 +36,23 @@ class VideoReader:
         sample_fps: float | None = None,
     ) -> None:
         self.video_path = Path(video_path)
+
         self.start = float(start)
+
         self.duration = (
-            None if duration is None else float(duration)
+            None
+            if duration is None
+            else float(duration)
         )
+
         self.sample_fps = (
-            None if sample_fps is None else float(sample_fps)
+            None
+            if sample_fps is None
+            else float(sample_fps)
         )
 
         self.info: VideoInfo | None = None
+
         self._process: subprocess.Popen | None = None
         self._frame_bytes = 0
         self._output_fps = 0.0
@@ -53,7 +62,12 @@ class VideoReader:
         self._start_decoder()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type,
+        exc_value,
+        traceback,
+    ) -> None:
         self.close()
 
     def __iter__(
@@ -65,13 +79,19 @@ class VideoReader:
             )
 
         if self.info is None:
-            raise RuntimeError("Video information is unavailable.")
+            raise RuntimeError(
+                "Video information is unavailable."
+            )
 
         if self._process.stdout is None:
-            raise RuntimeError("FFmpeg stdout is unavailable.")
+            raise RuntimeError(
+                "FFmpeg stdout is unavailable."
+            )
 
         while True:
-            raw = self._process.stdout.read(self._frame_bytes)
+            raw = self._process.stdout.read(
+                self._frame_bytes
+            )
 
             if len(raw) == 0:
                 break
@@ -80,6 +100,17 @@ class VideoReader:
                 raise RuntimeError(
                     "Incomplete frame received from FFmpeg."
                 )
+
+            frame_index = self._frame_index
+            timestamp = frame_index / self._output_fps
+
+            # Do not emit a frame whose timestamp is outside the
+            # requested interval.
+            if (
+                self.duration is not None
+                and timestamp >= self.duration
+            ):
+                break
 
             frame = np.frombuffer(
                 raw,
@@ -90,18 +121,9 @@ class VideoReader:
                 3,
             )
 
-            frame_index = self._frame_index
-            timestamp = frame_index / self._output_fps
-
             self._frame_index += 1
 
             yield frame_index, timestamp, frame
-
-            if (
-                self.duration is not None
-                and timestamp >= self.duration
-            ):
-                break
 
     def close(self) -> None:
         """Stop FFmpeg and release its resources."""
@@ -125,16 +147,15 @@ class VideoReader:
             if process.stdout is not None:
                 process.stdout.close()
 
-            if process.stderr is not None:
-                process.stderr.close()
-
             self._process = None
 
     def _start_decoder(self) -> None:
         """Probe the video and start the FFmpeg decoder."""
 
         if self._process is not None:
-            raise RuntimeError("VideoReader is already active.")
+            raise RuntimeError(
+                "VideoReader is already active."
+            )
 
         if not self.video_path.is_file():
             raise FileNotFoundError(
@@ -142,17 +163,39 @@ class VideoReader:
             )
 
         if self.start < 0:
-            raise ValueError("start must be non-negative.")
+            raise ValueError(
+                "start must be non-negative."
+            )
 
-        if self.duration is not None and self.duration <= 0:
-            raise ValueError("duration must be greater than zero.")
+        if (
+            self.duration is not None
+            and self.duration <= 0
+        ):
+            raise ValueError(
+                "duration must be greater than zero."
+            )
 
-        if self.sample_fps is not None and self.sample_fps <= 0:
-            raise ValueError("sample_fps must be greater than zero.")
+        if (
+            self.sample_fps is not None
+            and self.sample_fps <= 0
+        ):
+            raise ValueError(
+                "sample_fps must be greater than zero."
+            )
 
-        self.info = get_video_info(self.video_path)
+        self.info = get_video_info(
+            self.video_path
+        )
 
-        processing_duration = self._get_processing_duration()
+        if self.start >= self.info.duration:
+            raise ValueError(
+                f"start ({self.start:.3f}s) is outside "
+                f"the video duration ({self.info.duration:.3f}s)."
+            )
+
+        processing_duration = (
+            self._get_processing_duration()
+        )
 
         if processing_duration <= 0:
             raise RuntimeError(
@@ -168,9 +211,9 @@ class VideoReader:
         )
 
         self._frame_bytes = (
-            self.info.width *
-            self.info.height *
-            3
+            self.info.width
+            * self.info.height
+            * 3
         )
 
         cmd = [
@@ -189,9 +232,6 @@ class VideoReader:
         cmd += [
             "-i",
             str(self.video_path),
-        ]
-
-        cmd += [
             "-t",
             f"{processing_duration:.6f}",
         ]
@@ -217,8 +257,10 @@ class VideoReader:
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=10**8,
+                stderr=subprocess.DEVNULL,
+                # Use Python's normal pipe buffering. There is no reason
+                # to allocate a 100 MB buffer for a frame-by-frame reader.
+                bufsize=-1,
             )
         except OSError:
             self._process = None
@@ -228,7 +270,9 @@ class VideoReader:
         """Return the actual duration to request from FFmpeg."""
 
         if self.info is None:
-            raise RuntimeError("Video information is unavailable.")
+            raise RuntimeError(
+                "Video information is unavailable."
+            )
 
         remaining = self.info.duration - self.start
 
@@ -237,7 +281,10 @@ class VideoReader:
 
         return max(
             0.0,
-            min(self.duration, remaining),
+            min(
+                self.duration,
+                remaining,
+            ),
         )
 
     @staticmethod
