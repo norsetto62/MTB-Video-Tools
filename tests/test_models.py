@@ -1,7 +1,6 @@
 import pytest
 
-from autocut.data_models import AudioConfig, Clip
-
+from autocut.data_models import AudioConfig, Clip, VideoInfo
 
 def test_clip_duration():
     clip = Clip(
@@ -67,3 +66,45 @@ def test_audio_config_is_immutable():
 
     with pytest.raises(AttributeError):
         audio.mix = True
+
+def test_video_info_stores_metadata():
+    info = VideoInfo(
+        width=1920,
+        height=1080,
+        fps=29.97,
+        duration=123.45,
+    )
+
+    assert info.width == 1920
+    assert info.height == 1080
+    assert info.fps == 29.97
+    assert info.duration == 123.45
+
+
+def test_video_info_is_immutable():
+    info = VideoInfo(
+        width=1920,
+        height=1080,
+        fps=30.0,
+        duration=60.0,
+    )
+
+    with pytest.raises(AttributeError):
+        info.width = 1280
+
+
+def test_video_info_equality():
+    info1 = VideoInfo(
+        width=1920,
+        height=1080,
+        fps=30.0,
+        duration=60.0,
+    )
+    info2 = VideoInfo(
+        width=1920,
+        height=1080,
+        fps=30.0,
+        duration=60.0,
+    )
+
+    assert info1 == info2
