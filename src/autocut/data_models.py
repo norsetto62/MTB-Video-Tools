@@ -24,3 +24,12 @@ class AudioConfig:
 
     path: str
     mix: bool = False
+
+@dataclass(frozen=True)
+class VideoInfo:
+    """Basic metadata describing a video."""
+
+    width: int
+    height: int
+    fps: float
+    duration: float
