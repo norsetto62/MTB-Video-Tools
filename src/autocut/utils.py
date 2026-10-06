@@ -50,18 +50,13 @@ def convert_hms_to_s(value: str | int | float) -> float:
     if len(parts) == 2:
         minutes, seconds = numbers
 
-        if minutes > 59:
-            raise ValueError(
-                f"Minutes must be between 0 and 59: {value!r}"
-            )
-
         if seconds >= 60:
             raise ValueError(
                 f"Seconds must be less than 60: {value!r}"
             )
 
         return minutes * 60 + seconds
-
+    
     hours, minutes, seconds = numbers
 
     if minutes >= 60:
