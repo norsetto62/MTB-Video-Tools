@@ -1,1 +1,5 @@
-# This file marks the directory as a Python package.
+"""Motion analysis and feature extraction."""
+
+from .features import FeatureExtractor
+
+__all__ = ["FeatureExtractor"]

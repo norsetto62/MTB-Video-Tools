@@ -12,7 +12,7 @@
 - [x] **Phase 4 — Video probing / reading**
   - video probing / reading
         ↓
-- [ ] **Phase 5 — Motion / features**
+- [x] **Phase 5 — Motion / features**
   - motion / features
         ↓
 - [ ] **Phase 6 — Dataset / audit**
