@@ -1,7 +1,7 @@
 """Domain data models used throughout AutoCut."""
 
 from dataclasses import dataclass
-
+import numpy as np
 
 @dataclass(frozen=True)
 class Clip:
@@ -33,3 +33,10 @@ class VideoInfo:
     height: int
     fps: float
     duration: float
+
+@dataclass(frozen=True)
+class OpticalFlow:
+    """Dense optical flow."""
+
+    u: np.ndarray
+    v: np.ndarray
