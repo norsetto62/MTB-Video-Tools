@@ -40,3 +40,45 @@ class OpticalFlow:
 
     u: np.ndarray
     v: np.ndarray
+
+@dataclass(frozen=True)
+class FeatureSequence:
+    """Time-ordered motion-feature vectors for a video clip."""
+
+    features: np.ndarray
+    timestamps: np.ndarray
+
+    def __post_init__(self) -> None:
+        if self.features.ndim != 2:
+            raise ValueError("features must be a 2D array.")
+
+        if self.features.shape[0] < 1:
+            raise ValueError("FeatureSequence must contain at least one feature.")
+
+        if self.timestamps.ndim != 1:
+            raise ValueError("timestamps must be a 1D array.")
+
+        if len(self.timestamps) != len(self.features):
+            raise ValueError(
+                "features and timestamps must contain the same number of samples."
+            )
+
+        if self.features.shape[1] != 54:
+            raise ValueError(
+                f"features must contain 54 values per sample, "
+                f"got {self.features.shape[1]}."
+            )
+
+        if self.features.dtype != np.float32:
+            raise ValueError("features must have dtype float32.")
+
+        if self.timestamps.dtype != np.float64:
+            raise ValueError("timestamps must have dtype float64.")
+
+        if not np.all(np.isfinite(self.timestamps)):
+            raise ValueError("timestamps must contain only finite values.")
+
+        if len(self.timestamps) > 1 and not np.all(
+            np.diff(self.timestamps) > 0
+        ):
+            raise ValueError("timestamps must be strictly increasing.")

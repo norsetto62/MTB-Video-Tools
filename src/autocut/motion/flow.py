@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..models import OpticalFlow
+from ..data_models import OpticalFlow
 
 
 @dataclass(frozen=True)
