@@ -1,3 +1,29 @@
                                   		Start	End	MTB	Remarks
 D:\Ascoli\DJI_20250923114430_0003_D.MP4
-						00:15	11:55	3	
+						00:00	00:15	0	Setting up
+						00:15	00:23	1	Flow
+						00:23	00:26	0	Stopped
+						00:26	00:30	1	Flow
+						00:30	00:34	3	Drop
+						00:34	01:04	2	Flow on bumpy/rocky track
+						01:04	01:14	1	Flow
+						01:14	02:02	2	Flow on bumpy/rocky track
+						02:02	02:10	0	Stopped
+						02:10	02:36	2	Flow on bumpy/rocky track
+						02:36	03:09	1	Slow/Climb
+						03:09	04:11	2	Flow on bumpy/rocky track
+						04:11	04:25	0	Switchback
+						04:25	04:43	2	Slow Flow on bumpy/rocky track
+						04:43	05:50	1	Slow on muddy/steep
+						05:50	05:55	0	Stopped
+						05:55	06:40	1	Slow Flow on bumpy/rocky muddy track
+						06:40	06:46	0	Stopped
+						06:46	07:13	1	Slow Flow on bumpy/rocky muddy track
+						07:13	07:53	2	Flow on bumpy/rocky muddy track
+						07:53	07:58	0	Stopped
+						07:58	08:06	1	Slow on difficult passage
+						08:06	08:28	0	Landscape
+						08:28	10:15	2	Flow on bumpy/rocky muddy track
+						10:15	10:59	1	Slow Flow on bumpy/rocky muddy track
+						10:59	11:28	2	Flow on bumpy/rocky muddy track
+						11:28	13:53	0	Dismounted
