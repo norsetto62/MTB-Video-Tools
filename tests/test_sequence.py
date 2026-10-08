@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from autocut.data_models import Clip, FeatureSequence
-from autocut.dataset.builder import (
+from autocut.dataset.sequence import (
     DEFAULT_PROCESSING_WIDTH,
     _prepare_frame,
     build_feature_sequence,
