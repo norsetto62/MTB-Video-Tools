@@ -9,3 +9,6 @@ class Config:
     output_dir: Path = Path("output")
     log_level: str = "INFO"
     min_clip: float = 3.0
+
+    window_duration: float = 4.0
+    window_stride: float = 2.0

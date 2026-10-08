@@ -82,3 +82,26 @@ class FeatureSequence:
             np.diff(self.timestamps) > 0
         ):
             raise ValueError("timestamps must be strictly increasing.")
+
+
+@dataclass(frozen=True)
+class FeatureWindows:
+    """Fixed-size temporal windows extracted from a feature sequence.
+
+    Attributes:
+        X: Windowed feature matrix with shape (N, T, F).
+        timestamps: Window start/end times with shape (N, 2).
+    """
+
+    X: np.ndarray
+    timestamps: np.ndarray
+
+
+@dataclass(frozen=True)
+class Annotation:
+    """A manually assigned interest interval."""
+    
+    start: float
+    end: float
+    score: int
+    remarks: str

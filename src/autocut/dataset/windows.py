@@ -6,30 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..data_models import FeatureSequence
-
-DEFAULT_WINDOW = 4.0
-DEFAULT_STRIDE = 2.0
-
-
-@dataclass(frozen=True)
-class FeatureWindows:
-    """Fixed-size temporal windows extracted from a feature sequence.
-
-    Attributes:
-        X: Windowed feature matrix with shape (N, T, F).
-        timestamps: Window start/end times with shape (N, 2).
-    """
-
-    X: np.ndarray
-    timestamps: np.ndarray
+from ..data_models import FeatureSequence, FeatureWindows
 
 
 def build_windows(
     sequence: FeatureSequence,
     *,
-    window: float = DEFAULT_WINDOW,
-    stride: float = DEFAULT_STRIDE,
+    window: float,
+    stride: float,
 ) -> FeatureWindows:
     """Generate fixed-size temporal windows.
 
