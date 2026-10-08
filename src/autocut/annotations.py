@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import Config
 from .utils import convert_hms_to_s
-from .data_models import Clip, AudioConfig
+from .data_models import Clip, AudioConfig, Annotation
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,113 @@ def _looks_numeric(value: str) -> bool:
         return False
 
     return True
+
+
+def load_training_annotations(
+    path: str | Path,
+) -> tuple[Path, list[Annotation]]:
+    """
+    Load the current training annotation format.
+
+    Expected:
+
+        source-video-path
+
+        Start End MTB Remarks
+
+    Remarks are optional.
+    """
+
+    path = Path(path)
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+
+    video_path: Path | None = None
+    annotations: list[Annotation] = []
+
+    for line_no, raw in enumerate(lines, start=1):
+        line = raw.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        lower = line.lower()
+
+        # Header.
+        if "start" in lower and "end" in lower and "mtb" in lower:
+            continue
+
+        # Source video path.
+        if video_path is None:
+            video_path = _resolve_source_path(line, path)
+            if not video_path.is_file():
+                raise FileNotFoundError(
+                    f"Video file not found on line {line_no}: {video_path}"
+                )
+            continue
+
+        parts = line.split(maxsplit=3)
+
+        if len(parts) < 3:
+            raise ValueError(
+                f"{path}:{line_no}: expected "
+                "Start End MTB [Remarks]"
+            )
+
+        try:
+            start = convert_hms_to_s(parts[0])
+            end = convert_hms_to_s(parts[1])
+            score = int(parts[2])
+        except ValueError as exc:
+            raise ValueError(
+                f"{path}:{line_no}: {exc}"
+            ) from exc
+
+        if end <= start:
+            raise ValueError(
+                f"{path}:{line_no}: End must be greater than Start"
+            )
+
+        if not 0 <= score <= 3:
+            raise ValueError(
+                f"{path}:{line_no}: MTB score must be 0..3"
+            )
+
+        remarks = parts[3].strip() if len(parts) == 4 else ""
+
+        annotations.append(
+            Annotation(
+                start=start,
+                end=end,
+                score=score,
+                remarks=remarks,
+            )
+        )
+
+    if video_path is None:
+        raise ValueError(
+            f"{path}: source video path not found"
+        )
+
+    annotations.sort(key=lambda annotation: annotation.start)
+
+    # Overlapping annotations make the meaning of the manual labels
+    # ambiguous. Do not silently accept them.
+    previous: Annotation | None = None
+
+    for annotation in annotations:
+        if (
+            previous is not None
+            and annotation.start < previous.end - 1e-9
+        ):
+            raise ValueError(
+                f"{path}: overlapping annotations: "
+                f"{previous.start:.3f}-{previous.end:.3f}s and "
+                f"{annotation.start:.3f}-{annotation.end:.3f}s"
+            )
+
+        previous = annotation
+
+    return video_path, annotations
 
 
 def load_annotations(
