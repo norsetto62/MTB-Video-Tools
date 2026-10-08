@@ -14,6 +14,9 @@ data/
 # Generated output
 output/
 
+# Generated audit
+audit/
+
 # Python tooling
 .pytest_cache/
 .mypy_cache/
