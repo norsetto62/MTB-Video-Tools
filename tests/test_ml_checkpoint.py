@@ -151,6 +151,11 @@ def test_build_rejects_nonfinite_metric(metric):
         build_checkpoint(MTBClassifier(), best_metric=metric)
 
 
+def test_build_rejects_unfitted_enabled_scaler():
+    with pytest.raises(ValueError, match="must be fitted"):
+        build_checkpoint(MTBClassifier(), scaler=FeatureScaler())
+
+
 def test_build_rejects_incompatible_scaler_feature_count():
     scaler = FeatureScaler().fit(np.ones((4, 3), dtype=np.float32))
     with pytest.raises(ValueError):
