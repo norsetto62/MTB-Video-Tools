@@ -88,6 +88,11 @@ class MTBClassifier(nn.Module):
             )
         if not x.is_floating_point():
             raise TypeError("x must have a floating-point dtype.")
+        expected_dtype = self.backbone.weight_ih_l0.dtype
+        if x.dtype != expected_dtype:
+            raise TypeError(
+                f"x must have dtype {expected_dtype}; got {x.dtype}."
+            )
         if not torch.isfinite(x).all().item():
             raise ValueError("x must contain only finite values (no NaN or Inf).")
 
