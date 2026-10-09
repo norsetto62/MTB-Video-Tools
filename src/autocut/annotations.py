@@ -127,17 +127,16 @@ def load_training_annotations(
 
     annotations.sort(key=lambda annotation: annotation.start)
 
-    # Overlapping annotations make the meaning of the manual labels
-    # ambiguous. Do not silently accept them.
+    # Training intervals must be contiguous
     previous: Annotation | None = None
 
     for annotation in annotations:
         if (
             previous is not None
-            and annotation.start < previous.end - 1e-9
+            and annotation.start != previous.end
         ):
             raise ValueError(
-                f"{path}: overlapping annotations: "
+                f"{path}: non contiguous annotations: "
                 f"{previous.start:.3f}-{previous.end:.3f}s and "
                 f"{annotation.start:.3f}-{annotation.end:.3f}s"
             )

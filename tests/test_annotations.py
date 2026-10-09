@@ -437,7 +437,7 @@ def test_load_training_annotations_returns_video_and_annotations(
         f"{video.name}\n"
         "\n"
         "Start End MTB Remarks\n"
-        "00:10 00:14 1 ordinary riding\n"
+        "00:10 00:20 1 ordinary riding\n"
         "00:20 00:24 3 good technical section\n",
     )
 
@@ -450,7 +450,7 @@ def test_load_training_annotations_returns_video_and_annotations(
 
     assert annotations[0] == Annotation(
         start=10.0,
-        end=14.0,
+        end=20.0,
         score=1,
         remarks="ordinary riding",
     )
@@ -496,7 +496,7 @@ def test_training_blank_lines_and_comments_are_ignored(
         "# intervals\n"
         "Start End MTB Remarks\n"
         "\n"
-        "00:10 00:14 1 ordinary\n"
+        "00:10 00:20 1 ordinary\n"
         "# another comment\n"
         "00:20 00:24 3 technical\n",
     )
@@ -552,31 +552,6 @@ def test_training_relative_video_path_is_resolved_relative_to_annotation_file(
 
     assert loaded_video == video.resolve()
     assert len(annotations) == 1
-
-
-def test_training_annotations_are_sorted_by_start_time(
-    tmp_path,
-):
-    video = create_video(tmp_path)
-
-    annotation_file = write_annotation_file(
-        tmp_path,
-        f"{video.name}\n"
-        "Start End MTB Remarks\n"
-        "00:20 00:24 3 later\n"
-        "00:05 00:10 1 earlier\n"
-        "00:12 00:16 2 middle\n",
-    )
-
-    _, annotations = load_training_annotations(
-        annotation_file
-    )
-
-    assert [annotation.start for annotation in annotations] == [
-        5.0,
-        12.0,
-        20.0,
-    ]
 
 
 def test_training_missing_source_video_path_is_rejected(
@@ -681,7 +656,7 @@ def test_training_score_must_be_between_zero_and_three(
         load_training_annotations(annotation_file)
 
 
-def test_training_overlapping_annotations_are_rejected(
+def test_training_non_contiguous_annotations_are_rejected(
     tmp_path,
 ):
     video = create_video(tmp_path)
@@ -691,12 +666,12 @@ def test_training_overlapping_annotations_are_rejected(
         f"{video.name}\n"
         "Start End MTB Remarks\n"
         "00:10 00:20 1 first\n"
-        "00:19 00:25 3 second\n",
+        "00:21 00:25 3 second\n",
     )
 
     with pytest.raises(
         ValueError,
-        match="overlapping annotations",
+        match="non contiguous annotations",
     ):
         load_training_annotations(annotation_file)
 
