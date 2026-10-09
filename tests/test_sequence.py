@@ -115,15 +115,15 @@ def test_build_feature_sequence_from_clip(monkeypatch: pytest.MonkeyPatch) -> No
         return object()
 
     monkeypatch.setattr(
-        "autocut.dataset.builder.VideoReader",
+        "autocut.dataset.sequence.VideoReader",
         FakeReader,
     )
     monkeypatch.setattr(
-        "autocut.dataset.builder.FeatureExtractor",
+        "autocut.dataset.sequence.FeatureExtractor",
         FakeExtractor,
     )
     monkeypatch.setattr(
-        "autocut.dataset.builder.calculate_optical_flow",
+        "autocut.dataset.sequence.calculate_optical_flow",
         fake_calculate_optical_flow,
     )
 
@@ -271,7 +271,7 @@ def test_build_feature_sequence_rejects_fewer_than_two_frames(
                 yield index, index * 0.5, frame
 
     monkeypatch.setattr(
-        "autocut.dataset.builder.VideoReader",
+        "autocut.dataset.sequence.VideoReader",
         FakeReader,
     )
 
