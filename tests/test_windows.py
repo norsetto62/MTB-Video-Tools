@@ -237,13 +237,27 @@ def test_negative_stride_is_rejected():
 
 
 def test_at_least_two_timestamps_are_required():
-    sequence = make_sequence(1)
+    sequence = object.__new__(FeatureSequence)
+    object.__setattr__(
+        sequence,
+        "features",
+        np.zeros((1, 54), dtype=np.float32),
+    )
+    object.__setattr__(
+        sequence,
+        "timestamps",
+        np.array([0.5], dtype=np.float64),
+    )
 
     with pytest.raises(
         ValueError,
         match="at least two feature timestamps",
     ):
-        build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+        build_windows(
+            sequence,
+            window=Config.window_duration,
+            stride=Config.window_stride,
+        )
 
 
 def test_window_must_be_integer_multiple_of_dt():
