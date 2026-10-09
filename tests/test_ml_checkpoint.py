@@ -51,7 +51,7 @@ def test_build_checkpoint_captures_model_and_canonical_feature_order():
 def test_save_load_and_restore_model_round_trip(tmp_path):
     torch.manual_seed(17)
     model = MTBClassifier(hidden_dim=12, classifier_mid_dim=7, dropout=0.2)
-    scaler = FeatureScaler().fit(np.arange(80, dtype=np.float32).reshape(10, 8))
+    scaler = FeatureScaler().fit(np.arange(540, dtype=np.float32).reshape(10, 54))
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     # Initialize optimizer state so the checkpoint contains more than defaults.
     model(torch.randn(2, 4, 54)).sum().backward()
@@ -81,8 +81,8 @@ def test_save_load_and_restore_model_round_trip(tmp_path):
     assert payload["metadata"]["source_revision"] == "abc123"
     restored_scaler = FeatureScaler.from_state_dict(payload["scaler_state"])
     np.testing.assert_array_equal(
-        restored_scaler.transform(np.ones((2, 8), dtype=np.float32)),
-        scaler.transform(np.ones((2, 8), dtype=np.float32)),
+        restored_scaler.transform(np.ones((2, 54), dtype=np.float32)),
+        scaler.transform(np.ones((2, 54), dtype=np.float32)),
     )
 
 
