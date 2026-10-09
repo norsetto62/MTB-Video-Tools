@@ -110,6 +110,14 @@ def test_forward_rejects_invalid_inputs(x, error, message):
         model(x)
 
 
+def test_forward_rejects_input_with_wrong_floating_dtype():
+    model = MTBClassifier()
+    x = torch.randn(2, 8, 54, dtype=torch.float64)
+
+    with pytest.raises(TypeError, match="dtype torch.float32"):
+        model(x)
+
+
 def test_forward_rejects_non_tensor_input():
     model = MTBClassifier()
 
