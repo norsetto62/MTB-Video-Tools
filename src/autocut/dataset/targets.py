@@ -31,6 +31,78 @@ def _annotation_overlap(
         - max(timestamp[0], annotation.start),
     )
 
+"""Target window label validation checks."""
+
+def validate_targets(
+    X: np.ndarray,
+    timestamps: np.ndarray,
+    y: np.ndarray,
+    min_positive_ratio: float = 0.0,
+    max_positive_ratio: float = 0.95,
+) -> list[str]:
+    """Audit binary highlight target labels against feature window matrices.
+
+    Args:
+        X: Windowed feature matrix of shape (N, T, F).
+        timestamps: Window start and end times of shape (N, 2).
+        y: Ground truth binary target labels of shape (N,).
+        min_positive_ratio: Minimum fraction of positive highlight samples required.
+        max_positive_ratio: Maximum fraction of positive highlight samples allowed.
+
+    Returns:
+        List of validation error strings (empty if valid).
+    """
+    errors: list[str] = []
+
+    X_arr = np.asarray(X)
+    ts_arr = np.asarray(timestamps)
+    y_arr = np.asarray(y)
+
+    # 1. Dimensional Alignment Check
+    if y_arr.ndim != 1:
+        errors.append(f"Target vector y must be 1D, got shape {y_arr.shape}.")
+        return errors
+
+    n_windows = len(X_arr)
+    if len(y_arr) != n_windows:
+        errors.append(
+            f"Dimension mismatch: target count ({len(y_arr)}) does not match "
+            f"window count ({n_windows})."
+        )
+
+    if len(ts_arr) != n_windows:
+        errors.append(
+            f"Dimension mismatch: timestamp count ({len(ts_arr)}) does not match "
+            f"window count ({n_windows})."
+        )
+
+    # 2. Target Value Validity & Finiteness
+    if not np.isfinite(y_arr).all():
+        errors.append("Non-finite values (NaN/Inf) detected in target labels y.")
+
+    unique_vals = np.unique(y_arr)
+    invalid_vals = [val for val in unique_vals if val not in (0, 1, 0.0, 1.0)]
+    if invalid_vals:
+        errors.append(f"Non-binary target values detected: {invalid_vals}.")
+
+    # 3. Label Distribution Check
+    if len(y_arr) > 0:
+        pos_ratio = float(np.mean(y_arr))
+
+        if pos_ratio < min_positive_ratio:
+            errors.append(
+                f"Class collapse: highlight positive ratio ({pos_ratio:.1%}) "
+                f"is below minimum required threshold ({min_positive_ratio:.1%})."
+            )
+
+        if pos_ratio > max_positive_ratio:
+            errors.append(
+                f"Class saturation: highlight positive ratio ({pos_ratio:.1%}) "
+                f"exceeds maximum allowed threshold ({max_positive_ratio:.1%})."
+            )
+
+    return errors
+
 def build_targets(
     windows: FeatureWindows,
     annotations: list[Annotation],
