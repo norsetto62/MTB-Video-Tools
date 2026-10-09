@@ -236,6 +236,10 @@ def test_negative_stride_is_rejected():
         )
 
 
+"""
+This bypasses __init__ and __post_init__ for this test only. It is useful for testing defensive behavior
+against an invalid object, normal application code should never construct a FeatureSequence this way.
+"""
 def test_at_least_two_timestamps_are_required():
     sequence = object.__new__(FeatureSequence)
     object.__setattr__(
