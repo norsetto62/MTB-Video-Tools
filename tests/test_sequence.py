@@ -309,3 +309,53 @@ def test_prepare_frame_does_not_modify_input_frame() -> None:
 
     assert np.array_equal(frame, original)
     assert result is not frame
+
+
+def test_feature_sequence_accepts_two_finite_samples() -> None:
+    """Two samples are sufficient to define a temporal step size."""
+    features = np.zeros((2, 54), dtype=np.float32)
+    timestamps = np.asarray([0.0, 0.5], dtype=np.float64)
+
+    sequence = FeatureSequence(
+        features=features,
+        timestamps=timestamps,
+    )
+
+    assert sequence.features.shape == (2, 54)
+    assert sequence.timestamps.shape == (2,)
+
+
+@pytest.mark.parametrize("bad_timestamp", [np.nan, np.inf, -np.inf])
+def test_feature_sequence_rejects_non_finite_timestamps(
+    bad_timestamp: float,
+) -> None:
+    """Timestamps must not contain NaN or infinite values."""
+    features = np.zeros((2, 54), dtype=np.float32)
+    timestamps = np.asarray([0.0, bad_timestamp], dtype=np.float64)
+
+    with pytest.raises(
+        ValueError,
+        match="timestamps must contain only finite values",
+    ):
+        FeatureSequence(
+            features=features,
+            timestamps=timestamps,
+        )
+
+
+@pytest.mark.parametrize("n_samples", [0, 1])
+def test_feature_sequence_rejects_fewer_than_two_samples(
+    n_samples: int,
+) -> None:
+    """FeatureSequence requires at least two samples."""
+    features = np.zeros((n_samples, 54), dtype=np.float32)
+    timestamps = np.arange(n_samples, dtype=np.float64)
+
+    with pytest.raises(
+        ValueError,
+        match="at least two feature samples",
+    ):
+        FeatureSequence(
+            features=features,
+            timestamps=timestamps,
+        )
