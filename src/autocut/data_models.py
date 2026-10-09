@@ -52,8 +52,8 @@ class FeatureSequence:
         if self.features.ndim != 2:
             raise ValueError("features must be a 2D array.")
 
-        if self.features.shape[0] < 1:
-            raise ValueError("FeatureSequence must contain at least one feature.")
+        if self.features.shape[0] < 2:
+            raise ValueError("FeatureSequence must contain at least two feature samples to compute temporal step size.")
 
         if self.timestamps.ndim != 1:
             raise ValueError("timestamps must be a 1D array.")
@@ -75,8 +75,11 @@ class FeatureSequence:
         if self.timestamps.dtype != np.float64:
             raise ValueError("timestamps must have dtype float64.")
 
+        if not np.all(np.isfinite(self.features)):
+                raise ValueError("features must contain only finite values (no NaN or Inf).")
+        
         if not np.all(np.isfinite(self.timestamps)):
-            raise ValueError("timestamps must contain only finite values.")
+            raise ValueError("timestamps must contain only finite values (no NaN or Inf).")
 
         if len(self.timestamps) > 1 and not np.all(
             np.diff(self.timestamps) > 0
