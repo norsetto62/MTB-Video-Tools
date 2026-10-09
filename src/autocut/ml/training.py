@@ -48,8 +48,8 @@ class TrainingConfig:
             raise ValueError("patience must be a non-negative integer.")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise ValueError("seed must be an integer.")
-        if isinstance(self.num_classes, bool) or self.num_classes != 3:
-            raise ValueError("num_classes must be 3 for the established classifier contract.")
+        if isinstance(self.num_classes, bool) or not isinstance(self.num_classes, int) or self.num_classes != 3:
+            raise ValueError("num_classes must be the integer 3 for the established classifier contract.")
         for name, minimum, inclusive in (
             ("lr", 0.0, False),
             ("weight_decay", 0.0, True),
