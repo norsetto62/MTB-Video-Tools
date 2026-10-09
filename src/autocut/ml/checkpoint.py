@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import pickle
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping, Sequence
@@ -328,7 +329,7 @@ def load_checkpoint(
     except TypeError:
         # Compatibility with older PyTorch releases without weights_only.
         payload = torch.load(source, map_location=map_location)
-    except (OSError, RuntimeError, EOFError) as exc:
+    except (OSError, RuntimeError, EOFError, pickle.UnpicklingError) as exc:
         raise ValueError(f"Could not read checkpoint file {source}: {exc}") from exc
 
     return validate_checkpoint(payload)
