@@ -238,6 +238,19 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
 
     if not isinstance(payload["model_state_dict"], dict):
         raise ValueError("Checkpoint model_state_dict must be a dictionary.")
+    if payload.get("model_class", "MTBClassifier") != "MTBClassifier":
+        raise ValueError("Unsupported checkpoint model_class.")
+    try:
+        probe_model = MTBClassifier(
+            feature_dim=feature_dim,
+            hidden_dim=config["hidden_dim"],
+            classifier_mid_dim=config["classifier_mid_dim"],
+            num_classes=config["num_classes"],
+            dropout=config["dropout"],
+        )
+        probe_model.load_state_dict(payload["model_state_dict"], strict=True)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError("Checkpoint model configuration and weights are incompatible.") from exc
 
     names = payload.get("feature_names")
     mask = payload.get("feature_mask")
@@ -270,9 +283,11 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
     scaler_state = payload.get("scaler_state")
     if scaler_state is not None:
         try:
-            FeatureScaler.from_state_dict(scaler_state)
+            scaler = FeatureScaler.from_state_dict(scaler_state)
         except (TypeError, ValueError) as exc:
             raise ValueError("Checkpoint scaler_state is invalid.") from exc
+        if scaler.enabled and scaler.mean_ is not None and scaler.mean_.size != feature_dim:
+            raise ValueError("Checkpoint scaler feature count does not match feature_dim.")
 
     for key in ("training_config", "data_config", "metadata"):
         if key in payload and not isinstance(payload[key], dict):
@@ -310,3 +325,26 @@ def load_checkpoint(
         raise ValueError(f"Could not read checkpoint file {source}: {exc}") from exc
 
     return validate_checkpoint(payload)
+
+
+
+def restore_model(
+    payload: Mapping[str, Any],
+    *,
+    device: str | torch.device = "cpu",
+) -> MTBClassifier:
+    """Construct a model from a validated payload and restore its weights.
+
+    The caller chooses train/eval mode; this function does not impose either.
+    """
+    checkpoint = validate_checkpoint(dict(payload))
+    config = checkpoint["model_config"]
+    model = MTBClassifier(
+        feature_dim=checkpoint["feature_dim"],
+        hidden_dim=config["hidden_dim"],
+        classifier_mid_dim=config["classifier_mid_dim"],
+        num_classes=config["num_classes"],
+        dropout=config["dropout"],
+    )
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    return model.to(device)
