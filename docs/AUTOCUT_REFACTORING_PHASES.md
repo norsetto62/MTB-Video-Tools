@@ -15,7 +15,7 @@
 - [x] **Phase 5 — Motion / features**
   - motion / features
         ↓
-- [ ] **Phase 6 — Dataset / audit**
+- [x] **Phase 6 — Dataset / audit**
   - dataset / audit
         ↓
 - [ ] **Phase 7 — ML / scaling / checkpoint**
