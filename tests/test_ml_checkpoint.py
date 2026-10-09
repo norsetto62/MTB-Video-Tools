@@ -115,7 +115,7 @@ def test_feature_mask_can_describe_full_schema_and_reduced_model_input():
     "kwargs",
     [
         {"feature_names": ["a", "a"]},
-        {"feature_names": ["a", "b"]},
+        {"feature_names": ["a"]},
         {"feature_mask": [False, False]},
         {"feature_mask": [True, "false"]},
         {"feature_mask": [True, False, True]},
