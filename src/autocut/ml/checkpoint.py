@@ -6,6 +6,7 @@ does not implement training loops or inference-time feature processing.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -15,6 +16,7 @@ import torch
 
 from autocut.ml.model import MTBClassifier
 from autocut.ml.scaling import FeatureScaler
+from autocut.motion.features import FEATURE_NAMES
 
 CHECKPOINT_VERSION = "1.1"
 DEFAULT_CLASS_MAPPING = {
@@ -45,8 +47,11 @@ def _validate_feature_metadata(
     feature_names: Sequence[str] | None,
     feature_mask: Sequence[bool] | None,
 ) -> tuple[list[str] | None, list[bool] | None]:
-    names = None if feature_names is None else list(feature_names)
     mask = None if feature_mask is None else list(feature_mask)
+    if feature_names is None and model.feature_dim == len(FEATURE_NAMES):
+        names = list(FEATURE_NAMES)
+    else:
+        names = None if feature_names is None else list(feature_names)
 
     if names is not None:
         if not names or any(not isinstance(name, str) or not name for name in names):
@@ -108,7 +113,7 @@ def build_checkpoint(
     if best_metric is not None:
         if isinstance(best_metric, bool) or not isinstance(best_metric, (int, float)):
             raise ValueError("best_metric must be a finite number or None.")
-        if not torch.isfinite(torch.tensor(float(best_metric))).item():
+        if not math.isfinite(float(best_metric)):
             raise ValueError("best_metric must be a finite number or None.")
 
     names, mask = _validate_feature_metadata(model, feature_names, feature_mask)
@@ -130,6 +135,15 @@ def build_checkpoint(
     training = _plain_mapping(training_config, name="training_config")
     data = dict(DEFAULT_DATA_CONFIG)
     data.update(_plain_mapping(data_config, name="data_config"))
+    for key in ("flow_fps", "window", "stride"):
+        value = data.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(f"data_config[{key!r}] must be a finite positive number.")
     extra = _plain_mapping(metadata, name="metadata")
 
     payload: dict[str, Any] = {
