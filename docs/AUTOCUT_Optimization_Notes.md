@@ -131,7 +131,51 @@ The exact ROI dimensions should be determined empirically.
 
 In particular, we should verify that reducing the ROI does not remove motion information that is useful for distinguishing interesting MTB sections.
 
----
+# 1.1 Region of Interest (ROI) Boundaries
+
+Farneback estimates motion using image neighborhoods at multiple pyramid levels. When we crop first, pixels outside the crop are unavailable to those calculations. Near the crop boundary, this can affect the estimated flow, especially when moving objects cross the boundary or when the optical-flow neighborhood extends beyond it.
+
+One important distinction: this doesn't mean all flow near the boundary is necessarily wrong. The concern is that estimates there may be less reliable because the algorithm has less surrounding image information. The severity depends on the parameters, image content, and motion.
+
+## How to improve it
+
+Keep the current target ROI unchanged and calculate flow on a larger context region around it. After calculating flow, we crop the flow arrays to the target ROI before extracting features.
+
+Target ROI — features we keep
+
+Horizontal: 15%–85% · Vertical: 10%–50%
+
+Context ROI — where we calculate flow
+
+Horizontal: 10%–90% · Vertical: 0%–60%
+
+The extra pixels give Farneback surrounding image information. They do not become part of the feature calculations.
+
+### Why this is a good compromise
+
+* It preserves the meaning and dimensions of our existing 54 features.
+
+* It reduces the artificial boundary effect without calculating flow across the entire frame.
+
+* It keeps the same target region, so the annotations and their temporal alignment do not need to change.
+
+* It increases computation compared with the current ROI crop, but less than using the entire resized frame.
+
+There is one caveat: the proposed margins are a reasonable starting point, not a guarantee. Farneback uses multiple pyramid levels, so a margin that looks generous at full resolution becomes smaller at coarser levels. We should test whether the improvement is sufficient.
+
+## Implementation notes
+
+1. Change the pipeline consistently: production feature extraction and the audit's extraction code must use the same context-then-crop approach. Ideally, we should avoid maintaining two independent implementations of that preprocessing.
+
+2. Compare old and new flow: use a few representative clips, particularly where riders or obstacles cross the target ROI boundary.
+
+3. Inspect the differences: compare the resulting flow fields and 54-feature sequences. The features should remain the same in definition, even though their numerical values may change.
+
+4. Regenerate the cached NPZ files: they contain the old features, so they must not be mixed with the new results.
+
+5. Rerun the feature-sequence audit, then proceed to statistical sanity.
+
+One important consequence: if we change the feature-extraction method, we must eventually generate the training dataset using that same method. Otherwise, the model would be trained on features produced differently from those it sees during inference.
 
 # 2. Farneback Optical Flow
 
