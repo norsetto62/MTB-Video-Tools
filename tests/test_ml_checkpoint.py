@@ -118,7 +118,7 @@ def test_feature_mask_can_describe_full_schema_and_reduced_model_input():
         {"feature_names": ["a"]},
         {"feature_mask": [False, False]},
         {"feature_mask": [True, "false"]},
-        {"feature_mask": [True, False, True]},
+        {"feature_mask": [True, False, False]},
     ],
 )
 def test_build_rejects_invalid_feature_metadata(kwargs):
