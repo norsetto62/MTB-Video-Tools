@@ -181,7 +181,7 @@ def test_load_rejects_missing_file(tmp_path):
         (lambda p: p.update(model_class="OtherModel"), "model_class"),
         (lambda p: p.update(feature_mask=[False] * 54), "feature_mask"),
         (lambda p: p.update(class_mapping={"0": "a"}), "class_mapping"),
-        (lambda p: p.update(scaler_state={"enabled": True, "mean": [0.0], "scale": [1.0]}), "scaler_state"),
+        (lambda p: p.update(scaler_state={"enabled": True, "mean": [0.0], "scale": [1.0]}), "feature count"),
         (lambda p: p.update(epoch=-1), "epoch"),
     ],
 )
