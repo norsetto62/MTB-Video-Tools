@@ -47,6 +47,115 @@ def print_section(title: str) -> None:
 # Audit Functions
 # ============================================================================
 
+NEAR_ZERO_TOLERANCE = 1e-8
+
+
+def calculate_feature_statistics(features: np.ndarray) -> dict:
+    """Calculate descriptive statistics for each feature."""
+
+    return {
+        "min": np.min(features, axis=0),
+        "max": np.max(features, axis=0),
+        "mean": np.mean(features, axis=0),
+        "std": np.std(features, axis=0),
+        "p01": np.percentile(features, 1, axis=0),
+        "median": np.percentile(features, 50, axis=0),
+        "p99": np.percentile(features, 99, axis=0),
+        "near_zero_fraction": np.mean(
+            np.abs(features) < NEAR_ZERO_TOLERANCE,
+            axis=0,
+        ),
+    }
+
+
+NEAR_ZERO_WARNING_FRACTION = 0.95
+CONSTANT_FEATURE_TOLERANCE = 1e-8
+
+
+def report_feature_statistics(features: np.ndarray) -> None:
+    """Report descriptive statistics for each feature."""
+
+    statistics = {
+        "min": np.min(features, axis=0),
+        "max": np.max(features, axis=0),
+        "mean": np.mean(features, axis=0),
+        "std": np.std(features, axis=0),
+        "p01": np.percentile(features, 1, axis=0),
+        "median": np.percentile(features, 50, axis=0),
+        "p99": np.percentile(features, 99, axis=0),
+        "near_zero": np.mean(
+            np.abs(features) < NEAR_ZERO_TOLERANCE,
+            axis=0,
+        ),
+    }
+
+    print_section("Feature Statistical Sanity")
+
+    print(f"Feature frames: {features.shape[0]}")
+    print(f"Feature count:  {features.shape[1]}")
+    print(f"Near-zero tolerance: {NEAR_ZERO_TOLERANCE:g}")
+    print()
+
+    print(
+        f"{'Feature':<27}"
+        f"{'Min':>11}"
+        f"{'Max':>11}"
+        f"{'Mean':>11}"
+        f"{'Std':>11}"
+        f"{'P01':>11}"
+        f"{'Median':>11}"
+        f"{'P99':>11}"
+        f"{'Zero %':>9}"
+        f"  Status"
+    )
+
+    warning_count = 0
+
+    for index, name in enumerate(FEATURE_NAMES):
+        std = statistics["std"][index]
+        near_zero = statistics["near_zero"][index]
+
+        warnings = []
+
+        if std < CONSTANT_FEATURE_TOLERANCE:
+            warnings.append("near-constant")
+
+        if near_zero >= NEAR_ZERO_WARNING_FRACTION:
+            warnings.append("mostly zero")
+
+        status = ", ".join(warnings) if warnings else "OK"
+
+        if warnings:
+            color = YELLOW
+            warning_count += 1
+        else:
+            color = GREEN
+
+        print(
+            f"{color}"
+            f"{name:<27}"
+            f"{statistics['min'][index]:>11.4g}"
+            f"{statistics['max'][index]:>11.4g}"
+            f"{statistics['mean'][index]:>11.4g}"
+            f"{std:>11.4g}"
+            f"{statistics['p01'][index]:>11.4g}"
+            f"{statistics['median'][index]:>11.4g}"
+            f"{statistics['p99'][index]:>11.4g}"
+            f"{near_zero * 100:>8.1f}%"
+            f"  {status}"
+            f"{RESET}"
+        )
+
+    print()
+
+    if warning_count:
+        print_warning(
+            f"{warning_count} feature(s) have statistical warnings."
+        )
+    else:
+        print_pass("No statistical warnings detected.")
+
+
 def audit_feature_sequence(
     sequence: FeatureSequence,
     expected_dim: int = EXPECTED_FEATURE_DIM,
@@ -308,6 +417,7 @@ def main() -> int:
     processing_start_wall = cv2.getTickCount()
 
     audit_failures: list[tuple[int, str]] = []
+    all_features = []
 
     for index, annotation in enumerate(annotations, start=1):
         filename = f"annotation_{index:03d}.npz"
@@ -326,6 +436,7 @@ def main() -> int:
                 features=features,
                 timestamps=timestamps,
             )
+            all_features.append(sequence.features)
             total_frames += len(features)
 
         # --------------------------------------------------------------------
@@ -387,7 +498,8 @@ def main() -> int:
                 features=features,
                 timestamps=timestamps,
             )
-        
+            all_features.append(sequence.features)
+
             elapsed_wall = (
                 cv2.getTickCount() - processing_start_wall
             ) / cv2.getTickFrequency()
@@ -402,6 +514,7 @@ def main() -> int:
         # --------------------------------------------------------------------
         try:
             audit_feature_sequence(sequence)
+            report_feature_statistics(sequence.features)
         except ValueError as err:
             print(f"  [AUDIT FAILED] Annotation {index:03d}: {err}", file=sys.stderr)
             audit_failures.append((index, str(err)))
@@ -411,6 +524,8 @@ def main() -> int:
         return 1
     
     print_pass(f"[SUMMARY] All feature sequence audits passed successfully!")
+    combined_features = np.concatenate(all_features, axis=0)
+    report_feature_statistics(combined_features)
 
     return 0
 
