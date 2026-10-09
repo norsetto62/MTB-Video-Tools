@@ -19,3 +19,6 @@ where = ["src"]
 dev = [
     "pytest",
 ]
+ml = [
+    "torch",
+]
