@@ -104,6 +104,13 @@ def build_checkpoint(
         raise TypeError("model must be an MTBClassifier.")
     if scaler is not None and not isinstance(scaler, FeatureScaler):
         raise TypeError("scaler must be a FeatureScaler or None.")
+    if (
+        scaler is not None
+        and scaler.enabled
+        and scaler.mean_ is not None
+        and scaler.mean_.size != model.feature_dim
+    ):
+        raise ValueError("Fitted scaler feature count must match model.feature_dim.")
     if optimizer is not None and not isinstance(optimizer, torch.optim.Optimizer):
         raise TypeError("optimizer must be a torch optimizer or None.")
     if epoch is not None and (
