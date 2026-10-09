@@ -105,13 +105,11 @@ def build_checkpoint(
         raise TypeError("model must be an MTBClassifier.")
     if scaler is not None and not isinstance(scaler, FeatureScaler):
         raise TypeError("scaler must be a FeatureScaler or None.")
-    if (
-        scaler is not None
-        and scaler.enabled
-        and scaler.mean_ is not None
-        and scaler.mean_.size != model.feature_dim
-    ):
-        raise ValueError("Fitted scaler feature count must match model.feature_dim.")
+    if scaler is not None and scaler.enabled:
+        if scaler.mean_ is None or scaler.scale_ is None:
+            raise ValueError("An enabled scaler must be fitted before checkpointing.")
+        if scaler.mean_.size != model.feature_dim:
+            raise ValueError("Fitted scaler feature count must match model.feature_dim.")
     if optimizer is not None and not isinstance(optimizer, torch.optim.Optimizer):
         raise TypeError("optimizer must be a torch optimizer or None.")
     if epoch is not None and (
@@ -294,6 +292,8 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
             scaler = FeatureScaler.from_state_dict(scaler_state)
         except (TypeError, ValueError) as exc:
             raise ValueError("Checkpoint scaler_state is invalid.") from exc
+        if scaler.enabled and (scaler.mean_ is None or scaler.scale_ is None):
+            raise ValueError("Checkpoint enabled scaler is not fitted.")
         if scaler.enabled and scaler.mean_ is not None and scaler.mean_.size != feature_dim:
             raise ValueError("Checkpoint scaler feature count does not match feature_dim.")
 
