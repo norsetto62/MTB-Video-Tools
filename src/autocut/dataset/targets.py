@@ -31,23 +31,22 @@ def _annotation_overlap(
         - max(timestamp[0], annotation.start),
     )
 
-"""Target window label validation checks."""
-
 def validate_targets(
     X: np.ndarray,
     timestamps: np.ndarray,
     y: np.ndarray,
-    min_positive_ratio: float = 0.0,
-    max_positive_ratio: float = 0.95,
 ) -> list[str]:
-    """Audit binary highlight target labels against feature window matrices.
+    """Validate interestingness targets and their alignment with feature windows.
+
+    Target values may be fractional because windows can cross annotation
+    boundaries. Every target must be finite and within the inclusive range
+    0–3. Target-distribution summaries belong in the dataset audit rather
+    than in this structural/value validator.
 
     Args:
         X: Windowed feature matrix of shape (N, T, F).
-        timestamps: Window start and end times of shape (N, 2).
-        y: Ground truth binary target labels of shape (N,).
-        min_positive_ratio: Minimum fraction of positive highlight samples required.
-        max_positive_ratio: Maximum fraction of positive highlight samples allowed.
+        timestamps: Window start/end times of shape (N, 2).
+        y: Interestingness targets of shape (N,), in the range [0, 3].
 
     Returns:
         List of validation error strings (empty if valid).
@@ -58,7 +57,6 @@ def validate_targets(
     ts_arr = np.asarray(timestamps)
     y_arr = np.asarray(y)
 
-    # 1. Dimensional Alignment Check
     if y_arr.ndim != 1:
         errors.append(f"Target vector y must be 1D, got shape {y_arr.shape}.")
         return errors
@@ -76,33 +74,20 @@ def validate_targets(
             f"window count ({n_windows})."
         )
 
-    # 2. Target Value Validity & Finiteness
     if not np.isfinite(y_arr).all():
         errors.append("Non-finite values (NaN/Inf) detected in target labels y.")
 
-    unique_vals = np.unique(y_arr)
-    invalid_vals = [val for val in unique_vals if val not in (0, 1, 0.0, 1.0)]
-    if invalid_vals:
-        errors.append(f"Non-binary target values detected: {invalid_vals}.")
-
-    # 3. Label Distribution Check
-    if len(y_arr) > 0:
-        pos_ratio = float(np.mean(y_arr))
-
-        if pos_ratio < min_positive_ratio:
-            errors.append(
-                f"Class collapse: highlight positive ratio ({pos_ratio:.1%}) "
-                f"is below minimum required threshold ({min_positive_ratio:.1%})."
-            )
-
-        if pos_ratio > max_positive_ratio:
-            errors.append(
-                f"Class saturation: highlight positive ratio ({pos_ratio:.1%}) "
-                f"exceeds maximum allowed threshold ({max_positive_ratio:.1%})."
-            )
+    finite_values = y_arr[np.isfinite(y_arr)]
+    invalid_values = np.unique(
+        finite_values[(finite_values < 0.0) | (finite_values > 3.0)]
+    )
+    if invalid_values.size:
+        errors.append(
+            f"Interest scores must be within [0, 3]; invalid values: "
+            f"{invalid_values.tolist()}."
+        )
 
     return errors
-
 def build_targets(
     windows: FeatureWindows,
     annotations: list[Annotation],
