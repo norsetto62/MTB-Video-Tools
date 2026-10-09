@@ -43,6 +43,7 @@ def print_section(title: str) -> None:
     print(f"{CYAN}{title}{RESET}")
     print(f"{CYAN}{'=' * 60}{RESET}")
 
+
 # ============================================================================
 # Audit Functions
 # ============================================================================
@@ -379,7 +380,7 @@ def parse_arguments() -> Path:
         usage="%(prog)s input [options]",
     )
 
-    parser.add_argument("input", type=Path, help="annotations file absolute path")
+    parser.add_argument("input", type=Path, help="training annotations file absolute path")
     args = parser.parse_args()
 
     if not args.input.exists():
@@ -394,7 +395,7 @@ def parse_arguments() -> Path:
 
 def main() -> int:
     annotation_path = parse_arguments()
-    output_dir = Path("audit") / annotation_path.stem
+    output_dir = Path("data/audit")
     output_dir.mkdir(parents=True, exist_ok=True)
     print("Processing", annotation_path)
 
@@ -412,81 +413,84 @@ def main() -> int:
     roi_y0 = round(processing_height * 0.1)
     roi_height = round(processing_height * 0.4)
 
-    total_frames = 0
     tot_annotations = len(annotations)
-    processing_start_wall = cv2.getTickCount()
-
     audit_failures: list[tuple[int, str]] = []
-    all_features = []
+    fail_counter = 0
+    last_progress_time = 0.0
 
-    for index, annotation in enumerate(annotations, start=1):
-        filename = f"annotation_{index:03d}.npz"
-        npz_path = output_dir / filename
+    filename = f"{annotation_path.stem}.npz"
+    npz_path = output_dir / filename
 
-        # --------------------------------------------------------------------
-        # Cache Hit: Read sequence directly from .npz
-        # --------------------------------------------------------------------
-        if npz_path.exists():
-            print(f"[{index}/{tot_annotations}] Loading cached NPZ: {npz_path.name}")
-            with np.load(npz_path) as data:
-                features = data["features"]
-                timestamps = data["timestamps"]
+    # --------------------------------------------------------------------
+    # Cache Hit: Read sequence directly from .npz
+    # --------------------------------------------------------------------
+    if npz_path.exists():
+        print(f"Loading cached NPZ: {npz_path.name}")
+        with np.load(npz_path) as data:
+            features = data["features"]
+            timestamps = data["timestamps"]
 
-            sequence = FeatureSequence(
-                features=features,
-                timestamps=timestamps,
-            )
-            all_features.append(sequence.features)
-            total_frames += len(features)
+        sequence = FeatureSequence(
+            features=features,
+            timestamps=timestamps,
+        )
+        total_frames = len(features)
 
-        # --------------------------------------------------------------------
-        # Cache Miss: Extract Optical Flow & Features from Video
-        # --------------------------------------------------------------------
-        else:
-            progress = annotation.start * 100 / video_info.duration
-            elapsed_wall = (
-                cv2.getTickCount() - processing_start_wall
-            ) / cv2.getTickFrequency()
+    # --------------------------------------------------------------------
+    # Cache Miss: Extract Optical Flow & Features from Video
+    # --------------------------------------------------------------------
+    else:
+        features_list = []
+        timestamps_list = []
+        duration = annotations[tot_annotations-1].end - annotations[0].start
+        total_frames = round(duration * SAMPLE_FPS)
+        processing_start_wall = cv2.getTickCount()
+        with VideoReader(
+            video_path=video_path,
+            start=annotations[0].start,
+            duration=duration,
+            sample_fps=SAMPLE_FPS,
+        ) as training_video:
+            previous_gray = None
+            extractor = FeatureExtractor(roi_width=roi_width, roi_height=roi_height)
 
-            eta = (elapsed_wall * (100 - progress) / progress) if progress > 0 else 0
-            print(
-                f"[{index}/{tot_annotations}] Extracting video ({progress:5.2f}%) - "
-                f"elapsed: {convert_s_to_hms(elapsed_wall)}, ETA: {convert_s_to_hms(eta)}"
-            )
+            for frame_index, timestamp, frame in training_video:
+                frame_resized = cv2.resize(
+                    frame,
+                    (processing_width, processing_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+                gray_crop = frame_resized[
+                    roi_y0 : roi_y0 + roi_height, roi_x0 : roi_x0 + roi_width
+                ]
+                current_gray = cv2.cvtColor(gray_crop, cv2.COLOR_BGR2GRAY)
 
-            features_list = []
-            timestamps_list = []
-
-            with VideoReader(
-                video_path=video_path,
-                start=annotation.start,
-                duration=annotation.end - annotation.start,
-                sample_fps=SAMPLE_FPS,
-            ) as training_video:
-                previous_gray = None
-                extractor = FeatureExtractor(roi_width=roi_width, roi_height=roi_height)
-
-                for frame_index, timestamp, frame in training_video:
-                    frame_resized = cv2.resize(
-                        frame,
-                        (processing_width, processing_height),
-                        interpolation=cv2.INTER_AREA,
+                if previous_gray is not None:
+                    flow = calculate_optical_flow(
+                        previous_gray=previous_gray,
+                        current_gray=current_gray,
                     )
-                    gray_crop = frame_resized[
-                        roi_y0 : roi_y0 + roi_height, roi_x0 : roi_x0 + roi_width
-                    ]
-                    current_gray = cv2.cvtColor(gray_crop, cv2.COLOR_BGR2GRAY)
+                    features_list.append(extractor.extract_vector(flow))
+                    timestamps_list.append(timestamp)
 
-                    if previous_gray is not None:
-                        flow = calculate_optical_flow(
-                            previous_gray=previous_gray,
-                            current_gray=current_gray,
-                        )
-                        features_list.append(extractor.extract_vector(flow))
-                        timestamps_list.append(timestamp)
-                        total_frames += 1
+                previous_gray = current_gray
+                            
+                # -------------------------------------------------------
+                # Progress
+                # -------------------------------------------------------
 
-                    previous_gray = current_gray
+                elapsed_wall = (
+                    cv2.getTickCount() -
+                    processing_start_wall
+                ) / cv2.getTickFrequency()
+
+                # Only print progress every 2 sec
+                if elapsed_wall - last_progress_time >= 2.0 :
+                    time_per_frame = elapsed_wall / frame_index
+                    frames_left = total_frames - frame_index
+                    eta_seconds = frames_left * time_per_frame
+                    print(f"\rProcessed {frame_index} of {total_frames} frames in {convert_s_to_hms(elapsed_wall)} ETA {convert_s_to_hms(eta_seconds)}", flush=True)
+                    last_progress_time = elapsed_wall
 
             features = np.asarray(features_list, dtype=np.float32)
             timestamps = np.asarray(timestamps_list, dtype=np.float64)
@@ -498,34 +502,23 @@ def main() -> int:
                 features=features,
                 timestamps=timestamps,
             )
-            all_features.append(sequence.features)
 
-            elapsed_wall = (
-                cv2.getTickCount() - processing_start_wall
-            ) / cv2.getTickFrequency()
-
-            print("\n" + "=" * 60)
-            print(f"Processed {total_frames} total feature frames across {tot_annotations} annotations.")
-            print(f"Total time: {convert_s_to_hms(elapsed_wall)}")
-            print(f"Data directory: {output_dir}")
-
-        # --------------------------------------------------------------------
-        # Run Sequence Audit
-        # --------------------------------------------------------------------
-        try:
-            audit_feature_sequence(sequence)
-            report_feature_statistics(sequence.features)
-        except ValueError as err:
-            print(f"  [AUDIT FAILED] Annotation {index:03d}: {err}", file=sys.stderr)
-            audit_failures.append((index, str(err)))
+    # --------------------------------------------------------------------
+    # Run Sequence Audit
+    # --------------------------------------------------------------------
+    try:
+        audit_feature_sequence(sequence)
+        report_feature_statistics(sequence.features)
+    except ValueError as err:
+        fail_counter += 1
+        print(f"  [AUDIT FAILED] {fail_counter:03d}: {err}", file=sys.stderr)
+        audit_failures.append((fail_counter, str(err)))
 
     if audit_failures:
-        print_fail(f"\n[SUMMARY] {len(audit_failures)} / {tot_annotations} annotations failed audit!")
+        print_fail(f"\n[SUMMARY] {len(audit_failures)} failures failed audit!")
         return 1
     
     print_pass(f"[SUMMARY] All feature sequence audits passed successfully!")
-    combined_features = np.concatenate(all_features, axis=0)
-    report_feature_statistics(combined_features)
 
     return 0
 
