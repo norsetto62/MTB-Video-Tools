@@ -43,7 +43,7 @@ def test_equal_score_prefers_shorter_then_source_order():
 
 
 def test_zero_optional_budget_when_mandatory_exceeds_target(caplog):
-    mandatory = [MandatoryClip("v1.mp4", 0, 12, sequence_order=0)]
+    mandatory = [MandatoryClip("v1.mp4", 0, 12, video_order=0, sequence_order=0)]
     with caplog.at_level(logging.WARNING):
         result = select_highlight_budget([candidate()], 10, mandatory)
     assert result.selected == ()
@@ -53,7 +53,7 @@ def test_zero_optional_budget_when_mandatory_exceeds_target(caplog):
 
 
 def test_mandatory_duration_is_subtracted_from_target():
-    mandatory = [MandatoryClip("v1.mp4", 0, 3, sequence_order=0)]
+    mandatory = [MandatoryClip("v1.mp4", 0, 3, video_order=0, sequence_order=0)]
     result = select_highlight_budget(
         [candidate(start=0, end=4, score=2), candidate(video="v2.mp4", order=1, start=0, end=5, score=1)],
         10,
@@ -74,3 +74,33 @@ def test_candidate_window_evidence_is_carried_for_later_refinement():
     evidence = (WindowEvidence(0, 4, 2.0, "high_action"),)
     item = candidate(start=0, end=4, score=2.0, evidence=evidence)
     assert item.window_evidence == evidence
+
+
+
+def test_oversized_candidate_is_trimmed_around_best_window():
+    evidence = (
+        WindowEvidence(0, 4, 0.8, "moderate_interest"),
+        WindowEvidence(4, 8, 1.2, "moderate_interest"),
+        WindowEvidence(8, 12, 2.2, "high_action"),
+    )
+    item = candidate(start=0, end=12, score=2.2, evidence=evidence)
+    result = select_highlight_budget([item], 10)
+    assert len(result.selected) == 1
+    trimmed = result.selected[0]
+    assert (trimmed.start, trimmed.end, trimmed.duration) == (2.0, 12.0, 10.0)
+    assert trimmed.score == 2.2
+    assert result.selected_duration == 10.0
+    assert result.unused_optional_budget == 0.0
+
+
+def test_oversized_candidate_without_evidence_is_skipped():
+    result = select_highlight_budget([candidate(start=0, end=12, score=2.2)], 10)
+    assert result.selected == ()
+    assert result.unused_optional_budget == 10.0
+
+
+def test_too_small_remaining_budget_does_not_create_tiny_trim():
+    evidence = (WindowEvidence(0, 4, 2.2, "high_action"),)
+    item = candidate(start=0, end=4, score=2.2, evidence=evidence)
+    result = select_highlight_budget([item], 2)
+    assert result.selected == ()
