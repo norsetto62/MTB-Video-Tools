@@ -18,10 +18,10 @@
 - [x] **Phase 6 — Dataset / audit**
   - dataset / audit
         ↓
-- [ ] **Phase 7 — ML / scaling / checkpoint**
+- [x] **Phase 7 — ML / scaling / checkpoint**
   - ML / scaling / checkpoint
         ↓
-- [ ] **Phase 8 — Inference**
+- [x] **Phase 8 — Inference**
   - inference
         ↓
 - [ ] **Phase 9 — Candidate generation**
