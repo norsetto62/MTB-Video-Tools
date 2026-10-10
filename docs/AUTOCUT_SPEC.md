@@ -948,3 +948,25 @@ The original source has now been inspected at `scripts/autocut.py` on the `legac
 4. Keep legacy selection scoring and annotation-event ranking out of Phase 11; Phase 10 remains authoritative for candidate selection, budgeting, evidence-based trimming and mandatory-clip protection.
 5. Preserve the FFmpeg stream mapping and efficient video stream-copy approach where the output format and codecs allow it, while making the fade duration configurable and validating the actual rendered duration.
 6. The old selector's extra `start + clip_duration + 2.0` clamp is legacy-specific. Do not carry that unexplained two-second extension into the new timeline synchronizer; use explicit clip duration, source bounds, `mc`, minimum duration and timeline-budget constraints instead.
+
+
+### 49.13 Alignment with current Phase 10 timeline types
+
+The current timeline API uses immutable `Timeline` and `TimelineClip` dataclasses from `autocut.selection.timeline`. A timeline clip exposes `video_name`, `source_start`, `source_end`, `output_start`, `output_end`, `mandatory`, `score`, and `tier`; its duration is derived from output boundaries. Phase 11 must extend this existing contract rather than introduce a parallel timeline or clip type.
+
+Accordingly, the synchronization interface is refined to:
+
+```python
+def synchronize_timeline(
+    timeline: Timeline,
+    analysis: AudioAnalysis | None,
+    *,
+    config: AudioConfig,
+) -> Timeline: ...
+```
+
+When synchronization is disabled or analysis is unavailable, return a logically equivalent timeline. When optional source boundaries are changed, construct a new immutable timeline, recompute each clip's output positions and the total duration, and recompute duration diagnostics consistently. Do not change mandatory source boundaries. If analysis is `None`, the caller must log the analysis warning once and pass the timeline through unchanged; the synchronizer must not emit duplicate warnings for every clip.
+
+The synchronizer must not silently shorten the total timeline to the music duration. Selection/budget policy remains upstream; Phase 11 may retain original boundaries when snapping would cause a constraint violation and must report the resulting timeline duration for validation. The renderer's output duration must be based on the finalized timeline, not on a stale pre-synchronization duration.
+
+`mc` evidence-based trimming is performed by the Phase 10 selection/trimming path, because the current `SelectionCandidate` exposes `window_evidence`. Timeline synchronization must preserve the `mandatory` exemption and enforce that snapping does not make an optional clip exceed the configured maximum. This guard is validation, not a second evidence-trimming algorithm.
