@@ -24,7 +24,7 @@
 - [x] **Phase 8 — Inference**
   - inference
         ↓
-- [ ] **Phase 9 — Candidate generation**
+- [x] **Phase 9 — Candidate generation**
   - candidate generation
         ↓
 - [ ] **Phase 10 — Selection / budget / timeline**
