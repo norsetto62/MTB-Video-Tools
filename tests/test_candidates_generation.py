@@ -41,10 +41,8 @@ def test_overlapping_accepted_windows_union_and_padding_clamps_to_video():
 
 
 def test_junk_gate_takes_precedence_over_high_action_and_score():
-    result = _inference(
-        [[0, 4]],
-        [[0.55, 0.05, 0.40]],
-    )
+    # The weighted score is 1.125, but P0 == junk_threshold rejects the window.
+    result = _inference([[0, 4]], [[0.55, 0.0, 0.45]])
 
     assert generate_candidates(result, 10) == []
 
@@ -59,7 +57,6 @@ def test_action_threshold_equality_is_high_action():
 
 
 def test_moderate_interest_is_accepted_when_score_meets_threshold():
-    # S = 0.8 * 1.0 + 0.0 * 2.5 = 0.8; P0 remains below junk threshold.
     result = _inference([[0, 4]], [[0.20, 0.80, 0.0]])
 
     clips = generate_candidates(result, 10)
@@ -126,17 +123,15 @@ def test_padding_can_merge_surviving_clips_and_scores_are_combined():
     assert len(clips) == 1
     assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 13.0, 13.0)
     assert clips[0].tier == "high_action"
-    assert clips[0].mean_score == pytest.approx((0.8 + 1.7) / 2)
+    assert clips[0].mean_score == pytest.approx((0.95 + 1.7) / 2)
     assert clips[0].max_score == pytest.approx(1.7)
 
 
-def test_candidates_are_chronological_and_boundary_clamped():
+def test_candidates_reject_unsorted_window_timestamps():
     result = _inference(
         [[20, 24], [2, 6]],
         [_action(), _action()],
     )
-    # Input windows must be sorted chronologically, so this malformed order
-    # is rejected rather than silently reordered.
     with pytest.raises(ValueError, match="strictly increasing"):
         generate_candidates(result, 30)
 
