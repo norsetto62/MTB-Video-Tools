@@ -55,6 +55,16 @@ class CandidateGenerationConfig:
 
 
 @dataclass(frozen=True)
+class WindowEvidence:
+    """Accepted inference-window evidence retained for safe clip trimming."""
+
+    start: float
+    end: float
+    score: float
+    tier: str
+
+
+@dataclass(frozen=True)
 class CandidateClip:
     """A temporally coherent candidate for later budget-based selection.
 
@@ -69,6 +79,7 @@ class CandidateClip:
     tier: str
     mean_score: float
     max_score: float
+    window_evidence: tuple[WindowEvidence, ...] = ()
 
 
 @dataclass
@@ -257,6 +268,15 @@ def generate_candidates(
                 tier=tier,
                 mean_score=float(np.mean(contributing_scores)),
                 max_score=float(np.max(contributing_scores)),
+                window_evidence=tuple(
+                    WindowEvidence(
+                        start=float(timestamps[index, 0]),
+                        end=float(timestamps[index, 1]),
+                        score=float(scores[index]),
+                        tier=accepted_tiers[index],
+                    )
+                    for index in unique_indices
+                ),
             )
         )
 
