@@ -924,3 +924,27 @@ Before claiming legacy compatibility, inspect the original function bodies for:
 - exact fade start-time calculation and output-duration handling in the FFmpeg command.
 
 The old `select_events_beat_synced` scoring/filtering policy is not part of the new API: Phase 10 remains the owner of candidate ranking, budget allocation, evidence-based trimming and mandatory-clip protection. Only verified synchronization behavior and relevant audio-rendering behavior should be carried over.
+
+
+### 49.12 Verified legacy behavior and intentional changes
+
+The original source has now been inspected at `scripts/autocut.py` on the `legacy` branch. The following are verified observations, not assumptions:
+
+- Legacy `snap_timestamp(timestamp, audio_data, mode="beat")` uses the first beat timestamp greater than or equal to the input for `forward-beat`; if none exists, it returns the input unchanged.
+- Legacy `measure`, `onset`, and `combined` select their corresponding timestamp arrays and use the nearest timestamp by absolute distance. An empty grid returns the original timestamp.
+- Legacy snapping treats any mode other than `forward-beat`, `measure`, `onset`, and `combined` as beat mode. The new API deliberately improves this: `off` is explicit and unknown mode values raise validation errors.
+- Legacy `combined` concatenates beat times and onset-peak times, rounds to three decimal places, deduplicates with `numpy.unique`, and keeps values in `[0, music_duration]`.
+- Legacy measure estimates use every fourth detected beat (`beat_times[::4]`).
+- Legacy `select_events_beat_synced` ranks annotation events by `mtb * 2 + film`, then MTB and film ratings; limits a clip to `max_clip` when positive; limits it to remaining music duration; keeps the original event start; and snaps only the calculated end. The snapped end is accepted only if it remains at least `MIN_CLIP` after the start, then clamped to the event end and to `start + clip_duration + 2.0`. Clips shorter than `MIN_CLIP` are skipped. This old event scoring/selection policy is superseded by Phase 10 and must not be copied into the new selector.
+- Legacy `add_music_with_fade` uses a fixed `FADE_OUT_DURATION = 3.0` seconds. It calculates `fade_start = max(0, total_duration - 3.0)`, maps video from input 0 and music audio from input 1, copies video, encodes audio as AAC at 320 kb/s, applies `afade=t=out:st=...:d=3.0`, limits output with `-t total_duration`, and uses `-movflags +faststart`. The new contract intentionally makes fade duration configurable, with a 2.0-second default.
+- Legacy cache files are stored under the caller-supplied cache directory; the old main routine passes `output_dir / "audio_cache"`. AutoCut's new agreed default is `Config.data_dir / "audio_cache"` (normally `data/audio_cache/`).
+- The legacy main routine calls `analyze_audio` before selecting events, and then mixes music after concatenating the extracted clips. The new pipeline preserves the separation of analysis, synchronization, timeline construction and rendering, and adds warning/fallback behavior when analysis alone fails.
+
+#### Consequences for the new contracts
+
+1. Keep the verified directional semantics of `forward-beat`: first grid point `>= timestamp`, or unchanged input if no such point exists.
+2. Keep the verified `combined` grid derivation: rounded beat and onset timestamps, deduplicated and bounded by duration. Preserve the legacy three-decimal precision unless a test demonstrates that a different representation is required; any precision change should be deliberate.
+3. Keep nearest-neighbor snapping for `beat`, `measure`, `onset`, and `combined`. The new synchronization stage applies the operation to both eligible start and end boundaries, unlike the legacy event selector which only snapped the end.
+4. Keep legacy selection scoring and annotation-event ranking out of Phase 11; Phase 10 remains authoritative for candidate selection, budgeting, evidence-based trimming and mandatory-clip protection.
+5. Preserve the FFmpeg stream mapping and efficient video stream-copy approach where the output format and codecs allow it, while making the fade duration configurable and validating the actual rendered duration.
+6. The old selector's extra `start + clip_duration + 2.0` clamp is legacy-specific. Do not carry that unexplained two-second extension into the new timeline synchronizer; use explicit clip duration, source bounds, `mc`, minimum duration and timeline-budget constraints instead.
