@@ -219,27 +219,11 @@ def select_highlight_budget(
             mandatory_duration, target, mandatory_duration - target,
         )
 
-    # Apply mc to optional candidates before ranking and budget allocation.
-    # Mandatory clips are passed separately and intentionally exempt.
-    constrained: list[SelectionCandidate] = []
+    # Exclude original candidates overlapping mandatory material before
+    # trimming; otherwise a trim could accidentally turn a duplicate into an
+    # apparently eligible optional clip.
+    eligible: list[SelectionCandidate] = []
     for item in candidate_list:
-        if max_clip > 0 and item.duration > max_clip + 1e-9:
-            trimmed = _trim_to_duration(item, max_clip, min_trim, require_evidence=False)
-            if trimmed is None:
-                logger.info(
-                    "Skipping candidate %s [%.3f, %.3f): cannot satisfy "
-                    "maximum clip duration %.3fs and minimum duration %.3fs.",
-                    item.video_name, item.start, item.end, max_clip, min_trim,
-                )
-                continue
-            item = trimmed
-        constrained.append(item)
-
-    # A candidate that overlaps a mandatory interval from the same source
-    # would duplicate user-requested material in the final timeline. Exclude
-    # that candidate rather than silently duplicating the mandatory segment.
-    eligible = []
-    for item in constrained:
         overlaps_mandatory = any(
             item.video_name == mandatory.video_name
             and item.start < mandatory.end
@@ -254,8 +238,24 @@ def select_highlight_budget(
             continue
         eligible.append(item)
 
+    # Apply mc to remaining optional candidates before ranking/budgeting.
+    # Mandatory clips are passed separately and intentionally exempt.
+    constrained: list[SelectionCandidate] = []
+    for item in eligible:
+        if max_clip > 0 and item.duration > max_clip + 1e-9:
+            trimmed = _trim_to_duration(item, max_clip, min_trim, require_evidence=False)
+            if trimmed is None:
+                logger.info(
+                    "Skipping candidate %s [%.3f, %.3f): cannot satisfy "
+                    "maximum clip duration %.3fs and minimum duration %.3fs.",
+                    item.video_name, item.start, item.end, max_clip, min_trim,
+                )
+                continue
+            item = trimmed
+        constrained.append(item)
+
     ranked = sorted(
-        eligible,
+        constrained,
         key=lambda item: (-item.score, item.duration, item.video_order, item.start, item.video_name),
     )
     selected: list[SelectionCandidate] = []
