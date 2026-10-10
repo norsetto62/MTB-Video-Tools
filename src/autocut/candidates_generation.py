@@ -90,6 +90,10 @@ def _validate_inference(result: InferenceResult) -> tuple[np.ndarray, np.ndarray
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("Inference timestamps and probabilities must be numeric.") from exc
 
+    # An empty Python list becomes shape (0,) under np.asarray([]).
+    # Normalize that one unambiguous empty representation to (0, 2).
+    if timestamps.size == 0 and timestamps.shape == (0,):
+        timestamps = timestamps.reshape(0, 2)
     if timestamps.ndim != 2 or timestamps.shape[1:] != (2,):
         raise ValueError("inference.timestamps must have shape (N, 2).")
     if probabilities.shape != (timestamps.shape[0], 3):
