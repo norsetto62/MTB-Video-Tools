@@ -159,9 +159,10 @@ def select_highlight_budget(
     """Greedily choose highest-scoring candidates that fit the optional budget.
 
     Ranking is max_score descending, duration ascending, then source order and
-    start time for deterministic ties. Oversized candidates are skipped rather
-    than terminating the scan. Mandatory intervals consume budget first and
-    are not eligible for removal. If mandatory content exceeds the target,
+    start time for deterministic ties. Oversized candidates are shortened
+    around their strongest retained inference window when possible; otherwise
+    the scan continues to lower-ranked candidates. Mandatory intervals consume
+    budget first and are never removed. If mandatory content exceeds the target,
     a warning is emitted and the optional budget becomes zero.
 
     If the next candidate is too long for the remaining budget, it may be
