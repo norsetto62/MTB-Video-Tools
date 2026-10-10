@@ -5,7 +5,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from autocut.candidates_generation import (
+from autocut.editing.candidates_generation import (
     CandidateGenerationConfig,
     generate_candidates,
 )
