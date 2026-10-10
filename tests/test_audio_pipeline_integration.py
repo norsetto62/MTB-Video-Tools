@@ -36,7 +36,7 @@ def test_analysis_failure_warns_and_returns_unsynchronized_timeline(caplog):
 def test_pipeline_reuses_analysis_and_does_not_rerun_selection():
     original = make_timeline()
     data = AudioAnalysis(
-        source_path="music.mp3", source_hash="a" * 64, duration=12.0,
+        source_path=__import__("pathlib").Path("music.mp3"), source_hash="a" * 64, duration=12.0,
         tempo_bpm=120.0, beats=(1.0, 2.0, 3.0), measures=(1.0,),
         onsets=(1.5, 2.5), combined=(1.0, 1.5, 2.0, 2.5, 3.0),
     )
