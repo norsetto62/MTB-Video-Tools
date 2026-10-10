@@ -70,10 +70,9 @@ def assemble_timeline(
 
     Candidate video_order is the order of that source video in the user's
     input. Within each video, source time determines order. Mandatory clips
-    use sequence_order from the user's manifest; for source videos with a
-    matching candidate order, the mandatory clip is placed in that video's
-    source-time sequence. For mandatory-only sources, sequence_order provides
-    a deterministic position relative to the other mandatory entries.
+    use the video's original input-order index. Within each video, source
+    time determines order. sequence_order is retained as provenance for
+    multiple mandatory entries, while their source times determine playback.
 
     Output is concatenated without transitions or overlaps in this phase.
     """
@@ -89,6 +88,10 @@ def assemble_timeline(
         previous = video_order.get(candidate.video_name)
         if previous is None or candidate.video_order < previous:
             video_order[candidate.video_name] = candidate.video_order
+    for item in mandatory:
+        previous = video_order.get(item.video_name)
+        if previous is None or item.video_order < previous:
+            video_order[item.video_name] = item.video_order
 
     # Build sequence keys. A source video uses its source-order index; within
     # a video, source time preserves chronological order. A mandatory interval
@@ -102,11 +105,7 @@ def assemble_timeline(
             candidate,
         ))
     for item in mandatory:
-        order = video_order.get(item.video_name)
-        if order is None:
-            # No selected candidate survived from this source. sequence_order
-            # is the stable manifest-order fallback for the mandatory entry.
-            order = item.sequence_order
+        order = item.video_order
         items.append((
             (order, item.start, 0, item.video_name),
             "mandatory",
