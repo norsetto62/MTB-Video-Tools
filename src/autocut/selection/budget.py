@@ -107,47 +107,53 @@ def _validate_interval(start: float, end: float, label: str) -> None:
         raise ValueError(f"{label} interval must be finite, non-negative, and end after start.")
 
 
-def _trim_to_budget(item: SelectionCandidate, available: float, minimum: float) -> SelectionCandidate | None:
-    """Trim an oversized clip around its strongest retained inference window."""
-    if available < minimum or not item.window_evidence:
+def _trim_to_duration(
+    item: SelectionCandidate,
+    duration: float,
+    minimum: float,
+    *,
+    require_evidence: bool,
+) -> SelectionCandidate | None:
+    """Trim around strongest evidence, or use a deterministic centered fallback."""
+    if duration < minimum or duration >= item.duration:
         return None
-
     evidence = sorted(
         item.window_evidence,
         key=lambda window: (-window.score, window.start, window.end),
     )
-    anchor = evidence[0]
-    duration = min(available, item.duration)
-    midpoint = (anchor.start + anchor.end) / 2.0
+    if not evidence and require_evidence:
+        return None
+    midpoint = (
+        (evidence[0].start + evidence[0].end) / 2.0
+        if evidence else (item.start + item.end) / 2.0
+    )
     start = min(max(midpoint - duration / 2.0, item.start), item.end - duration)
     end = start + duration
     retained = tuple(
         window for window in item.window_evidence
         if window.end > start and window.start < end
     )
-    if not retained:
+    if evidence and not retained:
         return None
-
-    # The trimmed clip's score must be derived from evidence overlapping the
-    # retained interval, not copied from the untrimmed candidate.
-    scores = [window.score for window in retained]
-    tiers = {window.tier for window in retained}
-    tier = "high_action" if "high_action" in tiers else "moderate_interest"
+    if retained:
+        scores = [window.score for window in retained]
+        tiers = {window.tier for window in retained}
+        tier = "high_action" if "high_action" in tiers else "moderate_interest"
+        mean_score, max_score = sum(scores) / len(scores), max(scores)
+    else:
+        tier, mean_score, max_score = item.tier, item.mean_score, item.score
     trimmed = CandidateClip(
-        start=start,
-        end=end,
-        duration=end - start,
-        tier=tier,
-        mean_score=sum(scores) / len(scores),
-        max_score=max(scores),
-        window_evidence=retained,
+        start=start, end=end, duration=end - start, tier=tier,
+        mean_score=mean_score, max_score=max_score, window_evidence=retained,
     )
-    return SelectionCandidate(
-        video_name=item.video_name,
-        video_order=item.video_order,
-        candidate=trimmed,
-    )
+    return SelectionCandidate(item.video_name, item.video_order, trimmed)
 
+
+def _trim_to_budget(
+    item: SelectionCandidate, available: float, minimum: float
+) -> SelectionCandidate | None:
+    """Trim an oversized clip around its strongest retained inference window."""
+    return _trim_to_duration(item, available, minimum, require_evidence=True)
 
 def select_highlight_budget(
     candidates: Sequence[SelectionCandidate],
@@ -155,13 +161,14 @@ def select_highlight_budget(
     mandatory_clips: Sequence[MandatoryClip] = (),
     *,
     min_trimmed_duration: float = 3.0,
+    max_clip_duration: float = 0.0,
 ) -> SelectionResult:
     """Greedily choose highest-scoring candidates that fit the optional budget.
 
     Ranking is max_score descending, duration ascending, then source order and
-    start time for deterministic ties. Oversized candidates are shortened
-    around their strongest retained inference window when possible; otherwise
-    the scan continues to lower-ranked candidates. Mandatory intervals consume
+    start time for deterministic ties. ``max_clip_duration`` (mc) independently
+    limits optional candidates before ranking; zero disables the limit. Evidence
+    is preferred for trimming, with a centered deterministic fallback when absent. Mandatory intervals consume
     budget first and are never removed. If mandatory content exceeds the target,
     a warning is emitted and the optional budget becomes zero.
 
@@ -172,6 +179,7 @@ def select_highlight_budget(
     """
     target = _finite_nonnegative(target_duration, "target_duration", allow_zero=False)
     min_trim = _finite_nonnegative(min_trimmed_duration, "min_trimmed_duration", allow_zero=False)
+    max_clip = _finite_nonnegative(max_clip_duration, "max_clip_duration")
     candidate_list = tuple(candidates)
     mandatory_list = tuple(mandatory_clips)
 
@@ -211,11 +219,27 @@ def select_highlight_budget(
             mandatory_duration, target, mandatory_duration - target,
         )
 
+    # Apply mc to optional candidates before ranking and budget allocation.
+    # Mandatory clips are passed separately and intentionally exempt.
+    constrained: list[SelectionCandidate] = []
+    for item in candidate_list:
+        if max_clip > 0 and item.duration > max_clip + 1e-9:
+            trimmed = _trim_to_duration(item, max_clip, min_trim, require_evidence=False)
+            if trimmed is None:
+                logger.info(
+                    "Skipping candidate %s [%.3f, %.3f): cannot satisfy "
+                    "maximum clip duration %.3fs and minimum duration %.3fs.",
+                    item.video_name, item.start, item.end, max_clip, min_trim,
+                )
+                continue
+            item = trimmed
+        constrained.append(item)
+
     # A candidate that overlaps a mandatory interval from the same source
     # would duplicate user-requested material in the final timeline. Exclude
     # that candidate rather than silently duplicating the mandatory segment.
     eligible = []
-    for item in candidate_list:
+    for item in constrained:
         overlaps_mandatory = any(
             item.video_name == mandatory.video_name
             and item.start < mandatory.end
