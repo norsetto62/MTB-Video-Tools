@@ -3,6 +3,8 @@
 import numpy as np
 import pytest
 
+torch = pytest.importorskip("torch")
+
 from autocut.candidates_generation import (
     CandidateGenerationConfig,
     generate_candidates,
