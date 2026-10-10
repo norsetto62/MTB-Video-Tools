@@ -60,6 +60,7 @@ class AudioAnalysis:
                 raise TypeError("source_path must be path-like.") from exc
         if not isinstance(self.source_hash, str) or not _SHA256_RE.fullmatch(self.source_hash):
             raise ValueError("source_hash must be a 64-character SHA-256 hex digest.")
+        object.__setattr__(self, "source_hash", self.source_hash.lower())
         duration = _finite_number("duration", self.duration, positive=True)
         tempo = _finite_number("tempo_bpm", self.tempo_bpm)
         if tempo < 0:
@@ -114,8 +115,7 @@ def analyze_audio(
     if not path.is_file():
         raise FileNotFoundError(f"Music file does not exist: {path}")
 
-    # The cache module is implemented separately; keep analysis usable without
-    # cache support being importable during incremental development.
+    # A cache read failure should not prevent fresh analysis.
     cache_module = None
     if use_cache and cache_dir is not None:
         try:
@@ -153,6 +153,8 @@ def analyze_audio(
             onset_envelope=onset_envelope,
             sr=sample_rate,
             hop_length=_DEFAULT_HOP_LENGTH,
+            backtrack=False,
+            units="frames",
         )
         beat_times = _frames_to_seconds(np.asarray(beat_frames), sample_rate)
         onset_times = _frames_to_seconds(np.asarray(onset_frames), sample_rate)
@@ -165,7 +167,10 @@ def analyze_audio(
     onsets = tuple(sorted(set(t for t in onset_times if 0.0 <= t <= duration)))
     measures = beats[::4]
     combined = tuple(sorted(set(
-        round(t, 3) for t in (*beats, *onsets) if 0.0 <= t <= duration
+        rounded for t in (*beats, *onsets)
+        if 0.0 <= t <= duration
+        for rounded in (round(t, 3),)
+        if 0.0 <= rounded <= duration
     )))
 
     digest = None
