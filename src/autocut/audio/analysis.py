@@ -61,7 +61,9 @@ class AudioAnalysis:
         if not isinstance(self.source_hash, str) or not _SHA256_RE.fullmatch(self.source_hash):
             raise ValueError("source_hash must be a 64-character SHA-256 hex digest.")
         duration = _finite_number("duration", self.duration, positive=True)
-        tempo = _finite_number("tempo_bpm", self.tempo_bpm, positive=True)
+        tempo = _finite_number("tempo_bpm", self.tempo_bpm)
+        if tempo < 0:
+            raise ValueError("tempo_bpm must be non-negative.")
         object.__setattr__(self, "duration", duration)
         object.__setattr__(self, "tempo_bpm", tempo)
         for name in ("beats", "measures", "onsets", "combined"):
@@ -69,6 +71,15 @@ class AudioAnalysis:
             if not isinstance(values, (tuple, list, np.ndarray)):
                 raise TypeError(f"{name} must be a sequence of timestamps.")
             object.__setattr__(self, name, _timestamp_tuple(name, values, duration))
+
+        expected_combined = tuple(sorted(set(
+            round(value, 3) for value in (*self.beats, *self.onsets)
+            if 0.0 <= round(value, 3) <= duration
+        )))
+        if self.combined != expected_combined:
+            raise ValueError(
+                "combined must be the sorted, unique beat/onset grid rounded to 3 decimals."
+            )
 
 
 def _scalar_tempo(value: object) -> float:
