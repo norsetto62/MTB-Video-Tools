@@ -16,7 +16,7 @@ from autocut.audio.cache import (
 
 def make_analysis(path: Path, digest: str | None = None):
     return AudioAnalysis(
-        source_path=path,
+        source_path=Path(path),
         source_hash=digest or music_file_hash(path),
         duration=8.0,
         tempo_bpm=120.0,
