@@ -210,8 +210,27 @@ def select_highlight_budget(
             mandatory_duration, target, mandatory_duration - target,
         )
 
+    # A candidate that overlaps a mandatory interval from the same source
+    # would duplicate user-requested material in the final timeline. Exclude
+    # that candidate rather than silently duplicating the mandatory segment.
+    eligible = []
+    for item in candidate_list:
+        overlaps_mandatory = any(
+            item.video_name == mandatory.video_name
+            and item.start < mandatory.end
+            and mandatory.start < item.end
+            for mandatory in mandatory_list
+        )
+        if overlaps_mandatory:
+            logger.info(
+                "Skipping candidate %s [%.3f, %.3f): overlaps mandatory material.",
+                item.video_name, item.start, item.end,
+            )
+            continue
+        eligible.append(item)
+
     ranked = sorted(
-        candidate_list,
+        eligible,
         key=lambda item: (-item.score, item.duration, item.video_order, item.start, item.video_name),
     )
     selected: list[SelectionCandidate] = []
