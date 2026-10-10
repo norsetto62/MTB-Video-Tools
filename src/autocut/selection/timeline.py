@@ -65,6 +65,8 @@ class Timeline:
 def assemble_timeline(
     selection: SelectionResult,
     mandatory_clips: Sequence[MandatoryClip] = (),
+    *,
+    max_clip_duration: float = 0.0,
 ) -> Timeline:
     """Place selected clips in source order, with mandatory clips preserved.
 
@@ -78,6 +80,13 @@ def assemble_timeline(
     """
     if not isinstance(selection, SelectionResult):
         raise TypeError("selection must be a SelectionResult instance.")
+    if (
+        isinstance(max_clip_duration, bool)
+        or not isinstance(max_clip_duration, (int, float))
+        or not math.isfinite(max_clip_duration)
+        or max_clip_duration < 0
+    ):
+        raise ValueError("max_clip_duration must be finite and non-negative.")
     mandatory = tuple(mandatory_clips)
     for item in mandatory:
         if not isinstance(item, MandatoryClip):
@@ -122,6 +131,12 @@ def assemble_timeline(
         if kind == "candidate":
             candidate = item
             assert isinstance(candidate, SelectionCandidate)
+            if max_clip_duration > 0 and candidate.duration > max_clip_duration + 1e-9:
+                raise ValueError(
+                    f"Optional clip {candidate.video_name} duration "
+                    f"{candidate.duration:.3f}s exceeds max_clip_duration "
+                    f"{max_clip_duration:.3f}s."
+                )
             source_start, source_end = candidate.start, candidate.end
             mandatory_flag = False
             score = candidate.score
