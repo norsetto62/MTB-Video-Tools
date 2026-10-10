@@ -18,7 +18,7 @@ def analysis(*, beats=(1.0, 2.0, 3.0), measures=(1.0, 3.0),
     combined = tuple(sorted(set(round(x, 3) for x in (*beats, *onsets)
                                 if 0 <= x <= duration)))
     return AudioAnalysis(
-        source_path="music.mp3",
+        source_path=__import__("pathlib").Path("music.mp3"),
         source_hash="a" * 64,
         duration=duration,
         tempo_bpm=120.0,
