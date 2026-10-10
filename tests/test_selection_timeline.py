@@ -22,7 +22,7 @@ def test_timeline_restores_source_order_and_chronology():
     later = candidate("video1.mp4", 0, 20, 24, 2.0)
     earlier = candidate("video1.mp4", 0, 3, 7, 1.0)
     second_video = candidate("video2.mp4", 1, 1, 5, 1.5)
-    mandatory = [MandatoryClip("video2.mp4", 0, 2, sequence_order=1)]
+    mandatory = [MandatoryClip("video2.mp4", 0, 2, video_order=1, sequence_order=1)]
     selection = select_highlight_budget([later, earlier, second_video], 30, mandatory)
     timeline = assemble_timeline(selection, mandatory)
     assert [(c.video_name, c.source_start, c.mandatory) for c in timeline.clips] == [
@@ -35,7 +35,7 @@ def test_timeline_restores_source_order_and_chronology():
 
 
 def test_timeline_warns_if_actual_duration_exceeds_target(caplog):
-    mandatory = [MandatoryClip("v1.mp4", 0, 12, sequence_order=0)]
+    mandatory = [MandatoryClip("v1.mp4", 0, 12, video_order=0, sequence_order=0)]
     selection = select_highlight_budget([], 10, mandatory)
     with caplog.at_level(logging.WARNING):
         timeline = assemble_timeline(selection, mandatory)
@@ -45,7 +45,7 @@ def test_timeline_warns_if_actual_duration_exceeds_target(caplog):
 
 
 def test_timeline_serialization_is_json_friendly():
-    mandatory = [MandatoryClip("v1.mp4", 0, 2, sequence_order=0)]
+    mandatory = [MandatoryClip("v1.mp4", 0, 2, video_order=0, sequence_order=0)]
     selection = select_highlight_budget([], 5, mandatory)
     data = assemble_timeline(selection, mandatory).to_dict()
     assert data["schema_version"] == 1
