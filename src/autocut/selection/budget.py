@@ -59,7 +59,8 @@ class MandatoryClip:
     video_name: str
     start: float
     end: float
-    sequence_order: int
+    video_order: int
+    sequence_order: int = 0
 
     @property
     def duration(self) -> float:
@@ -106,10 +107,54 @@ def _validate_interval(start: float, end: float, label: str) -> None:
         raise ValueError(f"{label} interval must be finite, non-negative, and end after start.")
 
 
+def _trim_to_budget(item: SelectionCandidate, available: float, minimum: float) -> SelectionCandidate | None:
+    """Trim an oversized clip around its strongest retained inference window."""
+    if available < minimum or not item.window_evidence:
+        return None
+
+    evidence = sorted(
+        item.window_evidence,
+        key=lambda window: (-window.score, window.start, window.end),
+    )
+    anchor = evidence[0]
+    duration = min(available, item.duration)
+    midpoint = (anchor.start + anchor.end) / 2.0
+    start = min(max(midpoint - duration / 2.0, item.start), item.end - duration)
+    end = start + duration
+    retained = tuple(
+        window for window in item.window_evidence
+        if window.end > start and window.start < end
+    )
+    if not retained:
+        return None
+
+    # The trimmed clip's score must be derived from evidence overlapping the
+    # retained interval, not copied from the untrimmed candidate.
+    scores = [window.score for window in retained]
+    tiers = {window.tier for window in retained}
+    tier = "high_action" if "high_action" in tiers else "moderate_interest"
+    trimmed = CandidateClip(
+        start=start,
+        end=end,
+        duration=end - start,
+        tier=tier,
+        mean_score=sum(scores) / len(scores),
+        max_score=max(scores),
+        window_evidence=retained,
+    )
+    return SelectionCandidate(
+        video_name=item.video_name,
+        video_order=item.video_order,
+        candidate=trimmed,
+    )
+
+
 def select_highlight_budget(
     candidates: Sequence[SelectionCandidate],
     target_duration: float,
     mandatory_clips: Sequence[MandatoryClip] = (),
+    *,
+    min_trimmed_duration: float = 3.0,
 ) -> SelectionResult:
     """Greedily choose highest-scoring candidates that fit the optional budget.
 
@@ -119,11 +164,13 @@ def select_highlight_budget(
     are not eligible for removal. If mandatory content exceeds the target,
     a warning is emitted and the optional budget becomes zero.
 
-    Candidate trimming is not performed here. A candidate's stored window
-    evidence is available to a later, bounded refinement step; this selector
-    never reruns inference or recursively generates candidates.
+    If the next candidate is too long for the remaining budget, it may be
+    shortened around its highest-scoring retained inference window, provided
+    the remainder is at least min_trimmed_duration and evidence is available.
+    No inference is rerun and no candidates are generated recursively.
     """
     target = _finite_nonnegative(target_duration, "target_duration", allow_zero=False)
+    min_trim = _finite_nonnegative(min_trimmed_duration, "min_trimmed_duration", allow_zero=False)
     candidate_list = tuple(candidates)
     mandatory_list = tuple(mandatory_clips)
 
@@ -148,6 +195,8 @@ def select_highlight_budget(
         if not item.video_name:
             raise ValueError("Mandatory video_name must not be empty.")
         _validate_interval(item.start, item.end, "Mandatory")
+        if isinstance(item.video_order, bool) or not isinstance(item.video_order, int) or item.video_order < 0:
+            raise ValueError("Mandatory video_order must be a non-negative integer.")
         if isinstance(item.sequence_order, bool) or not isinstance(item.sequence_order, int) or item.sequence_order < 0:
             raise ValueError("Mandatory sequence_order must be a non-negative integer.")
 
@@ -170,10 +219,16 @@ def select_highlight_budget(
     remaining = optional_budget
     for item in ranked:
         # A tiny tolerance avoids rejecting exact fits due to float roundoff.
-        if item.duration <= remaining + 1e-9:
-            selected.append(item)
-            selected_duration += item.duration
-            remaining = max(0.0, optional_budget - selected_duration)
+        chosen = item
+        if item.duration > remaining + 1e-9:
+            chosen = _trim_to_budget(item, remaining, min_trim)  # type: ignore[assignment]
+            if chosen is None:
+                continue
+        selected.append(chosen)
+        selected_duration += chosen.duration
+        remaining = max(0.0, optional_budget - selected_duration)
+        if remaining <= 1e-9:
+            break
 
     return SelectionResult(
         selected=tuple(selected),
