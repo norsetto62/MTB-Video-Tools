@@ -16,7 +16,7 @@ The system selects segments that are interesting to a human observer, including 
 
 The principal user workflow is:
 
-```text
+```
 autocut annotations.txt
 ```
 
@@ -701,3 +701,117 @@ A developer should be able to inspect every major intermediate stage, test it in
 The refactor succeeds when those two properties coexist:
 
 **simple use for the user, explicit structure for the developer.**
+
+---
+
+## 49. Phase 11 — Audio, Synchronization and Rendering Contracts
+
+Phase 11 implements music analysis, optional boundary synchronization, music caching and soundtrack rendering. It consumes the timeline produced by selection/timeline construction; it must not rerun inference or independently choose highlights. The pipeline coordinator orchestrates these operations but does not implement their algorithms.
+
+### 49.1 Responsibilities and module boundaries
+
+The intended responsibilities are:
+
+- `autocut.audio.analysis`: analyze the music file and produce a validated, media-engine-independent `AudioAnalysis` result.
+- `autocut.audio.cache`: load, validate, identify, and atomically save cached analysis.
+- Timeline/editing synchronization logic: adjust eligible clip boundaries using analysis timestamps. Keep this operation separately testable from audio decoding and rendering.
+- `autocut.editing.audio` (or the equivalent established rendering-layer module): apply the selected soundtrack policy, fades, and FFmpeg audio/video mapping.
+- `autocut.pipeline`: pass explicit configuration and results between these stages.
+
+The exact module placement may follow the existing package layout, but the responsibilities above must remain separate. Audio analysis must not depend on selection internals, and rendering must consume the final timeline rather than recalculate it.
+
+### 49.2 Audio analysis result
+
+The analysis result shall expose at least:
+
+- source path for diagnostics;
+- source duration in seconds;
+- estimated tempo in beats per minute;
+- ordered beat timestamps;
+- ordered estimated measure timestamps;
+- ordered onset-peak timestamps;
+- ordered combined synchronization timestamps.
+
+All timestamps are seconds from the beginning of the music file. Timestamp arrays must contain finite values, be monotonically non-decreasing (deduplicated where appropriate), and fall within the source duration, allowing only a documented small floating-point tolerance at the upper boundary. Invalid or empty event arrays must not be treated as usable synchronization data.
+
+Measure timestamps are estimates. The initial implementation may derive them from every fourth detected beat, but must not claim that this always identifies true musical measures or assumes every track is in 4/4.
+
+The analysis result should be a typed domain object, not a raw third-party library object or decoded waveform. The initial cache stores compact analysis metadata and event timestamps, not the full waveform.
+
+### 49.3 Music-analysis cache
+
+The default cache directory is `data/audio_cache/`, resolved relative to the configured `data_dir`. The initial implementation uses this default; a user-selected cache directory is deferred until needed.
+
+The JSON cache retains the established fields:
+
+- `cache_version`
+- `source_hash`
+- `source`
+- `duration`
+- `tempo`
+- `beats`
+
+It also stores `measures`, `onsets`, and `combined` synchronization timestamps. The source hash is SHA-256 over the music file contents. A cache entry is reusable only when its cache version and source content hash match and all cached values pass validation. The stored source path is diagnostic metadata, not a substitute for content identity.
+
+Cache writes must use a temporary file followed by an atomic replacement where supported, so an interrupted write does not leave a partially written cache entry. Cache failures should be logged and handled without treating corrupt or incompatible data as valid; analysis may be recomputed when the source file remains readable.
+
+### 49.4 Synchronization modes and boundary policy
+
+Synchronization is configurable and supports these modes:
+
+- `off`: leave both clip boundaries unchanged;
+- `beat`: snap both eligible start and end boundaries to the nearest detected beat;
+- `measure`: snap both eligible boundaries to estimated measure timestamps;
+- `forward-beat`: move an eligible boundary forward to a suitable beat at or after its unsynchronized timestamp, rather than choosing the nearest beat;
+- `onset`: snap both eligible boundaries to detected onset peaks;
+- `combined`: snap both eligible boundaries using the combined beat-and-onset timestamp set.
+
+These are the intended semantics for the new implementation. Before claiming exact compatibility with the legacy script, inspect its original implementation of `forward-beat` and `combined` and preserve any established nuance that does not conflict with the contracts here.
+
+Synchronization adjusts both starts and ends where a valid adjustment is possible. It must not produce negative starts, empty/reversed intervals, clips shorter than the configured minimum, optional clips longer than the configured maximum, or a timeline that silently exceeds its applicable duration budget. If a proposed adjustment violates a constraint, retain the unsynchronized boundary or interval. Mandatory clips are exempt from synchronization and must remain unchanged.
+
+If audio analysis fails or produces unusable synchronization data, issue a warning and continue with unsynchronized editing. Music playback/mixing may still proceed if the music file itself is usable. Do not fabricate beat positions or silently represent failed analysis as successful analysis.
+
+### 49.5 Maximum optional clip duration
+
+The configured maximum clip duration, referred to as `mc`, has these semantics:
+
+- `mc = 0`: no per-clip maximum;
+- `mc > 0`: no optional clip may exceed `mc` seconds in the final timeline.
+
+Mandatory clips are cast in stone and are exempt from `mc`; their specified boundaries must not be shortened, discarded, or changed to satisfy this limit.
+
+When an optional clip exceeds `mc`, attempt to retain the most interesting portion using its available inference-window evidence, centred around the strongest evidence where feasible. Do not rerun inference to trim a clip. If evidence-based trimming is unavailable, use a deterministic fallback that respects `mc` and the configured minimum clip duration; if no valid interval can be produced, reject that optional clip. The chosen interval must be finalized before rendering.
+
+This is a cross-stage selection constraint: the component responsible for optional clip selection/trimming must enforce it, and the timeline must validate it. Synchronization must not subsequently lengthen an optional clip beyond `mc`. Mandatory clips may cause the overall timeline to exceed the requested target duration; in that case, preserve them and issue a warning rather than modifying them.
+
+### 49.6 Music fade and soundtrack rendering
+
+Music fade duration is configurable from the outset. The initial default is **2.0 seconds**. Validate that the value is non-negative and constrain the effective fade to the available music/output duration, including very short tracks. A zero duration means no fade.
+
+Rendering must consume the final timeline and its explicit audio configuration. It must validate the requested output duration and audio stream mapping, preserve the intended video stream when stream-copying is appropriate, encode/mix the soundtrack according to the configured policy, apply the ending fade and report the actual output duration. FFmpeg failures must produce actionable diagnostics. Do not depend on MoviePy-specific objects in the domain model.
+
+### 49.7 Failure handling and observability
+
+- If the music file cannot be read and is required by the manifest, report a clear error.
+- If only beat/onset analysis fails, warn and fall back to unsynchronized editing; do not fail the whole run solely because optional synchronization is unavailable.
+- If the cache is missing, stale, corrupt, or incompatible, do not trust it; recompute when possible.
+- Record the selected synchronization mode, effective fade duration, maximum clip duration, music identity, cache/analysis outcome and soundtrack policy in configuration/result metadata where applicable.
+- Keep logging useful but avoid printing large event arrays in normal operation.
+
+### 49.8 Phase 11 acceptance tests
+
+Tests must cover at least:
+
+1. Valid analysis output and timestamp-array validation.
+2. Cache hit for matching version/hash and cache miss for changed content/version.
+3. Rejection/recomputation of malformed cache entries.
+4. Atomic cache-write behavior.
+5. Each synchronization mode, including the directional behavior of `forward-beat`.
+6. Both-boundary adjustment and invalid-adjustment fallback.
+7. Analysis failure warning with unsynchronized fallback.
+8. `mc = 0`, positive `mc`, evidence-centred trimming, deterministic fallback, and rejection when no valid trimmed interval exists.
+9. Mandatory clips remaining unchanged and exempt from `mc` and synchronization.
+10. Fade disabled, default fade, custom fade, and very short output duration.
+11. FFmpeg command construction, stream mapping, failure reporting and actual-duration verification.
+12. Integration confirming that rendering uses the supplied final timeline and does not rerun inference or selection.
