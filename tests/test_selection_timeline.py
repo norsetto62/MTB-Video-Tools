@@ -21,7 +21,7 @@ def candidate(video, order, start, end, score=1.0):
 def test_timeline_restores_source_order_and_chronology():
     later = candidate("video1.mp4", 0, 20, 24, 2.0)
     earlier = candidate("video1.mp4", 0, 3, 7, 1.0)
-    second_video = candidate("video2.mp4", 1, 1, 5, 1.5)
+    second_video = candidate("video2.mp4", 1, 3, 7, 1.5)
     mandatory = [MandatoryClip("video2.mp4", 0, 2, video_order=1, sequence_order=1)]
     selection = select_highlight_budget([later, earlier, second_video], 30, mandatory)
     timeline = assemble_timeline(selection, mandatory)
@@ -29,7 +29,7 @@ def test_timeline_restores_source_order_and_chronology():
         ("video1.mp4", 3, False),
         ("video1.mp4", 20, False),
         ("video2.mp4", 0, True),
-        ("video2.mp4", 1, False),
+        ("video2.mp4", 3, False),
     ]
     assert timeline.duration == sum(c.duration for c in timeline.clips)
 
