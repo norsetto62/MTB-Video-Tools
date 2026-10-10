@@ -1,1 +1,1 @@
-"""Editing decisions: candidate generation, selection, budgets, and timeline."""
+"""Audio processing and video rendering for the final edit."""
