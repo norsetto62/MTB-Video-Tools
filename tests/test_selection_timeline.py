@@ -51,3 +51,31 @@ def test_timeline_serialization_is_json_friendly():
     assert data["schema_version"] == 1
     assert data["clips"][0]["mandatory"] is True
     assert data["duration"] == 2
+
+
+
+def test_timeline_max_clip_validation_applies_to_optional_clips_only():
+    import pytest
+
+    mandatory = [MandatoryClip("must.mp4", 0, 10, video_order=0)]
+    selection = select_highlight_budget(
+        [candidate("optional.mp4", 1, 0, 4)], 20, mandatory
+    )
+    with pytest.raises(ValueError, match="exceeds max_clip_duration"):
+        assemble_timeline(selection, mandatory, max_clip_duration=3)
+
+
+def test_timeline_max_clip_duration_does_not_reject_long_mandatory_clips():
+    mandatory = [MandatoryClip("must.mp4", 0, 10, video_order=0)]
+    selection = select_highlight_budget([], 20, mandatory)
+    timeline = assemble_timeline(selection, mandatory, max_clip_duration=3)
+    assert len(timeline.clips) == 1
+    assert timeline.clips[0].duration == 10
+    assert timeline.clips[0].mandatory is True
+
+
+def test_timeline_rejects_invalid_max_clip_duration():
+    import pytest
+
+    with pytest.raises(ValueError, match="max_clip_duration"):
+        assemble_timeline(select_highlight_budget([], 10), max_clip_duration=-1)
