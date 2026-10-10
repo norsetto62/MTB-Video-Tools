@@ -117,3 +117,55 @@ def test_candidate_overlapping_mandatory_interval_is_not_selected():
     independent = candidate(start=11, end=15, score=1.0)
     result = select_highlight_budget([overlapping, independent], 12, mandatory)
     assert result.selected == (independent,)
+
+
+
+def test_max_clip_duration_trims_around_strongest_evidence():
+    evidence = (
+        WindowEvidence(0, 4, 0.8, "moderate_interest"),
+        WindowEvidence(4, 8, 1.2, "moderate_interest"),
+        WindowEvidence(8, 12, 2.2, "high_action"),
+    )
+    result = select_highlight_budget(
+        [candidate(start=0, end=12, score=2.2, evidence=evidence)],
+        20, max_clip_duration=6,
+    )
+    trimmed = result.selected[0]
+    assert (trimmed.start, trimmed.end, trimmed.duration) == (6.0, 12.0, 6.0)
+    assert trimmed.score == 2.2
+    assert trimmed.window_evidence == evidence[1:]
+
+
+def test_max_clip_duration_uses_centered_fallback_without_evidence():
+    result = select_highlight_budget(
+        [candidate(start=0, end=12, score=2.2)], 20, max_clip_duration=6,
+    )
+    trimmed = result.selected[0]
+    assert (trimmed.start, trimmed.end, trimmed.duration) == (3.0, 9.0, 6.0)
+    assert trimmed.window_evidence == ()
+
+
+def test_max_clip_duration_below_minimum_skips_optional_candidate():
+    result = select_highlight_budget(
+        [candidate(start=0, end=12, score=2.2)], 20,
+        min_trimmed_duration=3, max_clip_duration=2,
+    )
+    assert result.selected == ()
+    assert result.unused_optional_budget == 20
+
+
+def test_max_clip_duration_zero_disables_limit():
+    item = candidate(start=0, end=12, score=2.2)
+    result = select_highlight_budget([item], 20, max_clip_duration=0)
+    assert result.selected == (item,)
+
+
+def test_mandatory_clips_are_exempt_from_max_clip_duration():
+    mandatory = [MandatoryClip("must.mp4", 2, 12, video_order=0)]
+    result = select_highlight_budget(
+        [candidate(video="optional.mp4", order=1, start=0, end=12, score=2.2)],
+        20, mandatory, max_clip_duration=4,
+    )
+    assert result.mandatory_duration == 10
+    assert len(result.selected) == 1
+    assert result.selected[0].duration == 4
