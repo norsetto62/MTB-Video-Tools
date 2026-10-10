@@ -60,7 +60,11 @@ def test_mandatory_duration_is_subtracted_from_target():
         mandatory,
     )
     assert result.optional_budget == 7
-    assert result.selected_duration == 4
+    # The first candidate overlaps the mandatory interval in v1.mp4 and is
+    # excluded to avoid duplicating that source footage. The v2.mp4 candidate
+    # therefore wins and fits within the remaining 7-second budget.
+    assert result.selected_duration == 5
+    assert [item.video_name for item in result.selected] == ["v2.mp4"]
 
 
 def test_selector_validates_duration_and_types():
