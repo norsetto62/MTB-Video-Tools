@@ -27,7 +27,7 @@
 - [x] **Phase 9 — Candidate generation**
   - candidate generation
         ↓
-- [ ] **Phase 10 — Selection / budget / timeline**
+- [x] **Phase 10 — Selection / budget / timeline**
   - selection / budget / timeline
         ↓
 - [ ] **Phase 11 — Audio / rendering**
