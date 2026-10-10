@@ -815,3 +815,112 @@ Tests must cover at least:
 10. Fade disabled, default fade, custom fade, and very short output duration.
 11. FFmpeg command construction, stream mapping, failure reporting and actual-duration verification.
 12. Integration confirming that rendering uses the supplied final timeline and does not rerun inference or selection.
+
+
+### 49.9 Proposed Python interfaces
+
+These signatures define the intended boundaries for implementation. Small signature adjustments are acceptable if required by the existing domain models, but responsibilities and behavior must remain stable.
+
+```python
+# autocut.audio.analysis
+@dataclass(frozen=True)
+class AudioAnalysis:
+    source_path: Path
+    source_hash: str
+    duration: float
+    tempo_bpm: float | None
+    beats: tuple[float, ...]
+    measures: tuple[float, ...]
+    onsets: tuple[float, ...]
+    combined: tuple[float, ...]
+
+def analyze_audio(
+    music_path: Path,
+    *,
+    cache_dir: Path,
+    use_cache: bool = True,
+) -> AudioAnalysis: ...
+
+# autocut.audio.cache
+def music_file_hash(music_path: Path) -> str: ...
+
+def audio_cache_path(music_path: Path, cache_dir: Path) -> Path: ...
+
+def load_cached_audio(
+    music_path: Path,
+    cache_dir: Path,
+) -> AudioAnalysis | None: ...
+
+def save_cached_audio(
+    analysis: AudioAnalysis,
+    cache_dir: Path,
+) -> Path: ...
+
+# autocut.editing.synchronization
+def snap_timestamp(
+    timestamp: float,
+    analysis: AudioAnalysis,
+    *,
+    mode: SyncMode,
+) -> float: ...
+
+def synchronize_timeline(
+    timeline: Timeline,
+    analysis: AudioAnalysis,
+    *,
+    config: AudioConfig,
+) -> Timeline: ...
+
+# autocut.editing.audio
+def render_with_music(
+    timeline: Timeline,
+    music_path: Path,
+    output_path: Path,
+    *,
+    config: AudioConfig,
+) -> RenderResult: ...
+```
+
+`SyncMode` is a string enum with `off`, `beat`, `measure`, `forward-beat`, `onset`, and `combined`. Invalid mode values must raise a clear validation error; they must not silently fall back to beat mode.
+
+`AudioConfig` should contain at least `sync_mode`, `max_clip_duration` (0 means unlimited), and `fade_duration` (default 2.0 seconds). Cache location is derived from `Config.data_dir / "audio_cache"`; do not add a user-selectable cache path yet. Other existing audio-mix options should be added only when required by the manifest and current pipeline contract.
+
+`AudioAnalysis` is immutable and owns validated, ordered timestamp tuples. The cache module owns JSON serialization and filesystem operations; the analysis module owns librosa calls and analysis derivation. The renderer must not call `analyze_audio`, run inference, or regenerate candidates.
+
+The proposed `autocut.editing` package is a home for synchronization and soundtrack rendering because both operate on the selected timeline. It must use the existing `Timeline` and clip models rather than introduce parallel clip representations. If the repository's current layout has a more appropriate established rendering package, preserve these responsibilities there instead of creating duplicate abstractions.
+
+#### Contract details
+
+- `analyze_audio` computes the source content hash, checks a valid cache entry when enabled, otherwise analyzes the file and attempts to cache the result. Cache write failure should warn but need not discard successful analysis.
+- `load_cached_audio` returns `None` for a missing, stale, malformed, incompatible, or invalid cache; it does not return partially validated data.
+- `snap_timestamp` is a pure function. It validates the timestamp and mode, uses only the relevant analysis timestamp set, and does not silently clamp invalid input. `off` returns the supplied timestamp unchanged.
+- `synchronize_timeline` returns a new timeline and never mutates the input. It preserves mandatory clips exactly, and keeps an original optional interval when snapping would violate source bounds, minimum duration, `max_clip_duration`, or the applicable timeline budget.
+- Evidence-centred trimming for `max_clip_duration` must happen in the Phase 10 optional-candidate selection/trimming path, where `window_evidence` is available. Synchronization only validates that contract and must not invent missing inference evidence.
+- `render_with_music` consumes the finalized timeline, renders video according to that timeline, mixes or replaces audio according to the selected soundtrack policy, applies the configured ending fade, and returns output path plus measured output duration. It does not select, trim, or synchronize clips itself.
+- All external commands must be passed as argument lists rather than unsafe shell-interpolated strings. FFmpeg errors should retain enough stderr/exit-status context for diagnosis.
+
+### 49.10 Test modules and test-first implementation order
+
+Create focused tests alongside each contract, without requiring a real music file or FFmpeg for pure logic tests:
+
+- `tests/test_audio_analysis.py`: mock audio decoding/beat and onset detection; verify result shape, finite positive duration, tempo handling, event ordering/ranges, combined-event deduplication, and propagation of unreadable-source errors.
+- `tests/test_audio_cache.py`: content hash, cache path stability, matching cache hit, changed content/version miss, malformed JSON/schema/value rejection, atomic replacement, and cache-write failure handling.
+- `tests/test_audio_synchronization.py`: pure timestamp snapping for each mode; exact before/on/after timestamp cases; forward-beat directionality; both boundaries; off mode; empty/unusable analysis fallback; invalid mode; source-boundary, minimum-duration and maximum-duration guards; mandatory clips unchanged; input timeline not mutated.
+- `tests/test_audio_rendering.py`: FFmpeg command construction, correct video/audio stream mapping, no-fade and fade cases, fade clamped for short outputs, no shell invocation, subprocess failure diagnostics, and measured output duration. Mock subprocess/probing for unit tests.
+- `tests/test_audio_pipeline_integration.py`: cache hit avoids repeated analysis; analysis failure warns and still renders unsynchronized when the music remains readable; rendering consumes the supplied final timeline and never calls inference or candidate selection.
+
+Use small synthetic `AudioAnalysis` values and timeline fixtures for deterministic unit tests. Add one optional integration test using a tiny generated media fixture only if FFmpeg is available; the core test suite must not depend on a particular music track or a machine-specific media path.
+
+Implement in this order: (1) models/config and pure validation, (2) cache, (3) analysis using mocked-library tests, (4) pure synchronization, (5) FFmpeg command construction/rendering, and (6) pipeline integration. Run the focused Phase 11 tests after each step, then the complete test suite. Do not begin module implementation until the unresolved legacy behavior noted below has been checked.
+
+### 49.11 Legacy compatibility check still required
+
+The function snippets previously supplied establish the high-level behavior of `snap_timestamp`, `select_events_beat_synced`, and the FFmpeg music-mixing function, but do not establish every branch's exact semantics. In particular, the original implementation of `forward-beat` and `combined` is not currently available in the searchable repository.
+
+Before claiming legacy compatibility, inspect the original function bodies for:
+- whether `forward-beat` means the next beat for both boundaries or applies a special rule to clip ends;
+- how `combined` combines, rounds, and deduplicates beat/onset timestamps;
+- how legacy snapping interacts with clip minimum/maximum duration and any end-time padding;
+- exact fade start-time calculation and output-duration handling in the FFmpeg command.
+
+The old `select_events_beat_synced` scoring/filtering policy is not part of the new API: Phase 10 remains the owner of candidate ranking, budget allocation, evidence-based trimming and mandatory-clip protection. Only verified synchronization behavior and relevant audio-rendering behavior should be carried over.
