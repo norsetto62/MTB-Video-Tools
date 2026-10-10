@@ -169,3 +169,16 @@ def test_mandatory_clips_are_exempt_from_max_clip_duration():
     assert result.mandatory_duration == 10
     assert len(result.selected) == 1
     assert result.selected[0].duration == 4
+
+
+def test_max_clip_trim_does_not_rescue_candidate_overlapping_mandatory():
+    mandatory = [MandatoryClip("v1.mp4", 5, 10, video_order=0)]
+    evidence = (WindowEvidence(0, 4, 2.2, "high_action"),)
+    item = candidate(start=0, end=12, score=2.2, evidence=evidence)
+
+    result = select_highlight_budget(
+        [item], 20, mandatory, max_clip_duration=4,
+    )
+
+    assert result.selected == ()
+    assert result.mandatory_duration == 5
