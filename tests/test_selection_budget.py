@@ -104,3 +104,12 @@ def test_too_small_remaining_budget_does_not_create_tiny_trim():
     item = candidate(start=0, end=4, score=2.2, evidence=evidence)
     result = select_highlight_budget([item], 2)
     assert result.selected == ()
+
+
+
+def test_candidate_overlapping_mandatory_interval_is_not_selected():
+    mandatory = [MandatoryClip("v1.mp4", 5, 10, video_order=0)]
+    overlapping = candidate(start=3, end=7, score=2.5)
+    independent = candidate(start=11, end=15, score=1.0)
+    result = select_highlight_budget([overlapping, independent], 12, mandatory)
+    assert result.selected == (independent,)
