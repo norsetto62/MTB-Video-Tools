@@ -130,8 +130,8 @@ def dispatch(args: argparse.Namespace) -> int:
         settings = load_run_config(args.config)
         _configure_logging(settings.common.log_level)
         # Validate source presence before handing off to the future pipeline.
-        if not args.source.is_file() if args.command == "audit" else not args.annotations.is_file():
-            source = args.source if args.command == "audit" else args.annotations
+        source = args.source if args.command == "audit" else args.annotations
+        if not source.is_file():
             print(f"Input file not found: {source}", file=sys.stderr)
             return 2
         return _unimplemented(args.command)
