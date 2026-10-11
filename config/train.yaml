@@ -1,0 +1,36 @@
+paths:
+  data_dir: data
+  models_dir: models
+  cache_dir: data/cache
+
+data:
+  manifest: data/manifest/annotations_manifest.yaml
+  sampling_fps: 2.0
+  processing_width: 480
+  window_duration: 4.0
+  window_stride: 2.0
+  train_groups: []
+  validation_groups: []
+
+training:
+  epochs: 15
+  lr: 0.001
+  batch_size: 32
+  hidden_dim: 128
+  classifier_mid_dim: 64
+  dropout: 0.4
+  num_classes: 3
+  use_scaling: true
+  patience: 10
+  min_delta: 0.0001
+  weight_decay: 0.01
+  seed: 42
+  class_weights: [0.2, 1.0, 6.5]
+
+experiment:
+  name: baseline
+  checkpoint_dir: models/experiments
+  results_dir: output/experiments
+
+logging:
+  level: INFO
