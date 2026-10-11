@@ -31,7 +31,14 @@ class DatasetRecord:
         return self.id
 
 
-def _resolve_manifest_path(value: object, *, field: str, entry_id: str, base: Path) -> Path:
+def _resolve_manifest_path(
+    value: object,
+    *,
+    field: str,
+    entry_id: str,
+    base: Path,
+    prefer_cwd: bool = False,
+) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(
             f"Manifest entry {entry_id!r} has invalid {field!r} path; "
@@ -40,6 +47,10 @@ def _resolve_manifest_path(value: object, *, field: str, entry_id: str, base: Pa
 
     path = Path(value.strip()).expanduser()
     if not path.is_absolute():
+        if prefer_cwd:
+            cwd_candidate = path.resolve()
+            if cwd_candidate.exists():
+                return cwd_candidate
         path = base / path
     try:
         return path.resolve()
@@ -77,18 +88,25 @@ def _read_entries(raw: Any, manifest_path: Path) -> list[Any]:
 
 
 def load_manifest(
-    path: str | Path, *, verify_files: bool = False
+    path: str | Path,
+    *,
+    verify_files: bool = False,
+    prefer_cwd: bool = False,
 ) -> tuple[DatasetRecord, ...]:
     """Parse a YAML manifest into validated records in manifest order.
 
     Relative video and annotation paths are resolved against the manifest
-    directory, not the current working directory.
+    directory by default. `prefer_cwd=True` enables the legacy audit
+    convention: use a matching path from the current working directory first,
+    falling back to the manifest directory.
 
     Args:
         path: YAML manifest path.
         verify_files: If true, require each referenced video and annotation
             path to be an existing regular file. Does not probe video media or
             parse annotations.
+        prefer_cwd: Preserve legacy current-working-directory-first resolution.
+            New dataset consumers should leave this false.
 
     Raises:
         FileNotFoundError: If the manifest or a referenced file (when
@@ -150,13 +168,18 @@ def load_manifest(
         group_id = group_id.strip()
 
         video_path = _resolve_manifest_path(
-            item["video"], field="video", entry_id=entry_id, base=manifest_path.parent
+            item["video"],
+            field="video",
+            entry_id=entry_id,
+            base=manifest_path.parent,
+            prefer_cwd=prefer_cwd,
         )
         annotation_path = _resolve_manifest_path(
             item["annotation"],
             field="annotation",
             entry_id=entry_id,
             base=manifest_path.parent,
+            prefer_cwd=prefer_cwd,
         )
 
         if verify_files:
