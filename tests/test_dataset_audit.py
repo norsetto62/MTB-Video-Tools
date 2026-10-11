@@ -147,3 +147,72 @@ def test_production_audit_flags_clips_beyond_video_duration(tmp_path, monkeypatc
     assert report["status"] == "error"
     assert report["clips"][0]["status"] == "error"
     assert report["errors"][0]["code"] == "clip_out_of_bounds"
+
+
+
+def test_annotation_bounds_use_rounded_video_duration(tmp_path, monkeypatch):
+    video = tmp_path / "rounding.mp4"
+    video.touch()
+    annotation = tmp_path / "rounding.txt"
+    annotation.touch()
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        yaml.safe_dump({"videos": [{
+            "id": "rounding", "group_id": "session",
+            "video": str(video), "annotation": str(annotation),
+        }]}),
+        encoding="utf-8",
+    )
+    split_config = tmp_path / "train.yaml"
+    split_config.write_text(
+        "data:\\n  train_groups: [session]\\n  validation_groups: [other]\\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        audit_module, "get_video_info",
+        lambda _: VideoInfo(width=640, height=360, fps=30.0, duration=59.99),
+    )
+    monkeypatch.setattr(
+        audit_module, "load_training_annotations",
+        lambda _: (video, [Annotation(55.0, 60.0, 2, "")]),
+    )
+
+    report = audit_manifest(
+        manifest, _run_config(tmp_path), training_config=split_config
+    )
+    assert not any("outside" in issue["message"] for issue in report["errors"])
+    assert report["videos"][0]["video_info"]["duration_seconds"] == 59.99
+    assert report["videos"][0]["annotation_boundary_duration_seconds"] == 60.0
+
+
+def test_annotation_bounds_still_reject_more_than_rounded_second(tmp_path, monkeypatch):
+    video = tmp_path / "rounding.mp4"
+    video.touch()
+    annotation = tmp_path / "rounding.txt"
+    annotation.touch()
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        yaml.safe_dump({"videos": [{
+            "id": "rounding", "group_id": "session",
+            "video": str(video), "annotation": str(annotation),
+        }]}),
+        encoding="utf-8",
+    )
+    split_config = tmp_path / "train.yaml"
+    split_config.write_text(
+        "data:\\n  train_groups: [session]\\n  validation_groups: [other]\\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        audit_module, "get_video_info",
+        lambda _: VideoInfo(width=640, height=360, fps=30.0, duration=59.49),
+    )
+    monkeypatch.setattr(
+        audit_module, "load_training_annotations",
+        lambda _: (video, [Annotation(55.0, 60.0, 2, "")]),
+    )
+
+    report = audit_manifest(
+        manifest, _run_config(tmp_path), training_config=split_config
+    )
+    assert any("rounded video duration" in issue["message"] for issue in report["errors"])
