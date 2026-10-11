@@ -21,8 +21,6 @@ except ImportError as exc:  # pragma: no cover - dependency is declared in pypro
 
 from .audio.config import AudioConfig
 from .config import Config
-from .ml.training import TrainingConfig
-from .selection.candidates_generation import CandidateGenerationConfig
 
 
 @dataclass(frozen=True)
@@ -37,7 +35,7 @@ class RunConfig:
     inference_batch_size: int
     target_duration: float
     max_clip_duration: float
-    candidates: CandidateGenerationConfig
+    candidates: Any
     audio: AudioConfig
 
 
@@ -188,6 +186,8 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
     if not isinstance(weights, (list, tuple)) or len(weights) != 3:
         raise ValueError("selection.class_score_weights must contain three numbers.")
 
+    from .selection.candidates_generation import CandidateGenerationConfig
+
     candidates = CandidateGenerationConfig(
         class_score_weights=tuple(weights),
         junk_threshold=selection.get("junk_threshold", 0.55),
@@ -281,6 +281,8 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
             "Training and validation groups must be disjoint; overlap: "
             + ", ".join(sorted(overlap))
         )
+
+    from .ml.training import TrainingConfig
 
     training = TrainingConfig(**training_values)
     name = experiment.get("name", "baseline")
