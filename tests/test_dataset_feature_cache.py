@@ -14,7 +14,7 @@ from autocut.dataset.feature_cache import (
     save_feature_sequence,
 )
 from autocut.motion.features import FEATURE_NAMES
-from autocut.motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
+from autocut.motion.flow import FarnebackConfig
 
 
 def _fixture(tmp_path: Path):
@@ -117,3 +117,13 @@ def test_feature_cache_uses_atomic_replace(tmp_path, monkeypatch):
     path = save_feature_sequence(expected, video, cache_dir, clip)
     assert replaced == [path]
     assert load_feature_sequence(video, cache_dir, clip) is not None
+
+
+def test_feature_cache_rejects_timestamps_outside_clip(tmp_path):
+    video, clip, _, cache_dir = _fixture(tmp_path)
+    outside = FeatureSequence(
+        features=np.zeros((3, 54), dtype=np.float32),
+        timestamps=np.asarray([0.5, 1.0, 3.5], dtype=np.float64),
+    )
+    with pytest.raises(ValueError, match="within the clip interval"):
+        save_feature_sequence(outside, video, cache_dir, clip)
