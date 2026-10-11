@@ -701,11 +701,11 @@ def test_audio_path_with_spaces_and_apostrophe_is_parsed(tmp_path):
     audio = create_audio(tmp_path, "Don't Worry, Ride Happy.mp3")
     annotation_file = write_annotation_file(
         tmp_path,
-        f"{audio.name}\\n"
-        f"{video.name}\\n"
-        "01:07 01:23\\n"
-        "01:28 01:42\\n"
-        "05:18 05:42\\n",
+        f"{audio.name}\n"
+        f"{video.name}\n"
+        "01:07 01:23\n"
+        "01:28 01:42\n"
+        "05:18 05:42\n",
     )
 
     clips, audio_config = load_annotations(annotation_file)
@@ -725,9 +725,9 @@ def test_audio_path_with_spaces_and_apostrophe_supports_mix_marker(tmp_path):
     audio = create_audio(tmp_path, "Don't Worry, Ride Happy.mp3")
     annotation_file = write_annotation_file(
         tmp_path,
-        f"{video.name}\\n"
-        "00:10 00:20\\n"
-        f"{audio.name} *\\n",
+        f"{video.name}\n"
+        "00:10 00:20\n"
+        f"{audio.name} *\n",
     )
 
     clips, audio_config = load_annotations(annotation_file)
