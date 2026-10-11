@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit = subparsers.add_parser("audit", help="Audit annotations and derived data.")
     audit.add_argument("source", type=Path, help="Annotation TXT or dataset manifest.")
     audit.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
+    audit.add_argument("--training-config", type=Path, default=Path("config/train.yaml"))
 
     train = subparsers.add_parser("train", help="Train a model from a fixed group split.")
     train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
@@ -130,15 +131,30 @@ def dispatch(args: argparse.Namespace) -> int:
             checkpoint = settings.checkpoint
         return _inspect_checkpoint(checkpoint)
 
-    if args.command in {"run", "audit"}:
+    if args.command == "audit":
+        from .config_loader import load_run_config
+        from .dataset.audit import audit_source, print_audit_report
+
+        settings = load_run_config(args.config)
+        _configure_logging(settings.common.log_level)
+        if not args.source.is_file():
+            print(f"Input file not found: {args.source}", file=sys.stderr)
+            return 2
+        report = audit_source(
+            args.source,
+            settings,
+            training_config=args.training_config,
+        )
+        print_audit_report(report)
+        return 1 if report["status"] == "error" else 0
+
+    if args.command == "run":
         from .config_loader import load_run_config
 
         settings = load_run_config(args.config)
         _configure_logging(settings.common.log_level)
-        # Validate source presence before handing off to the future pipeline.
-        source = args.source if args.command == "audit" else args.annotations
-        if not source.is_file():
-            print(f"Input file not found: {source}", file=sys.stderr)
+        if not args.annotations.is_file():
+            print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
         return _unimplemented(args.command)
 
