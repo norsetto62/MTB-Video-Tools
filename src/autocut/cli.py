@@ -41,8 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     validate.add_argument("--config", type=Path, default=Path("config/train.yaml"))
 
-    test = subparsers.add_parser("test", help="Run pytest and return its exit status.")
-    test.add_argument("pytest_args", nargs=argparse.REMAINDER, help="Optional arguments forwarded to pytest.")
+    test = subparsers.add_parser(
+        "test",
+        help="Run pytest and return its exit status.",
+        add_help=False,
+    )
+    # Pytest owns its flags (including -h/--help), so don't let argparse's
+    # subparser option parsing consume or reject them.
+    test.add_argument("pytest_args", nargs=argparse.REMAINDER)
 
     lovo = subparsers.add_parser("lovo", help="Run leave-one-group-out evaluations.")
     lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
