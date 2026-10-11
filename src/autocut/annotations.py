@@ -184,10 +184,20 @@ def load_annotations(
 
             # ---------------------------------------------------------
             # Audio directive
+            #
+            # Audio paths are standalone lines and may contain spaces
+            # (including apostrophes). Detect the extension on the full
+            # line rather than on a whitespace-split token.
             # ---------------------------------------------------------
-            if num_parts in (1, 2) and _is_audio(parts[0]):
+            audio_text = line
+            mix = False
+            if audio_text.endswith(" *"):
+                audio_text = audio_text[:-2].rstrip()
+                mix = True
+
+            if _is_audio(audio_text):
                 audio_path = _resolve_source_path(
-                    parts[0],
+                    audio_text,
                     annotation_file,
                 )
 
@@ -196,14 +206,6 @@ def load_annotations(
                         f"Audio file not found on line "
                         f"{line_number}: {audio_path}"
                     )
-
-                if num_parts == 2 and parts[1].strip() != "*":
-                    raise ValueError(
-                        f"Invalid audio directive on line "
-                        f"{line_number}: '{line}'"
-                    )
-
-                mix = num_parts == 2
 
                 if audio_config is not None:
                     logger.warning(
