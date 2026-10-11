@@ -9,7 +9,8 @@ import numpy as np
 
 from ..data_models import Clip, FeatureSequence
 from ..motion.features import FeatureExtractor
-from ..motion.flow import calculate_optical_flow
+from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig, calculate_optical_flow
+from .feature_cache import load_feature_sequence, save_feature_sequence
 from ..video.reader import VideoReader
 
 
@@ -23,6 +24,8 @@ def build_feature_sequence(
     *,
     sample_fps: float = DEFAULT_SAMPLE_FPS,
     processing_width: int = DEFAULT_PROCESSING_WIDTH,
+    cache_dir: str | Path | None = None,
+    flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
 ) -> FeatureSequence:
     """Build a motion-feature sequence for a video clip.
 
@@ -57,6 +60,16 @@ def build_feature_sequence(
 
     if clip.end <= clip.start:
         raise ValueError("clip end must be greater than clip start.")
+
+    if cache_dir is not None:
+        cached = load_feature_sequence(
+            video_path, cache_dir, clip,
+            sample_fps=sample_fps,
+            processing_width=processing_width,
+            flow_config=flow_config,
+        )
+        if cached is not None:
+            return cached
 
     feature_vectors: list[np.ndarray] = []
     timestamps: list[float] = []
@@ -95,6 +108,7 @@ def build_feature_sequence(
             flow = calculate_optical_flow(
                 previous_gray,
                 gray,
+                config=flow_config,
             )
 
             vector = extractor.extract_vector(flow)
@@ -125,10 +139,18 @@ def build_feature_sequence(
         dtype=np.float64,
     )
 
-    return FeatureSequence(
+    sequence = FeatureSequence(
         features=features,
         timestamps=timestamp_array,
     )
+    if cache_dir is not None:
+        save_feature_sequence(
+            sequence, video_path, cache_dir, clip,
+            sample_fps=sample_fps,
+            processing_width=processing_width,
+            flow_config=flow_config,
+        )
+    return sequence
 
 
 def _prepare_frame(
