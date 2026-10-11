@@ -1,0 +1,324 @@
+"""Load and validate AutoCut run and training YAML configuration.
+
+Paths in YAML are interpreted relative to the current working directory, not
+relative to the YAML file. Configuration sections map onto the existing
+validated dataclasses wherever possible.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping
+
+try:
+    import yaml
+except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject
+    raise ImportError(
+        "YAML configuration requires PyYAML. Install AutoCut with its project "
+        "dependencies (for example: pip install -e .)."
+    ) from exc
+
+from .audio.config import AudioConfig
+from .config import Config
+from .ml.training import TrainingConfig
+from .selection.candidates_generation import CandidateGenerationConfig
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """Validated settings needed by the production run pipeline."""
+
+    common: Config
+    cache_dir: Path
+    sample_fps: float
+    processing_width: int
+    checkpoint: Path
+    inference_batch_size: int
+    target_duration: float
+    max_clip_duration: float
+    candidates: CandidateGenerationConfig
+    audio: AudioConfig
+
+
+@dataclass(frozen=True)
+class TrainingRunConfig:
+    """Validated dataset, split, training and experiment settings."""
+
+    common: Config
+    cache_dir: Path
+    manifest: Path
+    sample_fps: float
+    processing_width: int
+    train_groups: tuple[str, ...]
+    validation_groups: tuple[str, ...]
+    training: TrainingConfig
+    experiment_name: str
+    checkpoint_dir: Path
+    results_dir: Path
+
+
+def _mapping(value: Any, *, where: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Configuration section {where!r} must be a mapping.")
+    return dict(value)
+
+
+def _section(
+    root: Mapping[str, Any],
+    name: str,
+    allowed: set[str],
+    *,
+    required: bool = False,
+) -> dict[str, Any]:
+    if name not in root:
+        if required:
+            raise ValueError(f"Missing required configuration section {name!r}.")
+        return {}
+    result = _mapping(root[name], where=name)
+    unknown = set(result) - allowed
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ValueError(f"Unknown field(s) in {name!r}: {names}.")
+    return result
+
+
+def _keys(root: Mapping[str, Any], allowed: set[str]) -> None:
+    unknown = set(root) - allowed
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise ValueError(f"Unknown top-level configuration section(s): {names}.")
+
+
+def _path(value: Any, *, name: str) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError(f"{name} must be a non-empty path string.")
+    return Path(value).expanduser()
+
+
+def _positive_float(value: Any, *, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a positive number.")
+    result = float(value)
+    if result <= 0 or result == float("inf") or result != result:
+        raise ValueError(f"{name} must be a finite positive number.")
+    return result
+
+
+def _positive_int(value: Any, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _groups(value: Any, *, name: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{name} must be a non-empty YAML list of group IDs.")
+    groups: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name} must contain non-empty string group IDs.")
+        group = item.strip()
+        if group in groups:
+            raise ValueError(f"{name} contains duplicate group ID {group!r}.")
+        groups.append(group)
+    return tuple(groups)
+
+
+def _load_yaml(path: str | Path) -> dict[str, Any]:
+    config_path = _path(path, name="config path")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    try:
+        with config_path.open("r", encoding="utf-8-sig") as stream:
+            raw = yaml.safe_load(stream)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML in {config_path}: {exc}") from exc
+    if raw is None:
+        raise ValueError(f"Configuration file is empty: {config_path}")
+    return _mapping(raw, where="root")
+
+
+def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
+    """Load production settings and map them to existing typed configurations."""
+    raw = _load_yaml(path)
+    _keys(raw, {"paths", "video", "features", "model", "selection", "audio", "logging"})
+
+    paths = _section(
+        raw, "paths",
+        {"data_dir", "models_dir", "output_dir", "cache_dir"},
+    )
+    video = _section(raw, "video", {"sampling_fps", "processing_width"})
+    features = _section(raw, "features", {"window_duration", "window_stride"})
+    model = _section(raw, "model", {"checkpoint", "inference_batch_size"})
+    selection = _section(
+        raw, "selection",
+        {
+            "target_duration", "min_clip", "max_clip_duration",
+            "class_score_weights", "junk_threshold", "action_threshold",
+            "score_threshold", "min_candidate_duration", "max_gap_to_merge",
+            "padding_seconds",
+        },
+        required=True,
+    )
+    audio = _section(
+        raw, "audio", {"sync_mode", "max_clip_duration", "fade_duration"}
+    )
+    logging = _section(raw, "logging", {"level"})
+
+    common = Config(
+        data_dir=_path(paths.get("data_dir", "data"), name="paths.data_dir"),
+        models_dir=_path(paths.get("models_dir", "models"), name="paths.models_dir"),
+        output_dir=_path(paths.get("output_dir", "output"), name="paths.output_dir"),
+        log_level=logging.get("level", "INFO"),
+        min_clip=selection.get("min_clip", 3.0),
+        window_duration=features.get("window_duration", 4.0),
+        window_stride=features.get("window_stride", 2.0),
+    )
+    if not isinstance(common.log_level, str) or common.log_level.upper() not in {
+        "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"
+    }:
+        raise ValueError("logging.level must be a standard Python logging level.")
+    if common.window_duration <= 0 or common.window_stride <= 0:
+        raise ValueError("features.window_duration and window_stride must be positive.")
+    if common.min_clip <= 0:
+        raise ValueError("selection.min_clip must be positive.")
+
+    weights = selection.get("class_score_weights", (0.0, 1.0, 2.5))
+    if not isinstance(weights, (list, tuple)) or len(weights) != 3:
+        raise ValueError("selection.class_score_weights must contain three numbers.")
+
+    candidates = CandidateGenerationConfig(
+        class_score_weights=tuple(weights),
+        junk_threshold=selection.get("junk_threshold", 0.55),
+        action_threshold=selection.get("action_threshold", 0.50),
+        score_threshold=selection.get("score_threshold", 0.60),
+        min_candidate_duration=selection.get("min_candidate_duration", 4.0),
+        max_gap_to_merge=selection.get("max_gap_to_merge", 3.0),
+        padding_seconds=selection.get("padding_seconds", 2.0),
+    )
+    audio_config = AudioConfig(
+        sync_mode=audio.get("sync_mode", "off"),
+        max_clip_duration=audio.get("max_clip_duration", 0.0),
+        fade_duration=audio.get("fade_duration", 2.0),
+    )
+
+    return RunConfig(
+        common=common,
+        cache_dir=_path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir"),
+        sample_fps=_positive_float(video.get("sampling_fps", 2.0), name="video.sampling_fps"),
+        processing_width=_positive_int(
+            video.get("processing_width", 480), name="video.processing_width"
+        ),
+        checkpoint=_path(model.get("checkpoint", "models/best_model.pt"), name="model.checkpoint"),
+        inference_batch_size=_positive_int(
+            model.get("inference_batch_size", 256), name="model.inference_batch_size"
+        ),
+        target_duration=_positive_float(
+            selection.get("target_duration", 120.0), name="selection.target_duration"
+        ),
+        max_clip_duration=_nonnegative_float(
+            selection.get("max_clip_duration", 0.0), name="selection.max_clip_duration"
+        ),
+        candidates=candidates,
+        audio=audio_config,
+    )
+
+
+def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunConfig:
+    """Load training YAML and construct the existing TrainingConfig dataclass."""
+    raw = _load_yaml(path)
+    _keys(raw, {"paths", "data", "training", "experiment", "logging"})
+
+    paths = _section(raw, "paths", {"data_dir", "models_dir", "cache_dir"})
+    data = _section(
+        raw, "data",
+        {
+            "manifest", "sampling_fps", "processing_width", "window_duration",
+            "window_stride", "train_groups", "validation_groups",
+        },
+        required=True,
+    )
+    training_values = _section(
+        raw, "training",
+        {
+            "epochs", "lr", "batch_size", "hidden_dim", "classifier_mid_dim",
+            "dropout", "num_classes", "use_scaling", "patience", "min_delta",
+            "weight_decay", "seed", "class_weights",
+        },
+    )
+    experiment = _section(
+        raw, "experiment", {"name", "checkpoint_dir", "results_dir"}
+    )
+    logging = _section(raw, "logging", {"level"})
+
+    level = logging.get("level", "INFO")
+    if not isinstance(level, str) or level.upper() not in {
+        "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"
+    }:
+        raise ValueError("logging.level must be a standard Python logging level.")
+
+    common = Config(
+        data_dir=_path(paths.get("data_dir", "data"), name="paths.data_dir"),
+        models_dir=_path(paths.get("models_dir", "models"), name="paths.models_dir"),
+        output_dir=Path("output"),
+        log_level=level.upper(),
+        window_duration=_positive_float(
+            data.get("window_duration", 4.0), name="data.window_duration"
+        ),
+        window_stride=_positive_float(
+            data.get("window_stride", 2.0), name="data.window_stride"
+        ),
+    )
+
+    train_groups = _groups(data.get("train_groups"), name="data.train_groups")
+    validation_groups = _groups(
+        data.get("validation_groups"), name="data.validation_groups"
+    )
+    overlap = set(train_groups) & set(validation_groups)
+    if overlap:
+        raise ValueError(
+            "Training and validation groups must be disjoint; overlap: "
+            + ", ".join(sorted(overlap))
+        )
+
+    training = TrainingConfig(**training_values)
+    name = experiment.get("name", "baseline")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("experiment.name must be a non-empty string.")
+
+    return TrainingRunConfig(
+        common=common,
+        cache_dir=_path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir"),
+        manifest=_path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml"),
+            name="data.manifest",
+        ),
+        sample_fps=_positive_float(
+            data.get("sampling_fps", 2.0), name="data.sampling_fps"
+        ),
+        processing_width=_positive_int(
+            data.get("processing_width", 480), name="data.processing_width"
+        ),
+        train_groups=train_groups,
+        validation_groups=validation_groups,
+        training=training,
+        experiment_name=name.strip(),
+        checkpoint_dir=_path(
+            experiment.get("checkpoint_dir", "models/experiments"),
+            name="experiment.checkpoint_dir",
+        ),
+        results_dir=_path(
+            experiment.get("results_dir", "output/experiments"),
+            name="experiment.results_dir",
+        ),
+    )
+
+
+def _nonnegative_float(value: Any, *, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a non-negative number.")
+    result = float(value)
+    if result < 0 or result == float("inf") or result != result:
+        raise ValueError(f"{name} must be a finite non-negative number.")
+    return result
