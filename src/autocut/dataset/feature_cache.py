@@ -112,7 +112,7 @@ def save_feature_sequence(
     """Write a feature sequence and metadata via an atomic file replacement."""
     if not isinstance(sequence, FeatureSequence):
         raise TypeError("sequence must be a FeatureSequence instance.")
-    metadata, _ = _identity(
+    metadata, identity_key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
     )
@@ -122,10 +122,6 @@ def save_feature_sequence(
     metadata["features_sha256"] = _array_digest(features, timestamps)
 
     # Keep the path based on extraction identity, not output contents.
-    _, identity_key = _identity(
-        video_path, clip, sample_fps=sample_fps,
-        processing_width=processing_width, flow_config=flow_config,
-    )
     target = Path(cache_dir) / f"{identity_key}.npz"
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
