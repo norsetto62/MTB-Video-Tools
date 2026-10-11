@@ -721,11 +721,16 @@ def test_audio_path_with_spaces_and_apostrophe_is_parsed(tmp_path):
 
 
 def test_audio_path_with_spaces_and_apostrophe_supports_mix_marker(tmp_path):
+    video = create_video(tmp_path)
     audio = create_audio(tmp_path, "Don't Worry, Ride Happy.mp3")
     annotation_file = write_annotation_file(
         tmp_path,
+        f"{video.name}\\n"
+        "00:10 00:20\\n"
         f"{audio.name} *\\n",
     )
 
-    with pytest.raises(ValueError, match="source video path not found"):
-        load_annotations(annotation_file)
+    clips, audio_config = load_annotations(annotation_file)
+
+    assert len(clips) == 1
+    assert audio_config == AudioConfig(path=str(audio.resolve()), mix=True)
