@@ -123,6 +123,18 @@ def _read_split_config(path: Path, report: dict[str, Any], manifest_groups: set[
         report["group_split"] = {"status": "invalid", "config": str(path)}
 
 
+def _annotation_boundary_duration(duration: float) -> float:
+    """Round a probed duration to the whole-second precision of annotations.
+
+    Annotation files are authored with whole-second boundaries, while
+    container durations often include fractional seconds that are not useful
+    for deciding whether such a boundary is valid. Keep the raw duration for
+    reporting and window calculations; use this rounded value only for the
+    annotation-boundary check.
+    """
+    return float(math.floor(duration + 0.5))
+
+
 def _estimated_windows(duration: float, window: float, stride: float) -> int:
     if duration + 1e-9 < window:
         return 0
@@ -237,14 +249,17 @@ def audit_manifest(
                     a.end - a.start for a in annotations if a.score == target
                 )
             if duration is not None:
+                boundary_duration = _annotation_boundary_duration(duration)
+                entry["annotation_boundary_duration_seconds"] = boundary_duration
                 out_of_bounds = [
                     a for a in annotations
-                    if a.start < -1e-6 or a.end > duration + 1e-3
+                    if a.start < -1e-6 or a.end > boundary_duration + 1e-6
                 ]
                 if out_of_bounds:
                     entry["errors"].append(
                         f"{len(out_of_bounds)} annotation interval(s) fall outside "
-                        f"the video duration (0–{duration:.3f}s)."
+                        f"the rounded video duration (0–{boundary_duration:.0f}s; "
+                        f"raw probe duration {duration:.6f}s)."
                     )
                 windows = _estimated_windows(
                     duration, settings.common.window_duration, settings.common.window_stride
@@ -322,11 +337,14 @@ def audit_production_annotations(source: str | Path, settings: RunConfig) -> dic
         try:
             info = get_video_info(video_path)
             durations[str(video_path)] = info.duration
-            if clip.end > info.duration + 1e-3:
+            boundary_duration = _annotation_boundary_duration(info.duration)
+            entry["annotation_boundary_duration_seconds"] = boundary_duration
+            if clip.end > boundary_duration + 1e-6:
                 entry["status"] = "error"
                 message = (
                     f"Clip {clip.start:.3f}-{clip.end:.3f}s exceeds "
-                    f"video duration {info.duration:.3f}s: {video_path}"
+                    f"rounded video duration {boundary_duration:.0f}s "
+                    f"(raw probe duration {info.duration:.6f}s): {video_path}"
                 )
                 entry["error"] = message
                 _add_issue(report, "errors", "clip_out_of_bounds", message)
