@@ -121,12 +121,6 @@ def save_feature_sequence(
     _validate_arrays(features, timestamps)
     metadata["features_sha256"] = _array_digest(features, timestamps)
 
-    target = Path(cache_dir) / (
-        hashlib.sha256(
-            json.dumps(metadata | {"features_sha256": None}, sort_keys=True,
-                       separators=(",", ":"), allow_nan=False).encode("utf-8")
-        ).hexdigest() + ".npz"
-    )
     # Keep the path based on extraction identity, not output contents.
     _, identity_key = _identity(
         video_path, clip, sample_fps=sample_fps,
