@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from autocut.audio.analysis import AudioAnalysis
-from autocut.audio.cache import (
+from autocut.audio.audio_cache import (
     AUDIO_CACHE_VERSION,
     audio_cache_path,
     load_cached_audio,
