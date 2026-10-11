@@ -359,3 +359,28 @@ def test_feature_sequence_rejects_fewer_than_two_samples(
             features=features,
             timestamps=timestamps,
         )
+
+
+def test_build_feature_sequence_returns_compatible_cache_hit(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compatible cache hit avoids reopening and reprocessing the source video."""
+    from autocut.dataset.feature_cache import save_feature_sequence
+
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"source video bytes")
+    cache_dir = tmp_path / "features"
+    clip = Clip(video_name="ride", start=1.0, end=3.0)
+    expected = FeatureSequence(
+        features=np.ones((3, 54), dtype=np.float32),
+        timestamps=np.asarray([1.5, 2.0, 2.5], dtype=np.float64),
+    )
+    save_feature_sequence(expected, video, cache_dir, clip)
+
+    def unexpected_reader(*args, **kwargs):
+        raise AssertionError("VideoReader should not be used for a cache hit")
+
+    monkeypatch.setattr("autocut.dataset.sequence.VideoReader", unexpected_reader)
+    actual = build_feature_sequence(video, clip, cache_dir=cache_dir)
+    np.testing.assert_array_equal(actual.features, expected.features)
+    np.testing.assert_array_equal(actual.timestamps, expected.timestamps)
