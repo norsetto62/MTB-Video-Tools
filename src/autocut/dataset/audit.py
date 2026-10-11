@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from .manifest import DatasetRecord, load_manifest
 from ..annotations import load_annotations, load_training_annotations
 from ..config_loader import RunConfig
 from ..video.probe import get_video_info
@@ -37,7 +38,13 @@ def _add_issue(report: dict[str, Any], severity: str, code: str, message: str) -
     report[severity].append({"code": code, "message": message})
 
 
-def _load_manifest(path: Path) -> list[dict[str, Any]]:
+def _load_manifest_legacy(path: Path) -> list[dict[str, Any]]:
+    """Load raw entries for audit diagnostics when strict parsing fails.
+
+    The audit historically reports malformed individual entries inside its
+    JSON report instead of failing before a report can be produced. Keep that
+    behavior as a fallback; valid manifests go through the shared typed loader.
+    """
     try:
         with path.open("r", encoding="utf-8-sig") as stream:
             document = yaml.safe_load(stream)
@@ -55,6 +62,26 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
         if not isinstance(item, Mapping):
             raise ValueError(f"Manifest videos[{index - 1}] must be a mapping")
     return [dict(item) for item in videos]
+
+
+def _load_manifest(path: Path) -> list[dict[str, Any]]:
+    """Use typed records for valid manifests, preserving audit's error fallback."""
+    try:
+        records = load_manifest(path, prefer_cwd=True)
+    except (ValueError, OSError):
+        # Invalid manifests still need the audit's established per-entry
+        # diagnostics and report structure, so retain the tolerant legacy path.
+        return _load_manifest_legacy(path)
+
+    return [
+        {
+            "id": record.id,
+            "group_id": record.group_id,
+            "video": str(record.video_path),
+            "annotation": str(record.annotation_path),
+        }
+        for record in records
+    ]
 
 
 def _read_split_config(path: Path, report: dict[str, Any], manifest_groups: set[str]) -> None:
