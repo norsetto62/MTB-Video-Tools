@@ -162,6 +162,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments and arguments[0] not in COMMANDS and arguments[0] not in {"-h", "--help"}:
         arguments.insert(0, "run")
+    # Pass pytest's arguments through untouched: argparse subparsers otherwise
+    # reject flags such as -q before a REMAINDER positional can capture them.
+    if arguments and arguments[0] == "test":
+        return _run_tests(arguments[1:])
+
     parser = build_parser()
     args = parser.parse_args(arguments)
     try:
