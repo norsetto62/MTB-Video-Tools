@@ -82,8 +82,8 @@ config.yaml is optional and used for configuration, while retaining the existing
 
 For example:
 
-"""
-\# config.yaml
+```yaml
+# config.yaml
 
 paths:
   data_dir: data
@@ -112,7 +112,7 @@ audio:
 
 logging:
   level: INFO
-"""
+```
 
 1. One configuration file per invocation. All tunable parameters live in YAML, not in a long list of command-line flags.
 2. Sensible defaults. The user should not have to specify values that are already defined by the application.
@@ -125,20 +125,26 @@ logging:
 One small exception is useful: autocut --help and autocut MODE --help should work without requiring an input or configuration file. That doesn't compromise the clean interface.
 
 
+## AutoCut orchestration
+
+```mermaid
 flowchart TD
     A["CLI: mode + input + YAML"] --> B["Load and validate YAML"]
     B --> C["Build typed configuration objects"]
     C --> D{"Mode"}
+
     D -->|run| E["Main video pipeline"]
     D -->|audit| F["Audit orchestration"]
     D -->|train| G["Dataset + training orchestration"]
     D -->|validate| H["Video-level evaluation"]
     D -->|lovo| I["Repeated holdout orchestration"]
-    D -->|test| J["pytest runner"]
+    D -->|test| J["Run pytest"]
     D -->|models| K["Checkpoint inspection"]
+
     E --> L["Features → inference → candidates"]
     L --> M["Selection → timeline"]
     M --> N["Optional audio → rendering"]
+```
 
 ## 13
 
