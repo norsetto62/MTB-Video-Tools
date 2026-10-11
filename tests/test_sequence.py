@@ -111,7 +111,7 @@ def test_build_feature_sequence_from_clip(monkeypatch: pytest.MonkeyPatch) -> No
                 dtype=np.float32,
             )
 
-    def fake_calculate_optical_flow(previous_gray, current_gray):
+    def fake_calculate_optical_flow(previous_gray, current_gray, config=None):
         return object()
 
     monkeypatch.setattr(
