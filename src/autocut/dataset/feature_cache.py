@@ -118,7 +118,7 @@ def save_feature_sequence(
     )
     features = np.asarray(sequence.features)
     timestamps = np.asarray(sequence.timestamps)
-    _validate_arrays(features, timestamps)
+    _validate_arrays(features, timestamps, clip=clip)
     metadata["features_sha256"] = _array_digest(features, timestamps)
 
     # Keep the path based on extraction identity, not output contents.
@@ -149,7 +149,12 @@ def save_feature_sequence(
     return target
 
 
-def _validate_arrays(features: np.ndarray, timestamps: np.ndarray) -> None:
+def _validate_arrays(
+    features: np.ndarray,
+    timestamps: np.ndarray,
+    *,
+    clip: Clip | None = None,
+) -> None:
     """Reject malformed feature arrays before writing or constructing a model input."""
     if features.ndim != 2 or features.shape[1] != len(FEATURE_NAMES) or features.shape[0] < 2:
         raise ValueError(
@@ -166,6 +171,10 @@ def _validate_arrays(features: np.ndarray, timestamps: np.ndarray) -> None:
         raise ValueError("cached features and timestamps must be finite.")
     if not np.all(np.diff(timestamps) > 0):
         raise ValueError("cached timestamps must be strictly increasing.")
+    if clip is not None and (
+        timestamps[0] <= clip.start or timestamps[-1] > clip.end + 1e-6
+    ):
+        raise ValueError("cached timestamps must lie within the clip interval.")
 
 
 def load_feature_sequence(
@@ -198,7 +207,7 @@ def load_feature_sequence(
         digest = metadata.pop("features_sha256", None)
         if metadata != expected or not isinstance(digest, str):
             return None
-        _validate_arrays(features, timestamps)
+        _validate_arrays(features, timestamps, clip=clip)
         if _array_digest(features, timestamps) != digest:
             return None
         return FeatureSequence(
