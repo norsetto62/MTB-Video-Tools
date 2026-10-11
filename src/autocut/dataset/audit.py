@@ -14,7 +14,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from .manifest import DatasetRecord, load_manifest
+from .manifest import load_manifest
 from ..annotations import load_annotations, load_training_annotations
 from ..config_loader import RunConfig
 from ..video.probe import get_video_info
