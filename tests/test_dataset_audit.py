@@ -216,3 +216,55 @@ def test_annotation_bounds_still_reject_more_than_rounded_second(tmp_path, monke
         manifest, _run_config(tmp_path), training_config=split_config
     )
     assert any("rounded video duration" in issue["message"] for issue in report["errors"])
+
+
+
+def test_manifest_audit_preserves_legacy_cwd_relative_path_resolution(
+    tmp_path: Path, monkeypatch
+):
+    manifest_dir = tmp_path / "manifest_dir"
+    cwd_dir = tmp_path / "working_dir"
+    manifest_dir.mkdir()
+    cwd_dir.mkdir()
+
+    manifest_video = manifest_dir / "ride.mp4"
+    manifest_annotation = manifest_dir / "ride.txt"
+    cwd_video = cwd_dir / "ride.mp4"
+    cwd_annotation = cwd_dir / "ride.txt"
+    for path in (manifest_video, manifest_annotation, cwd_video, cwd_annotation):
+        path.touch()
+
+    manifest = manifest_dir / "manifest.yaml"
+    manifest.write_text(
+        yaml.safe_dump({"videos": [{
+            "id": "ride",
+            "group_id": "session-a",
+            "video": "ride.mp4",
+            "annotation": "ride.txt",
+        }]}),
+        encoding="utf-8",
+    )
+    split_config = tmp_path / "train.yaml"
+    split_config.write_text(
+        "data:\\n  train_groups: []\\n  validation_groups: []\\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(cwd_dir)
+    monkeypatch.setattr(
+        audit_module,
+        "get_video_info",
+        lambda _: VideoInfo(width=640, height=360, fps=30.0, duration=10.0),
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "load_training_annotations",
+        lambda _: (cwd_video, [Annotation(0.0, 10.0, 2, "")]),
+    )
+
+    report = audit_manifest(
+        manifest, _run_config(tmp_path), training_config=split_config
+    )
+
+    assert report["videos"][0]["video"] == str(cwd_video.resolve())
+    assert report["videos"][0]["annotation"] == str(cwd_annotation.resolve())
