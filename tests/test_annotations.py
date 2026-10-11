@@ -694,3 +694,38 @@ def test_training_touching_annotations_are_allowed(tmp_path):
     assert len(annotations) == 2
     assert annotations[0].end == 20.0
     assert annotations[1].start == 20.0
+
+
+def test_audio_path_with_spaces_and_apostrophe_is_parsed(tmp_path):
+    video = create_video(tmp_path, "DJI_20250923122005_0005_D.MP4")
+    audio = create_audio(tmp_path, "Don't Worry, Ride Happy.mp3")
+    annotation_file = write_annotation_file(
+        tmp_path,
+        f"{audio.name}\\n"
+        f"{video.name}\\n"
+        "01:07 01:23\\n"
+        "01:28 01:42\\n"
+        "05:18 05:42\\n",
+    )
+
+    clips, audio_config = load_annotations(annotation_file)
+
+    assert audio_config == AudioConfig(path=str(audio.resolve()), mix=False)
+    assert len(clips) == 3
+    assert all(clip.video_name == str(video.resolve()) for clip in clips)
+    assert [(clip.start, clip.end) for clip in clips] == [
+        (67.0, 83.0),
+        (88.0, 102.0),
+        (318.0, 342.0),
+    ]
+
+
+def test_audio_path_with_spaces_and_apostrophe_supports_mix_marker(tmp_path):
+    audio = create_audio(tmp_path, "Don't Worry, Ride Happy.mp3")
+    annotation_file = write_annotation_file(
+        tmp_path,
+        f"{audio.name} *\\n",
+    )
+
+    with pytest.raises(ValueError, match="source video path not found"):
+        load_annotations(annotation_file)
