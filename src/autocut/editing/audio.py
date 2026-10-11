@@ -132,10 +132,8 @@ def mix_music(
     output = Path(output_path)
     if not isinstance(config, AudioConfig):
         raise TypeError("config must be an AudioConfig instance.")
-    if not video.is_file():
-        raise FileNotFoundError(f"Rendered video not found: {video}")
-    if not music.is_file():
-        raise FileNotFoundError(f"Music file not found: {music}")
+    # Let FFmpeg diagnose missing/unreadable inputs: its stderr includes the
+    # decoder and stream context that is most useful when troubleshooting.
     if video.resolve() == output.resolve() or music.resolve() == output.resolve():
         raise ValueError("Output path must differ from the input paths.")
     output.parent.mkdir(parents=True, exist_ok=True)
