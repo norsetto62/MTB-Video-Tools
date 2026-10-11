@@ -108,7 +108,7 @@ def analyze_audio(
 ) -> AudioAnalysis:
     """Analyze a music file into beat, approximate measure, and onset grids.
 
-    Cache support is delegated to :mod:`autocut.audio.cache`. Cache failures
+    Cache support is delegated to :mod:`autocut.audio.audio_cache`. Cache failures
     are non-fatal for analysis; an unreadable source file is not.
     """
     path = Path(music_path)
@@ -119,7 +119,7 @@ def analyze_audio(
     cache_module = None
     if use_cache and cache_dir is not None:
         try:
-            from . import cache as cache_module
+            from . import audio_cache as cache_module
 
             cached = cache_module.load_cached_audio(path, cache_dir)
             if cached is not None:
@@ -177,7 +177,7 @@ def analyze_audio(
     if cache_dir is not None:
         try:
             if cache_module is None:
-                from . import cache as cache_module
+                from . import audio_cache as cache_module
             digest = cache_module.music_file_hash(path)
         except (ImportError, OSError):
             digest = None
@@ -206,7 +206,7 @@ def analyze_audio(
     if use_cache and cache_dir is not None:
         try:
             if cache_module is None:
-                from . import cache as cache_module
+                from . import audio_cache as cache_module
             cache_module.save_cached_audio(result, cache_dir)
         except (ImportError, OSError):
             # The analysis remains valid even if cache storage is unavailable.
