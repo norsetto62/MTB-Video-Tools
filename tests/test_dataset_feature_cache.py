@@ -1,0 +1,119 @@
+"""Contract tests for the versioned motion-feature cache."""
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from autocut.data_models import Clip, FeatureSequence
+from autocut.dataset.feature_cache import (
+    FEATURE_CACHE_VERSION,
+    feature_cache_path,
+    load_feature_sequence,
+    save_feature_sequence,
+)
+from autocut.motion.features import FEATURE_NAMES
+from autocut.motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
+
+
+def _fixture(tmp_path: Path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    clip = Clip(video_name="ride", start=1.0, end=3.0)
+    sequence = FeatureSequence(
+        features=np.arange(3 * len(FEATURE_NAMES), dtype=np.float32).reshape(3, -1),
+        timestamps=np.asarray([1.5, 2.0, 2.5], dtype=np.float64),
+    )
+    cache_dir = tmp_path / "feature-cache"
+    return video, clip, sequence, cache_dir
+
+
+def test_feature_cache_round_trip_and_deterministic_path(tmp_path):
+    video, clip, expected, cache_dir = _fixture(tmp_path)
+    first_path = feature_cache_path(video, cache_dir, clip)
+    assert first_path == feature_cache_path(video, cache_dir, clip)
+    save_feature_sequence(expected, video, cache_dir, clip)
+    assert first_path.is_file()
+    actual = load_feature_sequence(video, cache_dir, clip)
+    assert actual is not None
+    np.testing.assert_array_equal(actual.features, expected.features)
+    np.testing.assert_array_equal(actual.timestamps, expected.timestamps)
+
+
+def test_feature_cache_misses_when_source_content_changes(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    save_feature_sequence(sequence, video, cache_dir, clip)
+    video.write_bytes(b"changed video bytes")
+    assert load_feature_sequence(video, cache_dir, clip) is None
+
+
+def test_feature_cache_key_includes_clip_and_extraction_settings(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    save_feature_sequence(sequence, video, cache_dir, clip)
+    assert load_feature_sequence(
+        video, cache_dir, Clip(video_name="ride", start=0.0, end=3.0)
+    ) is None
+    assert load_feature_sequence(
+        video, cache_dir, clip, sample_fps=4.0
+    ) is None
+    assert load_feature_sequence(
+        video, cache_dir, clip, processing_width=640
+    ) is None
+    changed_flow = FarnebackConfig(winsize=19)
+    assert load_feature_sequence(video, cache_dir, clip, flow_config=changed_flow) is None
+
+
+def test_feature_cache_rejects_incompatible_version(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    path = save_feature_sequence(sequence, video, cache_dir, clip)
+    with np.load(path, allow_pickle=False) as archive:
+        payload = {name: archive[name] for name in archive.files}
+    metadata = json.loads(str(payload["metadata"].item()))
+    metadata["cache_version"] = FEATURE_CACHE_VERSION + 1
+    payload["metadata"] = np.asarray(json.dumps(metadata))
+    np.savez_compressed(path, **payload)
+    assert load_feature_sequence(video, cache_dir, clip) is None
+
+
+def test_feature_cache_rejects_corrupt_arrays_even_if_metadata_is_intact(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    path = save_feature_sequence(sequence, video, cache_dir, clip)
+    with np.load(path, allow_pickle=False) as archive:
+        payload = {name: archive[name] for name in archive.files}
+    payload["features"] = payload["features"].copy()
+    payload["features"][0, 0] += 1.0
+    np.savez_compressed(path, **payload)
+    assert load_feature_sequence(video, cache_dir, clip) is None
+
+
+@pytest.mark.parametrize(
+    ("features", "timestamps"),
+    [
+        (np.zeros((3, 53), dtype=np.float32), np.asarray([1.0, 2.0, 3.0], dtype=np.float64)),
+        (np.full((3, 54), np.nan, dtype=np.float32), np.asarray([1.0, 2.0, 3.0], dtype=np.float64)),
+        (np.zeros((3, 54), dtype=np.float32), np.asarray([1.0, 1.0, 3.0], dtype=np.float64)),
+    ],
+)
+def test_save_rejects_invalid_arrays(tmp_path, features, timestamps):
+    video, clip, _, cache_dir = _fixture(tmp_path)
+    with pytest.raises(ValueError):
+        save_feature_sequence(
+            FeatureSequence(features=features, timestamps=timestamps),
+            video, cache_dir, clip,
+        )
+
+
+def test_feature_cache_uses_atomic_replace(tmp_path, monkeypatch):
+    video, clip, expected, cache_dir = _fixture(tmp_path)
+    real_replace = Path.replace
+    replaced = []
+
+    def track_replace(self, target):
+        replaced.append(Path(target))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", track_replace)
+    path = save_feature_sequence(expected, video, cache_dir, clip)
+    assert replaced == [path]
+    assert load_feature_sequence(video, cache_dir, clip) is not None
