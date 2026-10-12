@@ -49,7 +49,10 @@ def _manifest(path: Path, tmp_path: Path):
         video = tmp_path / f"{video_id}.mp4"
         annotation = tmp_path / f"{video_id}.txt"
         video.touch()
-        annotation.touch()
+        annotation.write_text(
+            f"{video.name}\\nStart End MTB Remarks\\n00:00:00 00:00:10 1 sample\\n",
+            encoding="utf-8",
+        )
         entries.append(
             f"  - id: {video_id}\n    group_id: {group}\n"
             f"    video: {video.name}\n    annotation: {annotation.name}"
