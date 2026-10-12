@@ -58,11 +58,14 @@ def _load_record_windows(
     logger.info("Record %s: probing video metadata", record.id)
     info = get_video_info(record.video_path)
     clip_end = annotations[-1].end
-    if clip_end > info.duration + 1e-6:
+    duration_tolerance = 0.05
+
+    if clip_end > info.duration + duration_tolerance:
         raise ValueError(
             f"Annotation end ({clip_end:.3f}s) exceeds video duration "
             f"({info.duration:.3f}s) for manifest entry {record.id!r}."
         )
+    
     from .data_models import Clip
     clip = Clip(video_name=record.id, start=0.0, end=min(clip_end, info.duration))
     logger.info(
