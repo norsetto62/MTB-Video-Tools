@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+import time
 
 import cv2
 import numpy as np
@@ -13,6 +15,8 @@ from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig, calculate_optical_
 from .feature_cache import load_feature_sequence, save_feature_sequence
 from ..video.reader import VideoReader
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SAMPLE_FPS = 2.0
 DEFAULT_PROCESSING_WIDTH = 480
@@ -61,7 +65,9 @@ def build_feature_sequence(
     if clip.end <= clip.start:
         raise ValueError("clip end must be greater than clip start.")
 
+    started = time.perf_counter()
     if cache_dir is not None:
+        logger.info("Feature cache lookup: %s", video_path)
         cached = load_feature_sequence(
             video_path, cache_dir, clip,
             sample_fps=sample_fps,
@@ -69,13 +75,21 @@ def build_feature_sequence(
             flow_config=flow_config,
         )
         if cached is not None:
+            logger.info("Feature cache hit: %s (%d rows)", video_path, len(cached.features))
             return cached
+        logger.info("Feature cache miss: %s; decoding video", video_path)
 
     feature_vectors: list[np.ndarray] = []
     timestamps: list[float] = []
 
     extractor: FeatureExtractor | None = None
     previous_gray: np.ndarray | None = None
+    sampled_frames = 0
+    expected_frames = max(1, int(np.ceil(clip.duration * sample_fps)))
+    logger.info(
+        "Extracting motion features: %s (about %d sampled frames)",
+        video_path, expected_frames,
+    )
 
     with VideoReader(
         video_path,
@@ -85,6 +99,14 @@ def build_feature_sequence(
     ) as reader:
 
         for _, relative_timestamp, frame in reader:
+            sampled_frames += 1
+            if sampled_frames == 1 or sampled_frames % 100 == 0:
+                logger.info(
+                    "Feature extraction %s: %d/%d sampled frames (%.0f%%, %.1fs elapsed)",
+                    video_path, sampled_frames, expected_frames,
+                    min(100.0, 100.0 * sampled_frames / expected_frames),
+                    time.perf_counter() - started,
+                )
             processed = _prepare_frame(
                 frame,
                 processing_width=processing_width,
@@ -142,6 +164,10 @@ def build_feature_sequence(
     sequence = FeatureSequence(
         features=features,
         timestamps=timestamp_array,
+    )
+    logger.info(
+        "Feature extraction complete: %s (%d rows from %d sampled frames in %.1fs)",
+        video_path, len(features), sampled_frames, time.perf_counter() - started,
     )
     if cache_dir is not None:
         save_feature_sequence(
