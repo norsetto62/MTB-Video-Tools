@@ -167,6 +167,12 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
+        if args.command == "train":
+            from .pipeline_training import run_training
+
+            result = run_training(manifest, settings)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
         return _unimplemented(args.command)
 
     print(f"Unsupported command: {args.command}", file=sys.stderr)
