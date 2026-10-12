@@ -10,6 +10,7 @@ from dataclasses import asdict
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,8 @@ def _load_record_windows(
     settings: TrainingRunConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Extract annotated training windows for one manifest record."""
+    record_started = time.perf_counter()
+    logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
     video_path, annotations = load_training_annotations(record.annotation_path)
     if video_path.resolve() != record.video_path.resolve():
         raise ValueError(
@@ -52,6 +55,7 @@ def _load_record_windows(
     # clip from 0 to the last annotation end keeps timestamps aligned with the
     # absolute annotation times and lets VideoReader enforce the clip bounds.
     from .video.probe import get_video_info
+    logger.info("Record %s: probing video metadata", record.id)
     info = get_video_info(record.video_path)
     clip_end = annotations[-1].end
     if clip_end > info.duration + 1e-6:
@@ -61,6 +65,11 @@ def _load_record_windows(
         )
     from .data_models import Clip
     clip = Clip(video_name=record.id, start=0.0, end=min(clip_end, info.duration))
+    logger.info(
+        "Record %s: extracting motion features (%.1fs clip at %.2f fps; cache %s)",
+        record.id, clip.duration, settings.sample_fps,
+        "enabled" if settings.cache_dir is not None else "disabled",
+    )
     sequence = build_feature_sequence(
         record.video_path,
         clip,
@@ -68,6 +77,7 @@ def _load_record_windows(
         processing_width=settings.processing_width,
         cache_dir=settings.cache_dir,
     )
+    logger.info("Record %s: extracted %d feature rows; building windows", record.id, len(sequence.features))
     windows = build_windows(
         sequence,
         window=settings.common.window_duration,
@@ -87,6 +97,10 @@ def _load_record_windows(
         raise ValueError(
             f"No feature windows overlap annotations for manifest entry {record.id!r}."
         )
+    logger.info(
+        "Record %s: ready (%d labelled windows) in %.1fs",
+        record.id, len(X), time.perf_counter() - record_started,
+    )
     return X, y
 
 
@@ -99,8 +113,9 @@ def _combine_records(
     targets: list[np.ndarray] = []
     for index, record in enumerate(records, start=1):
         logger.info(
-            "Preparing training data %d/%d: %s (group %s)",
-            index, len(records), record.id, record.group_id,
+            "Preparing %s data: video %d/%d (%.0f%%): %s (group %s)",
+            "split", index, len(records), 100.0 * index / len(records),
+            record.id, record.group_id,
         )
         X, y = _load_record_windows(record, settings)
         features.append(X)
@@ -138,8 +153,12 @@ def run_training(
         "Training experiment %r with %d training videos and %d validation videos.",
         settings.experiment_name, len(train_records), len(val_records),
     )
+    logger.info("Preparing training split: 0/%d videos", len(train_records))
     train_X, train_y = _combine_records(train_records, settings)
+    logger.info("Training data ready: %d labelled windows from %d videos", len(train_X), len(train_records))
+    logger.info("Preparing validation split: 0/%d videos", len(val_records))
     val_X, val_y = _combine_records(val_records, settings)
+    logger.info("Validation data ready: %d labelled windows from %d videos", len(val_X), len(val_records))
 
     slug = _experiment_slug(settings.experiment_name)
     checkpoint_path = settings.checkpoint_dir / f"{slug}_best.pt"
