@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import tempfile
@@ -20,6 +21,8 @@ from ..motion.features import FEATURE_NAMES
 from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
 
 
+logger = logging.getLogger(__name__)
+
 FEATURE_CACHE_VERSION = 1
 FEATURE_SCHEMA_VERSION = 1
 _ARRAY_FORMAT_VERSION = 1
@@ -27,10 +30,27 @@ _ARRAY_FORMAT_VERSION = 1
 
 def source_file_hash(path: str | Path) -> str:
     """Return a SHA-256 digest of the complete source-file contents."""
+    source = Path(path).expanduser()
     digest = hashlib.sha256()
-    with Path(path).expanduser().open("rb") as stream:
+    total_bytes = source.stat().st_size
+    bytes_read = 0
+    next_report = 256 * 1024 * 1024
+    with source.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+            bytes_read += len(chunk)
+            if bytes_read >= next_report and bytes_read < total_bytes:
+                logger.info(
+                    "Hashing video for feature-cache validation: %s (%.1f/%.1f GiB, %.0f%%)",
+                    source, bytes_read / (1024 ** 3), total_bytes / (1024 ** 3),
+                    100.0 * bytes_read / max(total_bytes, 1),
+                )
+                next_report = ((bytes_read // (256 * 1024 * 1024)) + 1) * (256 * 1024 * 1024)
+    if total_bytes >= 256 * 1024 * 1024:
+        logger.info(
+            "Video hash complete for feature cache: %s (%.1f GiB)",
+            source, total_bytes / (1024 ** 3),
+        )
     return digest.hexdigest()
 
 
