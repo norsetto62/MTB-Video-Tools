@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from autocut.ml.checkpoint import save_checkpoint
 from autocut.ml.model import MTBClassifier
 from autocut.ml.scaling import FeatureScaler
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -277,6 +280,11 @@ def train_single_fold(
                 "val_macro_f1": val_f1,
             })
 
+            logger.info(
+                "Epoch %d/%d: train_loss=%.5f val_loss=%.5f val_macro_f1=%.4f%s",
+                epoch, config.epochs, train_loss, val_loss, val_f1,
+                " (new best)" if best_state is None or val_loss < best_loss - config.min_delta else "",
+            )
             if not math.isfinite(val_loss) or not math.isfinite(val_f1):
                 raise RuntimeError(f"Non-finite validation metric at epoch {epoch}.")
             if best_state is None or val_loss < best_loss - config.min_delta:
