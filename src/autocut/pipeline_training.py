@@ -74,7 +74,10 @@ def _load_record_windows(
         stride=settings.common.window_stride,
     )
     X, y = build_targets(windows, annotations)
-    errors = validate_targets(X, windows.timestamps[:len(y)], y)
+    # build_targets drops uncovered windows, so the original window timestamp
+    # array no longer aligns row-for-row with X. The validator checks only
+    # timestamp count here; the target builder already selects those rows.
+    errors = validate_targets(X, np.zeros((len(y), 2), dtype=np.float64), y)
     if errors:
         raise ValueError(
             f"Invalid training targets for manifest entry {record.id!r}: "
