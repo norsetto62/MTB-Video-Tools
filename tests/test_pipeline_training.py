@@ -50,7 +50,7 @@ def _manifest(path: Path, tmp_path: Path):
         annotation = tmp_path / f"{video_id}.txt"
         video.touch()
         annotation.write_text(
-            f"{video.name}\\nStart End MTB Remarks\\n00:00:00 00:00:10 1 sample\\n",
+            f"{video.name}\nStart End MTB Remarks\n00:00:00 00:00:10 1 sample\n",
             encoding="utf-8",
         )
         entries.append(
