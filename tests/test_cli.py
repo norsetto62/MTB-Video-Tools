@@ -33,3 +33,27 @@ def test_test_command_forwards_pytest_arguments(monkeypatch):
     assert main(["test", "-q", "tests/test_config.py"]) == 7
     assert captured["command"][-2:] == ["-q", "tests/test_config.py"]
     assert captured["check"] is False
+
+
+def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("videos: []\\n", encoding="utf-8")
+    settings = SimpleNamespace(
+        common=SimpleNamespace(log_level="INFO"),
+        manifest=manifest,
+    )
+    monkeypatch.setattr("autocut.config_loader.load_training_config", lambda path: settings)
+    captured = {}
+
+    def fake_run_lovo(path, loaded_settings):
+        captured["manifest"] = path
+        captured["settings"] = loaded_settings
+        return {"fold_count": 3}
+
+    monkeypatch.setattr("autocut.pipeline_lovo.run_lovo", fake_run_lovo)
+    assert main(["lovo", str(manifest), "--config", str(tmp_path / "train.yaml")]) == 0
+    assert captured["manifest"] == manifest
+    assert captured["settings"] is settings
+    assert '"fold_count": 3' in capsys.readouterr().out
