@@ -133,7 +133,7 @@ def run_lovo(
     prepared_records: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for record_index, record in enumerate(records, start=1):
         logger.info("Preparing LOVO record %d/%d: %s (group %s)", record_index, len(records), record.id, record.group_id)
-        prepared_records[record.id] = _combine_prepared_records((record,), prepared_records)
+        prepared_records[record.id] = _combine_records((record,), settings)
 
     folds: list[dict[str, Any]] = []
     pooled_actual: list[np.ndarray] = []
@@ -174,7 +174,7 @@ def run_lovo(
         outer_X, outer_y = _combine_prepared_records(outer_train_records, prepared_records)
         # Keep record boundaries for interpretable out-of-fold predictions.
         test_parts = [
-            (record, *_combine_records((record,), settings))
+            (record, *_combine_prepared_records((record,), prepared_records))
             for record in test_records
         ]
         test_X = np.concatenate([part[1] for part in test_parts], axis=0)
