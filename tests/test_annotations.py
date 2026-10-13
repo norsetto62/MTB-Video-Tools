@@ -9,7 +9,7 @@ from autocut.annotations import (
     load_training_annotations,
 )
 
-from autocut.data_models import Annotation, Clip, AudioConfig
+from autocut.data_models import Annotation, Clip, AudioConfig, VideoInfo
 
 
 def write_annotation_file(
@@ -96,6 +96,42 @@ def test_subsequent_intervals_use_previous_video(tmp_path):
         clip.video_name == str(video.resolve())
         for clip in clips
     )
+
+
+def test_video_without_intervals_defaults_to_whole_video(tmp_path, monkeypatch):
+    video = create_video(tmp_path)
+    annotation_file = write_annotation_file(tmp_path, f"{video.name}\n")
+
+    monkeypatch.setattr(
+        "autocut.video.probe.get_video_info",
+        lambda path: VideoInfo(width=1920, height=1080, fps=30.0, duration=123.5),
+    )
+
+    clips, audio = load_annotations(annotation_file)
+
+    assert audio is None
+    assert clips == [
+        Clip(
+            video_name=str(video.resolve()),
+            start=0.0,
+            end=123.5,
+            mandatory=False,
+        )
+    ]
+
+
+def test_video_with_only_too_short_interval_does_not_default_to_whole_video(
+    tmp_path, monkeypatch
+):
+    video = create_video(tmp_path)
+    annotation_file = write_annotation_file(
+        tmp_path,
+        f"{video.name}\n00:10 00:12\n",
+    )
+
+    clips, _ = load_annotations(annotation_file, min_clip=3.0)
+
+    assert clips == []
 
 
 # ---------------------------------------------------------------------------
