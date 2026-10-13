@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from autocut.data_models import VideoInfo
 from autocut.pipeline import run
 from autocut.selection.timeline import Timeline
+from autocut.selection.candidates_generation import CandidateGenerationConfig
 
 
 def test_merge_ranges_merges_touching_and_overlapping_intervals():
@@ -14,7 +15,7 @@ def test_merge_ranges_merges_touching_and_overlapping_intervals():
         SimpleNamespace(start=4.5, end=7.0),
         SimpleNamespace(start=12.0, end=13.0),
     ]
-    assert run._merge_ranges(clips) == [(1.0, 10.0), (12.0, 13.0)]
+    assert run._merge_ranges(clips) == [(1.0, 7.0), (8.0, 10.0), (12.0, 13.0)]
 
 
 def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
@@ -41,7 +42,7 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
         inference_batch_size=16,
         target_duration=10.0,
         max_clip_duration=0.0,
-        candidates=object(),
+        candidates=CandidateGenerationConfig(),
         audio=SimpleNamespace(
             sync_mode=SimpleNamespace(value="off"),
             max_clip_duration=0.0,
