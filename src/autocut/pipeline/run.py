@@ -202,9 +202,15 @@ def run_pipeline(
     if not settings.checkpoint.is_file():
         raise FileNotFoundError(f"Model checkpoint not found: {settings.checkpoint}")
 
+    destination = (
+        Path(output_path)
+        if output_path is not None
+        else settings.common.output_dir / f"{annotation.stem}_autocut.mp4"
+    )
     logger.info("AutoCut run starting.")
     logger.info("Annotation manifest: %s", annotation.resolve())
     logger.info("Model checkpoint: %s", settings.checkpoint.resolve())
+    logger.info("Planned output: %s", destination.resolve())
 
     clips, music_directive = load_annotations(
         annotation,
@@ -341,11 +347,6 @@ def run_pipeline(
             cache_dir=settings.cache_dir / "audio",
         )
 
-    destination = (
-        Path(output_path)
-        if output_path is not None
-        else settings.common.output_dir / f"{annotation.stem}_autocut.mp4"
-    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Rendering %d timeline clip(s) to %s.", len(timeline.clips), destination.resolve())
     if music_directive is None:
