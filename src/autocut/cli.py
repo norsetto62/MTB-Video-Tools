@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Evaluate a configured holdout split.")
     validate.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     validate.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    validate.add_argument("--checkpoint", type=Path, required=True, help="Saved model checkpoint.")
+    validate.add_argument("--group", required=True, help="Manifest group to evaluate.")
+    validate.add_argument("--output", type=Path, help="Prediction JSON path (default: results directory).")
+    validate.add_argument("--batch-size", type=int, default=256, help="Inference batch size.")
 
     test = subparsers.add_parser(
         "test",
@@ -171,6 +175,19 @@ def dispatch(args: argparse.Namespace) -> int:
             from .pipeline_training import run_training
 
             result = run_training(manifest, settings)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
+        if args.command == "validate":
+            from .pipeline_validation import run_validation
+
+            result = run_validation(
+                manifest,
+                settings,
+                checkpoint_path=args.checkpoint,
+                group_id=args.group,
+                output_path=args.output,
+                batch_size=args.batch_size,
+            )
             print(json.dumps(result, indent=2, default=str))
             return 0
         return _unimplemented(args.command)
