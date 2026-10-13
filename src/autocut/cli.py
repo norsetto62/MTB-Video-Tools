@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="Generate a highlight edit.")
     run.add_argument("annotations", type=Path, help="Annotation TXT file.")
     run.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
+    run.add_argument("--output", type=Path, help="Output video path (default: output/<annotations>_autocut.mp4).")
 
     audit = subparsers.add_parser("audit", help="Audit annotations and derived data.")
     audit.add_argument("source", type=Path, help="Annotation TXT or dataset manifest.")
@@ -154,13 +155,16 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "run":
         from .config_loader import load_run_config
+        from .pipeline.run import run_pipeline
 
         settings = load_run_config(args.config)
         _configure_logging(settings.common.log_level)
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
-        return _unimplemented(args.command)
+        result = run_pipeline(args.annotations, settings, output_path=args.output)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
 
     if args.command in {"train", "validate", "lovo"}:
         from .config_loader import load_training_config
