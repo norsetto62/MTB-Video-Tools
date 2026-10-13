@@ -37,6 +37,8 @@ def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
     return {
         "windows": int(len(actual)),
         "accuracy": float(np.mean(actual == predicted)),
+        # For single-label multiclass classification, micro-F1 equals accuracy.
+        "micro_f1": float(np.mean(actual == predicted)),
         "macro_f1": float(np.mean(class_f1)),
         "class_f1": {str(i): class_f1[i] for i in range(3)},
         "confusion_matrix": confusion,
@@ -244,6 +246,7 @@ def run_lovo(
             "micro": pooled_metrics,
             "macro_group_mean": {
                 "accuracy": float(np.mean([f["metrics"]["accuracy"] for f in folds])),
+                "micro_f1": float(np.mean([f["metrics"]["micro_f1"] for f in folds])),
                 "macro_f1": float(np.mean([f["metrics"]["macro_f1"] for f in folds])),
             },
             "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group scores.",
