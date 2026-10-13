@@ -349,7 +349,7 @@ def audit_production_annotations(source: str | Path, settings: RunConfig) -> dic
         "errors": [],
         "warnings": [],
     }
-    clips, audio = load_annotations(path, settings.common)
+    clips, audio = load_annotations(path, min_clip=settings.common.min_clip)
     durations: dict[str, float] = {}
     for clip in clips:
         video_path = Path(clip.video_name)
