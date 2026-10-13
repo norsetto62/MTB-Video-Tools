@@ -9,8 +9,6 @@ from autocut.annotations import (
     load_training_annotations,
 )
 
-from autocut.config import Config
-
 from autocut.data_models import Annotation, Clip, AudioConfig
 
 
@@ -156,13 +154,10 @@ def test_mandatory_short_interval_is_kept(
         "ride.mp4 00:10 00:11 *\n",
         encoding="utf-8",
     )
-
-    config = Config(min_clip=3.0)
-
     with caplog.at_level(logging.WARNING):
         clips, audio = load_annotations(
             annotation_file,
-            config,
+            min_clip=3.0,
         )
 
     assert audio is None
@@ -297,13 +292,10 @@ def test_short_clip_is_skipped_and_warning_is_logged(
         "00:10 00:12\n"
         "00:20 00:30\n",
     )
-
-    config = Config(min_clip=3.0)
-
     with caplog.at_level(logging.WARNING):
         clips, _ = load_annotations(
             annotation_file,
-            config=config,
+            min_clip=3.0,
         )
 
     assert len(clips) == 1
@@ -322,12 +314,9 @@ def test_clip_at_minimum_duration_is_kept(tmp_path):
         f"{video.name}\n"
         "00:10 00:13\n",
     )
-
-    config = Config(min_clip=3.0)
-
     clips, _ = load_annotations(
         annotation_file,
-        config=config,
+            min_clip=3.0,
     )
 
     assert len(clips) == 1
