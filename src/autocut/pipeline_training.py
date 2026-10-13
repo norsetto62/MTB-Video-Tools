@@ -168,6 +168,7 @@ def run_training(
     results_path = settings.results_dir / f"{slug}_train.json"
     data_config = {
         "flow_fps": settings.sample_fps,
+        "processing_width": settings.processing_width,
         "window": settings.common.window_duration,
         "stride": settings.common.window_stride,
     }
