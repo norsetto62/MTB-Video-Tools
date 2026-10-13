@@ -173,6 +173,8 @@ def load_annotations(
     clips = []
     last_video_name = None
     audio_config = None
+    declared_videos: set[str] = set()
+    videos_with_intervals: set[str] = set()
 
     with annotation_file.open(
         "r",
@@ -243,6 +245,7 @@ def load_annotations(
                     )
 
                 last_video_name = str(video_path.resolve())
+                declared_videos.add(last_video_name)
 
                 continue
 
@@ -267,6 +270,7 @@ def load_annotations(
                     )
 
                 video_name = last_video_name
+                videos_with_intervals.add(video_name)
                 start_text = parts[0]
                 end_text = parts[1]
 
@@ -304,6 +308,8 @@ def load_annotations(
 
                 video_name = str(video_path.resolve())
                 last_video_name = video_name
+                declared_videos.add(video_name)
+                videos_with_intervals.add(video_name)
 
                 start_text = parts[1]
                 end_text = parts[2]
@@ -370,5 +376,21 @@ def load_annotations(
                     mandatory = mandatory,
                 )
             )
+
+    # A video-only manifest means "process the whole video". Do this only
+    # when no interval row was declared for that video; intervals that were
+    # skipped for being too short must not silently turn into full-video runs.
+    for video_name in declared_videos - videos_with_intervals:
+        from .video.probe import get_video_info
+
+        info = get_video_info(Path(video_name))
+        clips.append(
+            Clip(
+                video_name=video_name,
+                start=0.0,
+                end=float(info.duration),
+                mandatory=False,
+            )
+        )
 
     return clips, audio_config
