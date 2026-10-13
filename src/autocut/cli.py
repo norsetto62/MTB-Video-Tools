@@ -190,7 +190,11 @@ def dispatch(args: argparse.Namespace) -> int:
             )
             print(json.dumps(result, indent=2, default=str))
             return 0
-        return _unimplemented(args.command)
+        from .pipeline_lovo import run_lovo
+
+        result = run_lovo(manifest, settings)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
 
     print(f"Unsupported command: {args.command}", file=sys.stderr)
     return 2
