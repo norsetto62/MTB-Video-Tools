@@ -67,6 +67,19 @@ def _fit_fixed_epochs(
     )
 
 
+def _combine_prepared_records(
+    records: tuple[Any, ...],
+    prepared: dict[str, tuple[np.ndarray, np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Concatenate already-prepared record windows without reloading videos."""
+    selected = [prepared[record.id] for record in records]
+    if not selected:
+        raise ValueError("The selected group split contains no manifest records.")
+    return (
+        np.concatenate([item[0] for item in selected], axis=0),
+        np.concatenate([item[1] for item in selected], axis=0),
+    )
+
 def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
@@ -114,10 +127,17 @@ def run_lovo(
         "window": settings.common.window_duration,
         "stride": settings.common.window_stride,
     }
+    # Each record's windows/targets are independent of the fold. Prepare them
+    # once so repeated folds do not re-hash the same source videos.
+    logger.info("Preparing LOVO data once for %d manifest records", len(records))
+    prepared_records: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for record_index, record in enumerate(records, start=1):
+        logger.info("Preparing LOVO record %d/%d: %s (group %s)", record_index, len(records), record.id, record.group_id)
+        prepared_records[record.id] = _combine_prepared_records((record,), prepared_records)
+
     folds: list[dict[str, Any]] = []
     pooled_actual: list[np.ndarray] = []
     pooled_predicted: list[np.ndarray] = []
-
     for fold_index, test_group in enumerate(groups):
         outer_train_groups = tuple(group for group in groups if group != test_group)
         # Rotate through the remaining sorted groups for deterministic inner validation.
@@ -135,8 +155,8 @@ def run_lovo(
             "LOVO fold %d/%d: test=%s, inner validation=%s",
             fold_index + 1, len(groups), test_group, inner_validation_group,
         )
-        inner_X, inner_y = _combine_records(inner_train_records, settings)
-        inner_val_X, inner_val_y = _combine_records(inner_val_records, settings)
+        inner_X, inner_y = _combine_prepared_records(inner_train_records, prepared_records)
+        inner_val_X, inner_val_y = _combine_prepared_records(inner_val_records, prepared_records)
         selection_config = replace(settings.training, seed=settings.training.seed + fold_index)
         _, _, selection = train_single_fold(
             inner_X,
@@ -151,7 +171,7 @@ def run_lovo(
         if selected_epochs < 1:
             raise RuntimeError(f"Inner epoch selection returned invalid epoch {selected_epochs}.")
 
-        outer_X, outer_y = _combine_records(outer_train_records, settings)
+        outer_X, outer_y = _combine_prepared_records(outer_train_records, prepared_records)
         # Keep record boundaries for interpretable out-of-fold predictions.
         test_parts = [
             (record, *_combine_records((record,), settings))
