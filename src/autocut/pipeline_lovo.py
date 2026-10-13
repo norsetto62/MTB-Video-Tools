@@ -18,7 +18,7 @@ from .dataset.manifest import get_unique_groups, load_manifest
 from .ml.checkpoint import save_checkpoint
 from .ml.model import MTBClassifier
 from .ml.scaling import FeatureScaler
-from .ml.training import _validate_windows, targets_to_classes, train_single_fold
+from .ml.training import targets_to_classes, train_fixed_epochs, train_single_fold
 from .pipeline_training import _combine_records, _experiment_slug
 
 logger = logging.getLogger(__name__)
@@ -56,79 +56,16 @@ def _fit_fixed_epochs(
     data_config: dict[str, Any],
     metadata: dict[str, Any],
 ) -> tuple[MTBClassifier, FeatureScaler, dict[str, Any]]:
-    """Refit on all outer-training groups without consulting outer-test data."""
-    X = _validate_windows(windows, name="train_windows")
-    y = targets_to_classes(targets)
-    if len(X) != len(y):
-        raise ValueError("train_windows and train_targets must contain the same number of samples.")
-    if len(np.unique(y)) < 2:
-        raise ValueError("Outer-training targets must contain at least two distinct classes.")
-    fit_config = replace(config, epochs=epochs)
-    scaler = FeatureScaler(enabled=fit_config.use_scaling)
-    transformed = scaler.fit_transform(X)
-    x_tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
-    y_tensor = torch.from_numpy(y.astype(np.int64, copy=False))
-
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(fit_config.seed)
-        model = MTBClassifier(
-            feature_dim=X.shape[2],
-            hidden_dim=fit_config.hidden_dim,
-            classifier_mid_dim=fit_config.classifier_mid_dim,
-            num_classes=fit_config.num_classes,
-            dropout=fit_config.dropout,
-        ).to(torch.device("cpu"))
-        criterion = nn.CrossEntropyLoss(
-            weight=torch.tensor(fit_config.class_weights, dtype=torch.float32)
-        )
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=fit_config.lr, weight_decay=fit_config.weight_decay
-        )
-        generator = torch.Generator(device="cpu")
-        generator.manual_seed(fit_config.seed)
-        loader = DataLoader(
-            TensorDataset(x_tensor, y_tensor),
-            batch_size=fit_config.batch_size,
-            shuffle=True,
-            generator=generator,
-        )
-        history: list[dict[str, float | int]] = []
-        for epoch in range(1, epochs + 1):
-            model.train()
-            loss_total = 0.0
-            for batch_X, batch_y in loader:
-                optimizer.zero_grad(set_to_none=True)
-                loss = criterion(model(batch_X), batch_y)
-                if not torch.isfinite(loss).item():
-                    raise RuntimeError(f"Non-finite refit loss at epoch {epoch}.")
-                loss.backward()
-                optimizer.step()
-                loss_total += float(loss.item()) * len(batch_X)
-            history.append({"epoch": epoch, "train_loss": loss_total / len(x_tensor)})
-        model.eval()
-
-    class_counts = {str(i): int(np.sum(y == i)) for i in range(3)}
-    save_checkpoint(
-        checkpoint_path,
-        model,
-        scaler=scaler,
-        training_config=asdict(fit_config),
+    """Delegate the leakage-safe final refit to the shared training primitive."""
+    return train_fixed_epochs(
+        windows,
+        targets,
+        config,
+        epochs=epochs,
+        checkpoint_path=checkpoint_path,
         data_config=data_config,
-        epoch=epochs,
-        best_metric=None,
-        metadata={
-            **metadata,
-            "refit_epochs_selected_by_inner_group": epochs,
-            "class_counts": class_counts,
-            "class_weights": list(fit_config.class_weights),
-        },
+        metadata=metadata,
     )
-    return model, scaler, {
-        "epochs_trained": epochs,
-        "history": history,
-        "class_counts": class_counts,
-        "checkpoint_path": str(checkpoint_path),
-    }
 
 
 def _predict(
