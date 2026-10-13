@@ -72,6 +72,7 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
     monkeypatch.setattr(pipeline_lovo, "load_manifest", lambda *a, **k: records)
 
     def fake_combine(selected, _settings):
+        captured["prepared"].append(tuple(r.id for r in selected))
         # Group identity is encoded into the feature tensor so the test can
         # verify that the outer held-out group never appears in training inputs.
         group_ids = {r.group_id for r in selected}
@@ -81,7 +82,7 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
         y = np.resize(np.array([0.0, 1.0, 3.0]), count)
         return X, y
 
-    captured = {"inner": [], "outer": []}
+    captured = {"inner": [], "outer": [], "prepared": []}
 
     def fake_train(train_X, train_y, val_X, val_y, config, **kwargs):
         captured["inner"].append((train_X.copy(), val_X.copy()))
@@ -105,6 +106,8 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
 
     assert result["fold_count"] == 3
     assert result["groups"] == ["A", "B", "C"]
+    # Each manifest record is prepared once, rather than once per fold/split.
+    assert sorted(captured["prepared"]) == [("video-A",), ("video-B",), ("video-C",)]
     assert len(captured["outer"]) == 3
     for fold, (outer_X, metadata) in zip(result["folds"], captured["outer"], strict=True):
         assert fold["test_group"] not in fold["outer_training_groups"]
