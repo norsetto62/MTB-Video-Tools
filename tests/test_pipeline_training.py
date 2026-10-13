@@ -8,7 +8,7 @@ import pytest
 
 from autocut.config_loader import load_training_config
 from autocut.dataset.manifest import load_manifest
-from autocut import pipeline_training
+from autocut.pipeline import training as pipeline_training
 
 
 def _settings(tmp_path: Path, *, train_groups=("train",), validation_groups=("val",)):
@@ -128,7 +128,7 @@ def test_cli_train_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
         captured["manifest"] = path
         return {"experiment_name": "train-test", "summary": {"best_epoch": 1}}
 
-    monkeypatch.setattr("autocut.pipeline_training.run_training", fake_run)
+    monkeypatch.setattr("autocut.pipeline.training.run_training", fake_run)
     assert cli.main(["train", str(manifest), "--config", str(config_path)]) == 0
     assert captured["manifest"] == manifest
     assert '"best_epoch": 1' in capsys.readouterr().out
