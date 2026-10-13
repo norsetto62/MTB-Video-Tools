@@ -3,7 +3,6 @@
 import logging
 from pathlib import Path
 
-from .config import Config
 from .utils import convert_hms_to_s
 from .data_models import Clip, AudioConfig, Annotation
 
@@ -148,7 +147,8 @@ def load_training_annotations(
 
 def load_annotations(
     annotation_file: str | Path,
-    config: Config | None = None,
+    *,
+    min_clip: float = 3.0,
 ):
     """Load and validate an AutoCut annotation manifest.
 
@@ -157,7 +157,12 @@ def load_annotations(
 
         ``audio_config`` is ``None`` when no music is specified.
     """
-    config = config or Config()
+    if isinstance(min_clip, bool) or not isinstance(min_clip, (int, float)):
+        raise ValueError("min_clip must be a positive finite number.")
+    min_clip = float(min_clip)
+    if min_clip <= 0 or min_clip == float("inf") or min_clip != min_clip:
+        raise ValueError("min_clip must be a positive finite number.")
+
     annotation_file = Path(annotation_file)
 
     if not annotation_file.is_file():
@@ -334,14 +339,14 @@ def load_annotations(
             # ---------------------------------------------------------
             # Minimum clip duration
             # ---------------------------------------------------------
-            if duration < config.min_clip:
+            if duration < min_clip:
                 if mandatory:
                     logger.warning(
                         "Mandatory interval on line %d is shorter than "
                         "min_clip (%.3fs < %.3fs); keeping it: %s",
                         line_number,
                         duration,
-                        config.min_clip,
+                        min_clip,
                         line,
                     )
                 else:
@@ -350,7 +355,7 @@ def load_annotations(
                         "(%.3fs < %.3fs): %s",
                         line_number,
                         duration,
-                        config.min_clip,
+                        min_clip,
                         line,
                     )
                     continue
