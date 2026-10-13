@@ -209,7 +209,7 @@ def render_timeline(
             end = _duration("clip source_end", clip.source_end)
             if end <= start:
                 raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
-            escaped = str(source).replace("\\", "/").replace("'", "'\\\\''")
+            escaped = str(source).replace("\\", "/").replace("'", "'\\''")
             lines.extend([f"file '{escaped}'", f"inpoint {start}", f"outpoint {end}"])
         concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         command = [
