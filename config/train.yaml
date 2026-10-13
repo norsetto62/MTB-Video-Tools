@@ -9,7 +9,7 @@ data:
   processing_width: 480
   window_duration: 4.0
   window_stride: 2.0
-  train_groups: [ascoli, mentorella, castelli, g2, orvinio, firstday]
+  train_groups: [ascoli, mentorella, castelli, g2, orvinio, firstday, gas, artemisio]
   validation_groups: [tivoli]
 
 training:

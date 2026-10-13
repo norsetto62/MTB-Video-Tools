@@ -88,6 +88,8 @@ def validate_targets(
         )
 
     return errors
+
+
 def build_targets(
     windows: FeatureWindows,
     annotations: list[Annotation],
