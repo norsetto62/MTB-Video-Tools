@@ -96,3 +96,18 @@ def test_mix_command_validates_durations(tmp_path, duration, fade, valid):
             build_music_mix_command(
                 *args, duration=duration, fade_duration=fade
             )
+
+
+
+def test_mix_command_can_combine_original_audio_and_music(tmp_path):
+    command = build_music_mix_command(
+        tmp_path / "video_with_audio.mp4",
+        tmp_path / "music.mp3",
+        tmp_path / "final.mp4",
+        duration=12.0,
+        fade_duration=2.0,
+        mix_original_audio=True,
+    )
+    assert "[0:a:0][1:a:0]amix=inputs=2" in command[command.index("-filter_complex") + 1]
+    assert command[command.index("-map") + 1] == "0:v:0"
+    assert command[command.index("-map", command.index("-map") + 1) + 1] == "[aout]"
