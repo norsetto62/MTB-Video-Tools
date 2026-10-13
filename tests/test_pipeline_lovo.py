@@ -114,3 +114,38 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
         assert Path(fold["checkpoint"]).is_file()
         assert Path(fold["predictions_path"]).is_file()
     assert Path(result["results_path"]).is_file()
+
+
+def test_fixed_epoch_refit_saves_scaler_and_training_metadata(tmp_path):
+    from autocut.ml.checkpoint import load_checkpoint
+    from autocut.ml.training import TrainingConfig, train_fixed_epochs
+
+    rng = np.random.default_rng(7)
+    windows = rng.normal(size=(6, 8, 54)).astype(np.float32)
+    targets = np.array([0.0, 1.0, 3.0, 0.0, 1.0, 3.0], dtype=np.float32)
+    checkpoint = tmp_path / "fold.pt"
+    model, scaler, summary = train_fixed_epochs(
+        windows,
+        targets,
+        TrainingConfig(
+            epochs=1,
+            batch_size=3,
+            hidden_dim=4,
+            classifier_mid_dim=4,
+            dropout=0,
+            seed=3,
+        ),
+        epochs=2,
+        checkpoint_path=checkpoint,
+        data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0},
+        metadata={"outer_test_group": "held-out"},
+    )
+
+    payload = load_checkpoint(checkpoint)
+    assert summary["epochs_trained"] == 2
+    assert payload["epoch"] == 2
+    assert payload["metadata"]["outer_test_group"] == "held-out"
+    assert payload["metadata"]["refit_epochs_selected_by_inner_group"] == 2
+    assert payload["scaler_state"] is not None
+    assert model.training is False
+    assert scaler.mean_ is not None
