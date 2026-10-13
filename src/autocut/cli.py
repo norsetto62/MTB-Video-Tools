@@ -218,7 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(arguments)
     try:
         return dispatch(args)
-    except (ValueError, FileNotFoundError, TypeError) as exc:
+    except (ValueError, FileNotFoundError, TypeError, RuntimeError, OSError) as exc:
         print(f"Configuration/input error: {exc}", file=sys.stderr)
         return 2
 
