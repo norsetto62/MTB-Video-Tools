@@ -18,7 +18,7 @@ from .dataset.manifest import get_unique_groups, load_manifest
 from .ml.checkpoint import save_checkpoint
 from .ml.model import MTBClassifier
 from .ml.scaling import FeatureScaler
-from .ml.training import _macro_f1, _validate_windows, targets_to_classes, train_single_fold
+from .ml.training import _validate_windows, targets_to_classes, train_single_fold
 from .pipeline_training import _combine_records, _experiment_slug
 
 logger = logging.getLogger(__name__)
@@ -131,14 +131,21 @@ def _fit_fixed_epochs(
     }
 
 
-def _predict(model: MTBClassifier, scaler: FeatureScaler, windows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _predict(
+    model: MTBClassifier,
+    scaler: FeatureScaler,
+    windows: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
     transformed = scaler.transform(windows)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
     probability_batches: list[np.ndarray] = []
     model.eval()
     with torch.inference_mode():
         for start in range(0, len(tensor), 256):
-            probability_batches.append(torch.softmax(model(tensor[start:start + 256]), dim=1).cpu().numpy())
+            batch = tensor[start : start + 256]
+            probability_batches.append(
+                torch.softmax(model(batch), dim=1).cpu().numpy()
+            )
     probabilities = np.concatenate(probability_batches, axis=0)
     return probabilities.argmax(axis=1).astype(np.int64), probabilities
 
