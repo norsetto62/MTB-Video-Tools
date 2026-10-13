@@ -23,7 +23,7 @@ from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
 
 logger = logging.getLogger(__name__)
 
-FEATURE_CACHE_VERSION = 1
+FEATURE_CACHE_VERSION = 2
 FEATURE_SCHEMA_VERSION = 1
 _ARRAY_FORMAT_VERSION = 1
 
