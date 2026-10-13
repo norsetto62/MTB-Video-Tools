@@ -3,7 +3,10 @@ import pytest
 
 from autocut.data_models import FeatureSequence, FeatureWindows
 from autocut.dataset.windows import build_windows
-from autocut.config import Config
+
+
+DEFAULT_WINDOW_DURATION = 4.0
+DEFAULT_WINDOW_STRIDE = 2.0
 
 
 def make_sequence(
@@ -27,16 +30,11 @@ def make_sequence(
     )
 
 
-def test_default_constants():
-    assert Config.window_duration == 4.0
-    assert Config.window_stride == 2.0
-
-
 def test_default_geometry():
     """Default 4 s / 2 s geometry produces 8-sample windows."""
     sequence = make_sequence(16)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     assert isinstance(result, FeatureWindows)
     assert result.X.shape == (3, 8, 54)
@@ -47,7 +45,7 @@ def test_window_timestamps():
     """Window timestamps follow the canonical temporal grid."""
     sequence = make_sequence(16)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     expected = np.array(
         [
@@ -69,7 +67,7 @@ def test_first_window_uses_first_eight_features():
     """The first window contains exactly the first 8 feature vectors."""
     sequence = make_sequence(16)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     np.testing.assert_array_equal(
         result.X[0],
@@ -81,7 +79,7 @@ def test_stride_overlaps_windows():
     """A 2 s stride at 2 FPS advances by four feature vectors."""
     sequence = make_sequence(16)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     np.testing.assert_array_equal(
         result.X[1],
@@ -101,7 +99,7 @@ def test_absolute_timestamps_are_preserved():
         start=420.5,
     )
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     expected = np.array(
         [
@@ -123,7 +121,7 @@ def test_exactly_one_window():
     """Exactly 8 samples at 2 FPS represent one 4-second window."""
     sequence = make_sequence(8)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     assert result.X.shape == (1, 8, 54)
     assert result.timestamps.shape == (1, 2)
@@ -138,7 +136,7 @@ def test_no_partial_final_window():
     """Incomplete windows at the end are discarded."""
     sequence = make_sequence(10)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     assert result.X.shape == (1, 8, 54)
 
@@ -190,7 +188,7 @@ def test_window_must_be_positive():
         build_windows(
             sequence,
             window=0.0,
-            stride=Config.window_stride
+            stride=DEFAULT_WINDOW_STRIDE
         )
 
 
@@ -204,7 +202,7 @@ def test_negative_window_is_rejected():
         build_windows(
             sequence,
             window=-1.0,
-            stride=Config.window_stride
+            stride=DEFAULT_WINDOW_STRIDE
         )
 
 
@@ -218,7 +216,7 @@ def test_stride_must_be_positive():
         build_windows(
             sequence,
             stride=0.0,
-            window=Config.window_duration
+            window=DEFAULT_WINDOW_DURATION
         )
 
 
@@ -232,7 +230,7 @@ def test_negative_stride_is_rejected():
         build_windows(
             sequence,
             stride=-1.0,
-            window=Config.window_duration
+            window=DEFAULT_WINDOW_DURATION
         )
 
 
@@ -259,8 +257,8 @@ def test_at_least_two_timestamps_are_required():
     ):
         build_windows(
             sequence,
-            window=Config.window_duration,
-            stride=Config.window_stride,
+            window=DEFAULT_WINDOW_DURATION,
+            stride=DEFAULT_WINDOW_STRIDE,
         )
 
 
@@ -274,7 +272,7 @@ def test_window_must_be_integer_multiple_of_dt():
         build_windows(
             sequence,
             window=3.1,
-            stride=Config.window_stride
+            stride=DEFAULT_WINDOW_STRIDE
         )
 
 
@@ -288,7 +286,7 @@ def test_stride_must_be_integer_multiple_of_dt():
         build_windows(
             sequence,
             stride=1.1,
-            window=Config.window_duration
+            window=DEFAULT_WINDOW_DURATION
         )
 
 
@@ -302,7 +300,7 @@ def test_window_must_contain_at_least_two_samples():
         build_windows(
             sequence,
             window=1.0,
-            stride=Config.window_stride
+            stride=DEFAULT_WINDOW_STRIDE
         )
 
 
@@ -313,13 +311,13 @@ def test_sequence_shorter_than_window_is_rejected():
         ValueError,
         match="feature duration=.*is shorter",
     ):
-        build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+        build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
 
 def test_output_is_float32():
     sequence = make_sequence(16)
 
-    result = build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    result = build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     assert result.X.dtype == np.float32
     assert result.timestamps.dtype == np.float64
@@ -329,7 +327,7 @@ def test_input_features_are_not_modified():
     sequence = make_sequence(16)
     original = sequence.features.copy()
 
-    build_windows(sequence, window=Config.window_duration, stride=Config.window_stride)
+    build_windows(sequence, window=DEFAULT_WINDOW_DURATION, stride=DEFAULT_WINDOW_STRIDE)
 
     np.testing.assert_array_equal(
         sequence.features,
