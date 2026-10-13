@@ -209,9 +209,9 @@ def render_timeline(
             end = _duration("clip source_end", clip.source_end)
             if end <= start:
                 raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
-            escaped = str(source).replace("\\\\", "/").replace("'", "'\\\\''")
+            escaped = str(source).replace("\\", "/").replace("'", "'\\\\''")
             lines.extend([f"file '{escaped}'", f"inpoint {start}", f"outpoint {end}"])
-        concat_file.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+        concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
         command = [
             _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
             "-f", "concat", "-safe", "0", "-i", str(concat_file),
@@ -241,9 +241,9 @@ def render_with_music(
 ) -> RenderResult:
     """Render timeline clips, then replace or mix the soundtrack.
 
-    Timeline video names are interpreted as filesystem paths. The concat
-    demuxer trims each clip to its finalized source interval and stream-copies
-    the video; music mixing is delegated to :func:`mix_music`.
+    When mixing is requested, source audio is retained in the intermediate
+    edit and mixed with the background music. Otherwise the intermediate edit
+    is silent and music replaces the original audio.
     """
     if not isinstance(timeline, Timeline):
         raise TypeError("timeline must be a Timeline instance.")
@@ -296,7 +296,6 @@ def render_with_music(
             "-f", "concat", "-safe", "0", "-i", str(concat_file),
             "-map", "0:v:0",
             "-map", "0:a?" if mix_original_audio else "-an",
-            *([] if mix_original_audio else []),
             "-c:v", "copy",
             *(["-c:a", "aac", "-b:a", "320k"] if mix_original_audio else []),
             "-movflags", "+faststart", str(silent_video),
