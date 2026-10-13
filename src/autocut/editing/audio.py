@@ -295,11 +295,14 @@ def render_with_music(
             _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
             "-f", "concat", "-safe", "0", "-i", str(concat_file),
             "-map", "0:v:0",
-            "-map", "0:a?" if mix_original_audio else "-an",
-            "-c:v", "copy",
-            *(["-c:a", "aac", "-b:a", "320k"] if mix_original_audio else []),
-            "-movflags", "+faststart", str(silent_video),
         ]
+        if mix_original_audio:
+            concat_command.extend([
+                "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k",
+            ])
+        else:
+            concat_command.extend(["-c:v", "copy", "-an"])
+        concat_command.extend(["-movflags", "+faststart", str(silent_video)])
         try:
             subprocess.run(
                 concat_command, check=True, capture_output=True, text=True
