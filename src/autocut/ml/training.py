@@ -6,7 +6,7 @@ module. This module accepts one already-separated train/validation fold.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import math
 import logging
 from pathlib import Path
@@ -340,4 +340,114 @@ def train_single_fold(
             )
             summary["checkpoint_path"] = str(checkpoint_path)
 
+    return model, scaler, summary
+
+
+
+def train_fixed_epochs(
+    train_windows: np.ndarray,
+    train_targets: np.ndarray,
+    config: TrainingConfig | None = None,
+    *,
+    epochs: int,
+    checkpoint_path: str | Path | None = None,
+    data_config: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[MTBClassifier, FeatureScaler, dict[str, Any]]:
+    """Fit on all supplied training data for an explicit epoch count.
+
+    Unlike :func:`train_single_fold`, this function does not require or inspect
+    validation data and never performs early stopping. It is intended for the
+    final refit stage of nested cross-validation after an inner group split has
+    selected the epoch count. Scaling is fitted only on train_windows.
+    """
+    config = config or TrainingConfig()
+    if not isinstance(config, TrainingConfig):
+        raise TypeError("config must be a TrainingConfig.")
+    if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs <= 0:
+        raise ValueError("epochs must be a positive integer.")
+    if data_config is not None and not isinstance(data_config, dict):
+        raise ValueError("data_config must be a dictionary or None.")
+    if metadata is not None and not isinstance(metadata, dict):
+        raise ValueError("metadata must be a dictionary or None.")
+
+    train_X = _validate_windows(train_windows, name="train_windows")
+    train_y = targets_to_classes(train_targets)
+    if len(train_X) != len(train_y):
+        raise ValueError("train_windows and train_targets must contain the same number of samples.")
+    if len(np.unique(train_y)) < 2:
+        raise ValueError("Training targets must contain at least two distinct classes.")
+
+    fit_config = replace(config, epochs=epochs)
+    scaler = FeatureScaler(enabled=fit_config.use_scaling)
+    transformed_train = scaler.fit_transform(train_X)
+    train_tensor = torch.from_numpy(np.ascontiguousarray(transformed_train, dtype=np.float32))
+    train_label_tensor = torch.from_numpy(train_y.astype(np.int64, copy=False))
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(fit_config.seed)
+        model = MTBClassifier(
+            feature_dim=train_X.shape[2],
+            hidden_dim=fit_config.hidden_dim,
+            classifier_mid_dim=fit_config.classifier_mid_dim,
+            num_classes=fit_config.num_classes,
+            dropout=fit_config.dropout,
+        ).to(torch.device("cpu"))
+        class_weights = torch.tensor(fit_config.class_weights, dtype=torch.float32)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=fit_config.lr,
+            weight_decay=fit_config.weight_decay,
+        )
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(fit_config.seed)
+        loader = DataLoader(
+            TensorDataset(train_tensor, train_label_tensor),
+            batch_size=fit_config.batch_size,
+            shuffle=True,
+            generator=generator,
+        )
+        history: list[dict[str, float | int]] = []
+        for epoch in range(1, epochs + 1):
+            model.train()
+            loss_total = 0.0
+            for batch_X, batch_y in loader:
+                optimizer.zero_grad(set_to_none=True)
+                loss = criterion(model(batch_X), batch_y)
+                if not torch.isfinite(loss).item():
+                    raise RuntimeError(f"Non-finite training loss at epoch {epoch}.")
+                loss.backward()
+                optimizer.step()
+                loss_total += float(loss.item()) * len(batch_X)
+            history.append({"epoch": epoch, "train_loss": loss_total / len(train_tensor)})
+        model.eval()
+
+    class_counts = {
+        str(class_id): int(np.sum(train_y == class_id))
+        for class_id in range(fit_config.num_classes)
+    }
+    if checkpoint_path is not None:
+        save_checkpoint(
+            checkpoint_path,
+            model,
+            scaler=scaler,
+            training_config=asdict(fit_config),
+            data_config=data_config,
+            epoch=epochs,
+            best_metric=None,
+            metadata={
+                **(metadata or {}),
+                "refit_epochs_selected_by_inner_group": epochs,
+                "class_counts": class_counts,
+                "class_weights": list(fit_config.class_weights),
+            },
+        )
+    summary: dict[str, Any] = {
+        "epochs_trained": epochs,
+        "history": history,
+        "class_counts": class_counts,
+    }
+    if checkpoint_path is not None:
+        summary["checkpoint_path"] = str(checkpoint_path)
     return model, scaler, summary
