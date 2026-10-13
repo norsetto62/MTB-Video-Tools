@@ -209,7 +209,18 @@ def run_lovo(
             raise RuntimeError(f"Inner epoch selection returned invalid epoch {selected_epochs}.")
 
         outer_X, outer_y = _combine_records(outer_train_records, settings)
-        test_X, test_y = _combine_records(test_records, settings)
+        # Keep record boundaries for interpretable out-of-fold predictions.
+        test_parts = [
+            (record, *_combine_records((record,), settings))
+            for record in test_records
+        ]
+        test_X = np.concatenate([part[1] for part in test_parts], axis=0)
+        test_y = np.concatenate([part[2] for part in test_parts], axis=0)
+        test_window_records = [
+            (record.id, local_index)
+            for record, part_X, _part_y in test_parts
+            for local_index in range(len(part_X))
+        ]
         fold_checkpoint = checkpoint_root / f"fold_{fold_index + 1:02d}_{_experiment_slug(test_group)}.pt"
         fold_metadata = {
             "experiment_name": settings.experiment_name,
@@ -260,7 +271,8 @@ def run_lovo(
             "metrics": metrics,
             "predictions": [
                 {
-                    "window_index": index,
+                    "record_id": test_window_records[index][0],
+                    "window_index": test_window_records[index][1],
                     "actual_class": int(actual[index]),
                     "predicted_class": int(predicted[index]),
                     "probabilities": {str(i): float(probabilities[index, i]) for i in range(3)},
