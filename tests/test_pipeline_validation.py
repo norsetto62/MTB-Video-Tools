@@ -10,11 +10,19 @@ from autocut.ml.scaling import FeatureScaler
 
 
 def _settings(tmp_path: Path):
-    from autocut.config import Config
+    from autocut.config_loader import CommonSettings
     from autocut.ml.training import TrainingConfig
 
     return TrainingRunConfig(
-        common=Config(window_duration=4.0, window_stride=2.0),
+        common=CommonSettings(
+            data_dir=tmp_path / "data",
+            models_dir=tmp_path / "models",
+            output_dir=tmp_path / "output",
+            log_level="INFO",
+            min_clip=3.0,
+            window_duration=4.0,
+            window_stride=2.0,
+        ),
         cache_dir=tmp_path / "cache",
         manifest=tmp_path / "manifest.yaml",
         sample_fps=2.0,
