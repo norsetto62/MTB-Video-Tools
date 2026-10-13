@@ -154,6 +154,11 @@ def run_validation(
 
     model = restore_model(checkpoint, device="cpu")
     records = load_manifest(manifest_path, verify_files=True)
+    if group_id.strip() in set(settings.train_groups):
+        raise ValueError(
+            f"Refusing to evaluate training group {group_id.strip()!r}; "
+            "choose a group excluded from data.train_groups."
+        )
     selected = tuple(record for record in records if record.group_id == group_id.strip())
     if not selected:
         available = sorted({record.group_id for record in records})
