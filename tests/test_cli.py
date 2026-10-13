@@ -57,3 +57,33 @@ def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     assert captured["manifest"] == manifest
     assert captured["settings"] is settings
     assert '"fold_count": 3' in capsys.readouterr().out
+
+
+
+def test_cli_run_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    annotations = tmp_path / "annotations.txt"
+    annotations.write_text("placeholder", encoding="utf-8")
+    settings = SimpleNamespace(common=SimpleNamespace(log_level="INFO"))
+    monkeypatch.setattr("autocut.config_loader.load_run_config", lambda path: settings)
+    captured = {}
+
+    def fake_run_pipeline(path, loaded_settings, *, output_path=None):
+        captured["path"] = path
+        captured["settings"] = loaded_settings
+        captured["output_path"] = output_path
+        return {"status": "completed"}
+
+    monkeypatch.setattr("autocut.pipeline.run.run_pipeline", fake_run_pipeline)
+    output = tmp_path / "custom.mp4"
+    assert main([
+        "run", str(annotations), "--config", str(tmp_path / "autocut.yaml"),
+        "--output", str(output),
+    ]) == 0
+    assert captured == {
+        "path": annotations,
+        "settings": settings,
+        "output_path": output,
+    }
+    assert '"status": "completed"' in capsys.readouterr().out
