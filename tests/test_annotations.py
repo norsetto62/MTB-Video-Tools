@@ -316,7 +316,7 @@ def test_clip_at_minimum_duration_is_kept(tmp_path):
     )
     clips, _ = load_annotations(
         annotation_file,
-            min_clip=3.0,
+        min_clip=3.0,
     )
 
     assert len(clips) == 1
