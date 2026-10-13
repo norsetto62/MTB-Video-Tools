@@ -190,9 +190,9 @@ def run_validation(
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
     try:
-        with temporary.open("w", encoding="utf-8", newline="\\n") as stream:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             json.dump(result, stream, indent=2, sort_keys=True, allow_nan=False)
-            stream.write("\\n")
+            stream.write("\n")
         temporary.replace(destination)
     finally:
         if temporary.exists():
