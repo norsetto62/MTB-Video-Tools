@@ -52,7 +52,7 @@ def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
         captured["settings"] = loaded_settings
         return {"fold_count": 3}
 
-    monkeypatch.setattr("autocut.pipeline_lovo.run_lovo", fake_run_lovo)
+    monkeypatch.setattr("autocut.pipeline.lovo.run_lovo", fake_run_lovo)
     assert main(["lovo", str(manifest), "--config", str(tmp_path / "train.yaml")]) == 0
     assert captured["manifest"] == manifest
     assert captured["settings"] is settings
