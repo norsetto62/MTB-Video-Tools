@@ -6,7 +6,6 @@ from dataclasses import asdict
 import json
 import logging
 from pathlib import Path
-import subprocess
 from typing import Iterable
 
 import cv2
@@ -15,8 +14,8 @@ import numpy as np
 from ..annotations import load_annotations
 from ..data_models import FeatureSequence, FeatureWindows, VideoInfo
 from ..dataset.windows import build_windows
-from ..editing.audio import RenderResult, render_timeline, render_with_music
-from ..ml.inference import InferenceResult, infer_windows
+from ..editing.audio import render_timeline, render_with_music
+from ..ml.inference import infer_windows
 from ..motion.features import FeatureExtractor
 from ..motion.flow import calculate_optical_flow
 from ..selection.budget import MandatoryClip, SelectionCandidate, select_highlight_budget
@@ -339,10 +338,10 @@ def run_pipeline(
             "duration": render_result.duration,
         },
     }
+    result["result_manifest"] = str(result_path.resolve())
     result_path.write_text(
         json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n",
         encoding="utf-8",
     )
-    result["result_manifest"] = str(result_path.resolve())
     logger.info("Rendered AutoCut output to %s (%.3fs)", render_result.output_path, render_result.duration)
     return result
