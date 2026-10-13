@@ -20,14 +20,26 @@ except ImportError as exc:  # pragma: no cover - dependency is declared in pypro
     ) from exc
 
 from .audio.config import AudioConfig
-from .config import Config
+
+
+@dataclass(frozen=True)
+class CommonSettings:
+    """Shared settings resolved by the YAML configuration loaders."""
+
+    data_dir: Path
+    models_dir: Path
+    output_dir: Path
+    log_level: str
+    min_clip: float
+    window_duration: float
+    window_stride: float
 
 
 @dataclass(frozen=True)
 class RunConfig:
     """Validated settings needed by the production run pipeline."""
 
-    common: Config
+    common: CommonSettings
     cache_dir: Path
     sample_fps: float
     processing_width: int
@@ -43,7 +55,7 @@ class RunConfig:
 class TrainingRunConfig:
     """Validated dataset, split, training and experiment settings."""
 
-    common: Config
+    common: CommonSettings
     cache_dir: Path
     manifest: Path
     sample_fps: float
@@ -164,7 +176,7 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
     )
     logging = _section(raw, "logging", {"level"})
 
-    common = Config(
+    common = CommonSettings(
         data_dir=_path(paths.get("data_dir", "data"), name="paths.data_dir"),
         models_dir=_path(paths.get("models_dir", "models"), name="paths.models_dir"),
         output_dir=_path(paths.get("output_dir", "output"), name="paths.output_dir"),
@@ -258,11 +270,12 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
     }:
         raise ValueError("logging.level must be a standard Python logging level.")
 
-    common = Config(
+    common = CommonSettings(
         data_dir=_path(paths.get("data_dir", "data"), name="paths.data_dir"),
         models_dir=_path(paths.get("models_dir", "models"), name="paths.models_dir"),
         output_dir=Path("output"),
         log_level=level.upper(),
+        min_clip=3.0,
         window_duration=_positive_float(
             data.get("window_duration", 4.0), name="data.window_duration"
         ),
