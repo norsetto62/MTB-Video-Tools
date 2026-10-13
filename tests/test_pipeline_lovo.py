@@ -105,10 +105,12 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
     assert result["fold_count"] == 3
     assert result["groups"] == ["A", "B", "C"]
     assert len(captured["outer"]) == 3
-    for fold in result["folds"]:
+    for fold, (outer_X, metadata) in zip(result["folds"], captured["outer"], strict=True):
         assert fold["test_group"] not in fold["outer_training_groups"]
         assert fold["inner_validation_group"] in fold["outer_training_groups"]
         assert fold["inner_validation_group"] not in fold["inner_training_groups"]
+        assert metadata["outer_test_group"] == fold["test_group"]
+        assert not np.any(outer_X[:, 0, 0] == float(ord(fold["test_group"])))
         assert Path(fold["checkpoint"]).is_file()
         assert Path(fold["predictions_path"]).is_file()
     assert Path(result["results_path"]).is_file()
