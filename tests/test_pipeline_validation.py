@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from autocut import pipeline_validation
+from autocut.pipeline import validation as pipeline_validation
 from autocut.config_loader import TrainingRunConfig
 from autocut.ml.scaling import FeatureScaler
 
