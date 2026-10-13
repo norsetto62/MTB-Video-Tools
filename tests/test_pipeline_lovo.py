@@ -43,6 +43,7 @@ def test_metrics_uses_fixed_three_class_confusion_matrix():
     )
     assert result["windows"] == 4
     assert result["accuracy"] == pytest.approx(0.5)
+    assert result["micro_f1"] == pytest.approx(0.5)
     assert result["confusion_matrix"] == [[1, 0, 0], [0, 0, 1], [0, 1, 1]]
     assert set(result["class_f1"]) == {"0", "1", "2"}
 
