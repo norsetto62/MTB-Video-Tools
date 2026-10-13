@@ -172,13 +172,13 @@ def dispatch(args: argparse.Namespace) -> int:
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
         if args.command == "train":
-            from .pipeline_training import run_training
+            from .pipeline.training import run_training
 
             result = run_training(manifest, settings)
             print(json.dumps(result, indent=2, default=str))
             return 0
         if args.command == "validate":
-            from .pipeline_validation import run_validation
+            from .pipeline.validation import run_validation
 
             result = run_validation(
                 manifest,
@@ -190,7 +190,7 @@ def dispatch(args: argparse.Namespace) -> int:
             )
             print(json.dumps(result, indent=2, default=str))
             return 0
-        from .pipeline_lovo import run_lovo
+        from .pipeline.lovo import run_lovo
 
         result = run_lovo(manifest, settings)
         print(json.dumps(result, indent=2, default=str))
