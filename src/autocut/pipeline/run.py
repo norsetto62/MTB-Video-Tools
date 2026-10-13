@@ -6,6 +6,7 @@ from dataclasses import asdict
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Iterable
 
 import cv2
@@ -57,6 +58,15 @@ def _extract_windows(
     timestamps: list[float] = []
     previous_gray: np.ndarray | None = None
     extractor: FeatureExtractor | None = None
+    started = time.monotonic()
+    last_progress = started
+    frames_processed = 0
+    estimated_frames = max(1, int(round((end - start) * settings.sample_fps)))
+
+    logger.info(
+        "Analysing %s range [%.1f, %.1f]s (%.1fs at %.2f sampled FPS).",
+        video_path, start, end, end - start, settings.sample_fps,
+    )
 
     with VideoReader(
         video_path,
@@ -65,6 +75,7 @@ def _extract_windows(
         sample_fps=settings.sample_fps,
     ) as reader:
         for _frame_index, timestamp, frame in reader:
+            frames_processed += 1
             height, width = frame.shape[:2]
             target_width = min(width, settings.processing_width)
             if target_width != width:
@@ -78,6 +89,25 @@ def _extract_windows(
                 feature_rows.append(extractor.extract_vector(flow))
                 timestamps.append(float(timestamp))
             previous_gray = gray
+
+            now = time.monotonic()
+            if frames_processed % 20 == 0 or now - last_progress >= 10.0:
+                logger.info(
+                    "Motion analysis: %s — %d/%d sampled frames (%.0f%%), "
+                    "%.1fs elapsed.",
+                    video_path.name,
+                    frames_processed,
+                    estimated_frames,
+                    min(100.0, 100.0 * frames_processed / estimated_frames),
+                    now - started,
+                )
+                last_progress = now
+
+    logger.info(
+        "Motion analysis finished for %s: %d sampled frames, %d motion-feature rows "
+        "in %.1fs.",
+        video_path.name, frames_processed, len(feature_rows), time.monotonic() - started,
+    )
 
     if len(feature_rows) < 2:
         logger.info(
@@ -172,6 +202,10 @@ def run_pipeline(
     if not settings.checkpoint.is_file():
         raise FileNotFoundError(f"Model checkpoint not found: {settings.checkpoint}")
 
+    logger.info("AutoCut run starting.")
+    logger.info("Annotation manifest: %s", annotation.resolve())
+    logger.info("Model checkpoint: %s", settings.checkpoint.resolve())
+
     clips, music_directive = load_annotations(
         annotation,
         min_clip=settings.common.min_clip,
@@ -180,6 +214,8 @@ def run_pipeline(
         raise ValueError(
             f"No processing intervals were found in annotation manifest: {annotation}"
         )
+
+    logger.info("Loaded %d processing interval(s).", len(clips))
 
     # Establish stable video ordering from first appearance in the manifest.
     video_order: dict[str, int] = {}
@@ -194,6 +230,11 @@ def run_pipeline(
     video_metadata: dict[str, VideoInfo] = {}
     for video_name, video_clips in clips_by_video.items():
         info = get_video_info(Path(video_name))
+        ranges = _merge_ranges(video_clips)
+        logger.info(
+            "Source %s: %.1fs, %dx%d at %.3f FPS; %d processing range(s).",
+            video_name, info.duration, info.width, info.height, info.fps, len(ranges),
+        )
         video_metadata[video_name] = info
         for clip in video_clips:
             if clip.start < 0 or clip.end > info.duration + 1e-6:
@@ -210,12 +251,17 @@ def run_pipeline(
 
     all_candidates: list[SelectionCandidate] = []
     inference_summaries: list[dict] = []
+    logger.info("Starting motion analysis and model inference.")
     for video_name, video_clips in clips_by_video.items():
         order = video_order[video_name]
         for start, end in _merge_ranges(video_clips):
             windows = _extract_windows(Path(video_name), start, end, settings)
             if windows is None:
                 continue
+            logger.info(
+                "Running model inference on %d window(s) from %s [%.1f, %.1f]s.",
+                int(windows.X.shape[0]), Path(video_name).name, start, end,
+            )
             inference = infer_windows(
                 settings.checkpoint,
                 windows,
@@ -225,6 +271,10 @@ def run_pipeline(
                 inference,
                 clip_duration=end - start,
                 config=settings.candidates,
+            )
+            logger.info(
+                "Range result: %d inference window(s), %d candidate clip(s).",
+                int(windows.X.shape[0]), len(candidates),
             )
             inference_summaries.append({
                 "video": video_name,
@@ -253,6 +303,10 @@ def run_pipeline(
         for index, clip in enumerate(clips)
         if clip.mandatory
     )
+    logger.info(
+        "Selecting highlights from %d candidate(s) with target duration %.1fs.",
+        len(all_candidates), settings.target_duration,
+    )
     selection = select_highlight_budget(
         all_candidates,
         settings.target_duration,
@@ -264,6 +318,12 @@ def run_pipeline(
         selection,
         mandatory,
         max_clip_duration=settings.max_clip_duration,
+    )
+
+    logger.info(
+        "Selection complete: %d optional clip(s) selected, %d mandatory clip(s); "
+        "timeline contains %d clip(s).",
+        len(selection.selected), len(mandatory), len(timeline.clips),
     )
 
     if not timeline.clips:
@@ -287,6 +347,7 @@ def run_pipeline(
         else settings.common.output_dir / f"{annotation.stem}_autocut.mp4"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Rendering %d timeline clip(s) to %s.", len(timeline.clips), destination.resolve())
     if music_directive is None:
         render_result = render_timeline(timeline, destination)
     else:
@@ -343,5 +404,7 @@ def run_pipeline(
         json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n",
         encoding="utf-8",
     )
-    logger.info("Rendered AutoCut output to %s (%.3fs)", render_result.output_path, render_result.duration)
+    logger.info("Rendering complete: %s (%.1fs).", render_result.output_path, render_result.duration)
+    logger.info("Result manifest written to %s.", result_path.resolve())
+    logger.info("AutoCut run completed successfully.")
     return result
