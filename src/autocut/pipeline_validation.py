@@ -45,18 +45,19 @@ def _predict_record(
     clip = Clip(video_name=record.id, start=0.0, end=info.duration)
     data_config = checkpoint.get("data_config") or {}
     flow_fps = float(data_config.get("flow_fps", settings.sample_fps))
+    processing_width = int(data_config.get("processing_width", settings.processing_width))
     window = float(data_config.get("window", settings.common.window_duration))
     stride = float(data_config.get("stride", settings.common.window_stride))
 
     logger.info(
         "Record %s: extracting features at %.3f fps, width %d",
-        record.id, flow_fps, settings.processing_width,
+        record.id, flow_fps, processing_width,
     )
     sequence = build_feature_sequence(
         record.video_path,
         clip,
         sample_fps=flow_fps,
-        processing_width=settings.processing_width,
+        processing_width=processing_width,
         cache_dir=settings.cache_dir,
     )
     windows = build_windows(sequence, window=window, stride=stride)
