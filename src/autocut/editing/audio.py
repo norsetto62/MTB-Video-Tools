@@ -56,6 +56,7 @@ def build_music_mix_command(
     duration: float,
     fade_duration: float,
     ffmpeg: str | Path | None = None,
+    mix_original_audio: bool = False,
 ) -> list[str]:
     """Build a safe FFmpeg command to copy video and encode the soundtrack."""
     total = _duration("duration", duration)
@@ -70,14 +71,21 @@ def build_music_mix_command(
         "-i", str(video_path),
         "-i", str(music_path),
         "-map", "0:v:0",
-        "-map", "1:a:0",
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "320k",
     ]
-    if fade > 0:
-        fade_start = max(0.0, total - fade)
-        command.extend(["-af", f"afade=t=out:st={fade_start}:d={fade}"])
+    if mix_original_audio:
+        audio_filter = "[0:a:0][1:a:0]amix=inputs=2:duration=first:dropout_transition=2"
+        if fade > 0:
+            fade_start = max(0.0, total - fade)
+            audio_filter += f",afade=t=out:st={fade_start}:d={fade}"
+        command.extend(["-filter_complex", f"{audio_filter}[aout]", "-map", "[aout]"])
+    else:
+        command.extend(["-map", "1:a:0"])
+        if fade > 0:
+            fade_start = max(0.0, total - fade)
+            command.extend(["-af", f"afade=t=out:st={fade_start}:d={fade}"])
     command.extend([
         "-t", str(total),
         "-movflags", "+faststart",
@@ -125,8 +133,9 @@ def mix_music(
     *,
     duration: float,
     config: AudioConfig,
+    mix_original_audio: bool = False,
 ) -> RenderResult:
-    """Replace the edit's audio with music, optionally fading it out."""
+    """Add music to a rendered edit, optionally retaining its original audio."""
     video = Path(video_path)
     music = Path(music_path)
     output = Path(output_path)
@@ -142,6 +151,7 @@ def mix_music(
         video, music, output,
         duration=duration,
         fade_duration=config.fade_duration,
+        mix_original_audio=mix_original_audio,
     )
     try:
         subprocess.run(
@@ -170,14 +180,66 @@ def mix_music(
     return RenderResult(output_path=output, duration=measured_duration)
 
 
+def render_timeline(
+    timeline: Timeline,
+    output_path: str | Path,
+) -> RenderResult:
+    """Render a finalized timeline while preserving source audio when present.
+
+    Uses FFmpeg's concat demuxer and stream copy. The timeline is authoritative:
+    source intervals and ordering are not recalculated here.
+    """
+    if not isinstance(timeline, Timeline):
+        raise TypeError("timeline must be a Timeline instance.")
+    if not timeline.clips:
+        raise ValueError("Cannot render a timeline with no clips.")
+    if not math.isfinite(timeline.duration) or timeline.duration <= 0:
+        raise ValueError("timeline duration must be finite and positive.")
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".autocut-render-", dir=str(output.parent)) as directory:
+        concat_file = Path(directory) / "clips.ffconcat"
+        lines = ["ffconcat version 1.0"]
+        for clip in timeline.clips:
+            source = Path(clip.video_name).resolve()
+            if not source.is_file():
+                raise FileNotFoundError(f"Timeline source video not found: {clip.video_name}")
+            start = _duration("clip source_start", clip.source_start, allow_zero=True)
+            end = _duration("clip source_end", clip.source_end)
+            if end <= start:
+                raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
+            escaped = str(source).replace("\\\\", "/").replace("'", "'\\\\''")
+            lines.extend([f"file '{escaped}'", f"inpoint {start}", f"outpoint {end}"])
+        concat_file.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+        command = [
+            _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_file),
+            "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
+            "-movflags", "+faststart", str(output),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
+            raise RuntimeError(
+                f"Failed to render timeline (exit status {exc.returncode}): "
+                f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+    return RenderResult(output_path=output, duration=probe_duration(output))
+
+
 def render_with_music(
     timeline: Timeline,
     music_path: str | Path,
     output_path: str | Path,
     *,
     config: AudioConfig,
+    mix_original_audio: bool = False,
 ) -> RenderResult:
-    """Render timeline clips to a temporary silent edit, then add the music.
+    """Render timeline clips, then replace or mix the soundtrack.
 
     Timeline video names are interpreted as filesystem paths. The concat
     demuxer trims each clip to its finalized source interval and stream-copies
@@ -232,7 +294,11 @@ def render_with_music(
         concat_command = [
             _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
             "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-map", "0:v:0", "-c:v", "copy", "-an",
+            "-map", "0:v:0",
+            "-map", "0:a?" if mix_original_audio else "-an",
+            *([] if mix_original_audio else []),
+            "-c:v", "copy",
+            *(["-c:a", "aac", "-b:a", "320k"] if mix_original_audio else []),
             "-movflags", "+faststart", str(silent_video),
         ]
         try:
@@ -252,4 +318,5 @@ def render_with_music(
         return mix_music(
             silent_video, music, output,
             duration=timeline.duration, config=config,
+            mix_original_audio=mix_original_audio,
         )
