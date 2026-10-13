@@ -10,12 +10,9 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
 
 from .config_loader import TrainingRunConfig
 from .dataset.manifest import get_unique_groups, load_manifest
-from .ml.checkpoint import save_checkpoint
 from .ml.model import MTBClassifier
 from .ml.scaling import FeatureScaler
 from .ml.training import targets_to_classes, train_fixed_epochs, train_single_fold
