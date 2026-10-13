@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from autocut import pipeline_lovo
+from autocut.pipeline import lovo as pipeline_lovo
 
 
 def _settings(tmp_path):
