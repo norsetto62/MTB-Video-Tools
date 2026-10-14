@@ -22,7 +22,7 @@ class SelectionCandidate:
     video_name: str
     video_order: int
     candidate: CandidateClip
-    # Zero-based position of the source annotation row in the manifest.
+    # Physical line number of the source annotation row in the manifest.
     # None preserves compatibility for callers constructing candidates directly.
     annotation_order: int | None = None
 
