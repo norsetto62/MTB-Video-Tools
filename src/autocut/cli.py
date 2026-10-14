@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Preserve the assembled video before music mixing and a timeline manifest.",
     )
+    run.add_argument(
+        "--video-encoder",
+        choices=("h264_nvenc", "libx264"),
+        help="Override video.encoder from the run configuration.",
+    )
 
     audit = subparsers.add_parser("audit", help="Audit annotations and derived data.")
     audit.add_argument("source", type=Path, help="Annotation TXT or dataset manifest.")
@@ -172,6 +177,7 @@ def dispatch(args: argparse.Namespace) -> int:
             settings,
             output_path=args.output,
             debug_render_dir=args.debug_render_dir,
+            video_encoder=args.video_encoder or settings.video_encoder,
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
