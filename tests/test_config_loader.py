@@ -69,6 +69,13 @@ def test_load_run_config_rejects_unknown_fields(tmp_path):
         load_run_config(path)
 
 
+
+def test_load_run_config_rejects_removed_target_duration(tmp_path):
+    path = tmp_path / "obsolete.yaml"
+    path.write_text("selection:\n  target_duration: 120\n")
+    with pytest.raises(ValueError, match="Unknown field"):
+        load_run_config(path)
+
 def test_load_run_config_rejects_nonpositive_sampling_rate(tmp_path):
     path = tmp_path / "bad.yaml"
     path.write_text("video:\n  sampling_fps: 0\nselection:\n  min_clip: 3\n")
