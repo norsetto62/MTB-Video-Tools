@@ -1,4 +1,4 @@
-"""Candidate generation, greedy selection, and timeline assembly."""
+"""Candidate generation, deterministic selection, and timeline assembly."""
 
 from .candidates_generation import (
     CandidateClip,
@@ -6,11 +6,11 @@ from .candidates_generation import (
     WindowEvidence,
     generate_candidates,
 )
-from .budget import (
+from .selection import (
     MandatoryClip,
     SelectionCandidate,
     SelectionResult,
-    select_highlight_budget,
+    select_candidates,
 )
 from .timeline import Timeline, TimelineClip, assemble_timeline
 
@@ -22,7 +22,7 @@ __all__ = [
     "MandatoryClip",
     "SelectionCandidate",
     "SelectionResult",
-    "select_highlight_budget",
+    "select_candidates",
     "Timeline",
     "TimelineClip",
     "assemble_timeline",
