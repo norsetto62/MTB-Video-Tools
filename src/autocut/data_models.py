@@ -1,6 +1,6 @@
 """Domain data models used throughout AutoCut."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 @dataclass(frozen=True)
@@ -11,6 +11,9 @@ class Clip:
     start: float
     end: float
     mandatory: bool = False
+    # Physical line number in the annotation manifest; excluded from value
+    # equality so existing domain comparisons remain stable.
+    annotation_order: int | None = field(default=None, compare=False)
 
     @property
     def duration(self) -> float:
