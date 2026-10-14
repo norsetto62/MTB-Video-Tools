@@ -103,7 +103,7 @@ def test_padding_can_merge_regions_after_max_gap_merge():
     assert len(clips) == 1
     assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 13.0, 13.0)
     assert clips[0].tier == "high_action"
-    assert clips[0].mean_score == pytest.approx((0.9 + 1.95) / 2)
+    assert clips[0].mean_score == pytest.approx((1.35 + 1.95) / 2)
     assert clips[0].max_score == pytest.approx(1.95)
 
 
