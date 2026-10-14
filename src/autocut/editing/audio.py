@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 from numbers import Real
 import shutil
@@ -306,7 +305,6 @@ def render_with_music(
     *,
     config: AudioConfig,
     mix_original_audio: bool = False,
-    debug_output_dir: str | Path | None = None,
     video_encoder: str = "h264_nvenc",
 ) -> RenderResult:
     """Re-encode each selected clip, concatenate them, then add the soundtrack."""
@@ -333,16 +331,6 @@ def render_with_music(
             timeline, temporary, include_audio=mix_original_audio,
             video_encoder=video_encoder,
         )
-
-        if debug_output_dir is not None:
-            debug_dir = Path(debug_output_dir)
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(assembled, debug_dir / "assembled_before_music.ts")
-            manifest_path = debug_dir / "timeline_clips.json"
-            manifest_path.write_text(
-                json.dumps(timeline.to_dict(), indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
 
         return mix_music(
             assembled, music, output,
