@@ -14,7 +14,7 @@ features:
   window_stride: 2.0
 
 model:
-  checkpoint: models/best_model.pt
+  checkpoint: models/experiments/baseline_best.pt
   inference_batch_size: 256
 
 selection:
@@ -25,7 +25,7 @@ selection:
   flow_threshold: 0.40
   max_gap_to_merge: 3.0
   padding_seconds: 2.0
-  p2_envelope_decay: 0.0
+  p2_envelope_decay: 0.9
 
 audio:
   sync_mode: combined

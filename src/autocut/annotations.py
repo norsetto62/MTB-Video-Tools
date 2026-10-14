@@ -197,12 +197,13 @@ def load_annotations(
             # (including apostrophes). Detect the extension on the full
             # line rather than on a whitespace-split token.
             # ---------------------------------------------------------
-            audio_text = line
+            audio_text = line.rstrip()
             mix = False
-            if audio_text.endswith(" *"):
-                audio_text = audio_text[:-2].rstrip()
-                mix = True
 
+            if audio_text.endswith("*"):
+                audio_text = audio_text[:-1].rstrip()
+                mix = True
+                
             if _is_audio(audio_text):
                 audio_path = _resolve_source_path(
                     audio_text,
