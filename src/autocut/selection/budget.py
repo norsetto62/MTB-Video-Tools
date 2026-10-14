@@ -272,13 +272,38 @@ def select_highlight_budget(
     selected: list[SelectionCandidate] = []
     selected_duration = 0.0
     remaining = optional_budget
-    for item in ranked:
+    logger.info(
+        "Selection diagnostics: %d candidate(s) eligible after mandatory-overlap "
+        "filtering; optional budget %.3fs, minimum clip %.3fs.",
+        len(ranked), optional_budget, min_trim,
+    )
+    for rank, item in enumerate(ranked, start=1):
+        logger.info(
+            "Selection candidate #%d: video=%s annotation_order=%s "
+            "range=[%.3f, %.3f) duration=%.3fs score=%.6f evidence=%d "
+            "remaining_budget=%.3fs.",
+            rank, item.video_name, item.annotation_order, item.start, item.end,
+            item.duration, item.score, len(item.window_evidence), remaining,
+        )
         # A tiny tolerance avoids rejecting exact fits due to float roundoff.
         chosen = item
         if item.duration > remaining + 1e-9:
             chosen = _trim_to_budget(item, remaining, min_trim)  # type: ignore[assignment]
             if chosen is None:
+                logger.info(
+                    "Rejecting candidate #%d: cannot trim duration %.3fs to "
+                    "remaining budget %.3fs while retaining at least %.3fs and "
+                    "in-range evidence (evidence=%d).",
+                    rank, item.duration, remaining, min_trim,
+                    len(item.window_evidence),
+                )
                 continue
+            logger.info(
+                "Trimmed candidate #%d to [%.3f, %.3f), duration %.3fs, "
+                "retained evidence=%d.",
+                rank, chosen.start, chosen.end, chosen.duration,
+                len(chosen.window_evidence),
+            )
         # Annotation intervals can overlap in source time. Since provenance
         # requires processing them independently, prevent selecting the same
         # source frames twice when candidates originate from overlapping rows.
@@ -289,14 +314,21 @@ def select_highlight_budget(
             for previous in selected
         ):
             logger.info(
-                "Skipping candidate %s [%.3f, %.3f): overlaps an already selected candidate.",
-                chosen.video_name, chosen.start, chosen.end,
+                "Skipping candidate #%d %s [%.3f, %.3f): overlaps an already "
+                "selected candidate.",
+                rank, chosen.video_name, chosen.start, chosen.end,
             )
             continue
         selected.append(chosen)
         selected_duration += chosen.duration
         remaining = max(0.0, optional_budget - selected_duration)
+        logger.info(
+            "Accepted candidate #%d; selected_duration=%.3fs, "
+            "remaining_budget=%.3fs.",
+            rank, selected_duration, remaining,
+        )
         if remaining <= 1e-9:
+            logger.info("Selection stopped: optional duration budget exhausted.")
             break
 
     return SelectionResult(
