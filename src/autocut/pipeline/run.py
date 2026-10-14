@@ -234,6 +234,7 @@ def run_pipeline(
     settings: object,
     *,
     output_path: str | Path | None = None,
+    debug_render_dir: str | Path | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
 
@@ -456,6 +457,7 @@ def run_pipeline(
             destination,
             config=settings.audio,
             mix_original_audio=music_directive.mix,
+            debug_output_dir=debug_render_dir,
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")
