@@ -214,6 +214,7 @@ def _config_summary(settings: object) -> dict:
     return {
         "sample_fps": settings.sample_fps,
         "processing_width": settings.processing_width,
+        "video_encoder": getattr(settings, "video_encoder", "h264_nvenc"),
         "window_duration": settings.common.window_duration,
         "window_stride": settings.common.window_stride,
         "checkpoint": str(settings.checkpoint),
@@ -449,7 +450,10 @@ def run_pipeline(
     destination.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Rendering %d timeline clip(s) to %s.", len(timeline.clips), destination.resolve())
     if music_directive is None:
-        render_result = render_timeline(timeline, destination)
+        render_result = render_timeline(
+            timeline, destination,
+            video_encoder=getattr(settings, "video_encoder", "h264_nvenc"),
+        )
     else:
         render_result = render_with_music(
             timeline,
@@ -458,6 +462,7 @@ def run_pipeline(
             config=settings.audio,
             mix_original_audio=music_directive.mix,
             debug_output_dir=debug_render_dir,
+            video_encoder=getattr(settings, "video_encoder", "h264_nvenc"),
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")
