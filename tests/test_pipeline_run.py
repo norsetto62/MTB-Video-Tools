@@ -64,7 +64,7 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
         ),
     )
 
-    def fake_render(timeline, output_path):
+    def fake_render(timeline, output_path, **kwargs):
         assert isinstance(timeline, Timeline)
         assert len(timeline.clips) == 1
         assert timeline.clips[0].mandatory is True
@@ -151,7 +151,7 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
     )
     captured = {}
 
-    def fake_render(timeline, output_path):
+    def fake_render(timeline, output_path, **kwargs):
         captured["timeline"] = timeline
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"rendered")
