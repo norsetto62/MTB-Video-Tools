@@ -24,7 +24,6 @@ model:
   checkpoint: trained/model.pt
   inference_batch_size: 64
 selection:
-  target_duration: 90
   min_clip: 3
   max_clip_duration: 12
   junk_threshold: 0.6
@@ -52,7 +51,6 @@ logging:
     assert cfg.processing_width == 640
     assert cfg.checkpoint == Path("trained/model.pt")
     assert cfg.inference_batch_size == 64
-    assert cfg.target_duration == 90
     assert cfg.max_clip_duration == 12
     assert cfg.candidates.junk_threshold == 0.6
     # min_clip is the only final candidate-duration filter; the legacy
@@ -66,14 +64,14 @@ logging:
 
 def test_load_run_config_rejects_unknown_fields(tmp_path):
     path = tmp_path / "bad.yaml"
-    path.write_text("selection:\n  target_duration: 60\n  typo: 1\n")
+    path.write_text("selection:\n  typo: 1\n")
     with pytest.raises(ValueError, match="Unknown field"):
         load_run_config(path)
 
 
 def test_load_run_config_rejects_nonpositive_sampling_rate(tmp_path):
     path = tmp_path / "bad.yaml"
-    path.write_text("video:\n  sampling_fps: 0\nselection:\n  target_duration: 60\n")
+    path.write_text("video:\n  sampling_fps: 0\nselection:\n  min_clip: 3\n")
     with pytest.raises(ValueError, match="sampling_fps"):
         load_run_config(path)
 
