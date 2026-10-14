@@ -20,7 +20,7 @@ from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows
 from ..motion.features import FeatureExtractor
 from ..motion.flow import calculate_optical_flow
-from ..selection.budget import MandatoryClip, SelectionCandidate, select_highlight_budget
+from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
 from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
@@ -217,7 +217,6 @@ def _config_summary(settings: object) -> dict:
         "window_stride": settings.common.window_stride,
         "checkpoint": str(settings.checkpoint),
         "inference_batch_size": settings.inference_batch_size,
-        "target_duration": settings.target_duration,
         "min_clip": settings.common.min_clip,
         "max_clip_duration": settings.max_clip_duration,
         "candidate_generation": asdict(settings.candidates),
@@ -383,22 +382,14 @@ def run_pipeline(
         for index, clip in enumerate(clips)
         if clip.mandatory
     )
-    logger.info(
-        "Selecting highlights from %d candidate(s) with target duration %.1fs.",
-        len(all_candidates), settings.target_duration,
-    )
-    selection = select_highlight_budget(
+    logger.info("Selecting from %d candidate(s), independent of total output duration.", len(all_candidates))
+    selection = select_candidates(
         all_candidates,
-        settings.target_duration,
         mandatory,
-        min_trimmed_duration=settings.common.min_clip,
+        min_clip_duration=settings.common.min_clip,
         max_clip_duration=settings.max_clip_duration,
     )
-    timeline = assemble_timeline(
-        selection,
-        mandatory,
-        max_clip_duration=settings.max_clip_duration,
-    )
+    timeline = assemble_timeline(selection, mandatory)
 
     logger.info(
         "Selection complete: %d optional clip(s) selected, %d mandatory clip(s); "
