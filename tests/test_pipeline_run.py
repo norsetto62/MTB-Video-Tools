@@ -40,7 +40,6 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
         sample_fps=2.0,
         processing_width=480,
         inference_batch_size=16,
-        target_duration=10.0,
         max_clip_duration=0.0,
         candidates=CandidateGenerationConfig(),
         audio=SimpleNamespace(
@@ -109,7 +108,6 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         sample_fps=2.0,
         processing_width=480,
         inference_batch_size=16,
-        target_duration=20.0,
         max_clip_duration=0.0,
         candidates=CandidateGenerationConfig(padding_seconds=0.0),
         audio=SimpleNamespace(
