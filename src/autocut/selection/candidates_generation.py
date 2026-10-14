@@ -194,17 +194,20 @@ def generate_candidates(
     if not accepted:
         return []
 
-    # Padding is context extension, not a second eligibility test. Apply it
-    # before final merging/filtering so min_clip measures the usable result.
+    # First form semantic regions using max_gap. Padding is context extension,
+    # not a way to enlarge the configured gap tolerance.
+    merged = _merge_spans(accepted, max_gap=settings.max_gap_to_merge)
     padded = [
         _Span(
             max(0.0, span.start - settings.padding_seconds),
             min(float(clip_duration), span.end + settings.padding_seconds),
             list(span.window_indices),
         )
-        for span in accepted
+        for span in merged
     ]
-    final_spans = _merge_spans(padded, max_gap=settings.max_gap_to_merge)
+    # Legacy-compatible second merge: padding may make neighboring regions
+    # overlap or touch, in which case the final source interval is continuous.
+    final_spans = _merge_spans(padded, max_gap=0.0)
 
     candidates: list[CandidateClip] = []
     for span in final_spans:
