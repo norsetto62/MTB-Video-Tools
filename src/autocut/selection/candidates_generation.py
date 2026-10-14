@@ -275,12 +275,12 @@ def generate_candidates(
     padded: list[_Span] = []
     for index, span in enumerate(merged):
         previous_other = [
-            other.end for other in merged[:index]
-            if other.tier != span.tier and other.end <= span.start
+            (other.end + span.start) / 2.0 for other in merged[:index]
+            if other.tier != span.tier
         ]
         next_other = [
-            other.start for other in merged[index + 1:]
-            if other.tier != span.tier and other.start >= span.end
+            (span.end + other.start) / 2.0 for other in merged[index + 1:]
+            if other.tier != span.tier
         ]
         padded_start = max(0.0, span.start - settings.padding_seconds)
         padded_end = min(float(clip_duration), span.end + settings.padding_seconds)
