@@ -166,8 +166,8 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         {
             "target_duration", "min_clip", "max_clip_duration",
             "class_score_weights", "junk_threshold", "action_threshold",
-            "score_threshold", "min_candidate_duration", "max_gap_to_merge",
-            "padding_seconds",
+            "flow_threshold", "score_threshold", "min_candidate_duration",
+            "max_gap_to_merge", "padding_seconds", "p2_envelope_decay",
         },
         required=True,
     )
@@ -202,12 +202,16 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
 
     candidates = CandidateGenerationConfig(
         class_score_weights=tuple(weights),
-        junk_threshold=selection.get("junk_threshold", 0.55),
-        action_threshold=selection.get("action_threshold", 0.50),
-        score_threshold=selection.get("score_threshold", 0.60),
-        min_candidate_duration=selection.get("min_candidate_duration", 4.0),
+        junk_threshold=selection.get("junk_threshold", 0.20),
+        action_threshold=selection.get("action_threshold", 0.60),
+        flow_threshold=selection.get("flow_threshold", 0.40),
+        # min_clip is the sole final candidate-duration filter. The old
+        # min_candidate_duration key remains accepted for config compatibility
+        # but no longer controls filtering independently.
+        min_candidate_duration=common.min_clip,
         max_gap_to_merge=selection.get("max_gap_to_merge", 3.0),
         padding_seconds=selection.get("padding_seconds", 2.0),
+        p2_envelope_decay=selection.get("p2_envelope_decay", 0.0),
     )
     audio_config = AudioConfig(
         sync_mode=audio.get("sync_mode", "off"),
