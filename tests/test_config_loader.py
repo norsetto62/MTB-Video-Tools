@@ -55,7 +55,10 @@ logging:
     assert cfg.target_duration == 90
     assert cfg.max_clip_duration == 12
     assert cfg.candidates.junk_threshold == 0.6
-    assert cfg.candidates.min_candidate_duration == 5
+    # min_clip is the only final candidate-duration filter; the legacy
+    # min_candidate_duration key is accepted but does not override it.
+    assert cfg.candidates.min_candidate_duration == 3
+    assert cfg.candidates.flow_threshold == 0.4
     assert cfg.audio.sync_mode.value == "beat"
     assert cfg.audio.fade_duration == 1.5
     assert cfg.common.log_level == "DEBUG"
