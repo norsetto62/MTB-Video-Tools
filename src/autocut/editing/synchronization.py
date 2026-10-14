@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
+import logging
 from numbers import Real
 
 from autocut.audio.analysis import AudioAnalysis
 from autocut.audio.config import AudioConfig, SyncMode
 from autocut.selection.timeline import Timeline, TimelineClip
+
+logger = logging.getLogger(__name__)
 
 
 def _timestamp(value: Real) -> float:
@@ -110,7 +113,8 @@ def synchronize_timeline(
 
     Mandatory clip source intervals are immutable. Optional intervals are
     snapped at both boundaries, then checked for positive duration and the
-    configured per-clip maximum. There is no global output-duration budget.
+    configured per-clip maximum. If snapping would push an otherwise
+    in-budget timeline past the soundtrack duration, all snapping is rejected.
     A missing analysis or disabled mode is a no-op; analysis-failure logging
     belongs to the calling pipeline so it can warn only once.
     """
@@ -158,4 +162,15 @@ def synchronize_timeline(
 
     if proposed_intervals == original_intervals:
         return timeline
-    return _rebuild_timeline(timeline, proposed_intervals)
+    synchronized = _rebuild_timeline(timeline, proposed_intervals)
+    if (
+        timeline.duration <= analysis.duration + 1e-9
+        and synchronized.duration > analysis.duration + 1e-9
+    ):
+        logger.warning(
+            "Music synchronization would extend the edit to %.3fs, beyond "
+            "the soundtrack duration %.3fs; retaining unsnapped clip boundaries.",
+            synchronized.duration, analysis.duration,
+        )
+        return timeline
+    return synchronized
