@@ -140,11 +140,11 @@ def dispatch(args: argparse.Namespace) -> int:
         from .config_loader import load_run_config
         from .dataset.audit import audit_source, print_audit_report
 
-        settings = load_run_config(args.config)
-        _configure_logging(settings.common.log_level)
         if not args.source.is_file():
             print(f"Input file not found: {args.source}", file=sys.stderr)
             return 2
+        settings = load_run_config(args.config)
+        _configure_logging(settings.common.log_level)
         report = audit_source(
             args.source,
             settings,
