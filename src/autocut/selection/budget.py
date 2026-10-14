@@ -22,6 +22,9 @@ class SelectionCandidate:
     video_name: str
     video_order: int
     candidate: CandidateClip
+    # Zero-based position of the source annotation row in the manifest.
+    # None preserves compatibility for callers constructing candidates directly.
+    annotation_order: int | None = None
 
     @property
     def start(self) -> float:
@@ -146,7 +149,9 @@ def _trim_to_duration(
         start=start, end=end, duration=end - start, tier=tier,
         mean_score=mean_score, max_score=max_score, window_evidence=retained,
     )
-    return SelectionCandidate(item.video_name, item.video_order, trimmed)
+    return SelectionCandidate(
+        item.video_name, item.video_order, trimmed, item.annotation_order
+    )
 
 
 def _trim_to_budget(
@@ -190,6 +195,12 @@ def select_highlight_budget(
             raise ValueError("Candidate video_name must not be empty.")
         if isinstance(item.video_order, bool) or not isinstance(item.video_order, int) or item.video_order < 0:
             raise ValueError("Candidate video_order must be a non-negative integer.")
+        if item.annotation_order is not None and (
+            isinstance(item.annotation_order, bool)
+            or not isinstance(item.annotation_order, int)
+            or item.annotation_order < 0
+        ):
+            raise ValueError("Candidate annotation_order must be a non-negative integer or None.")
         _validate_interval(item.start, item.end, "Candidate")
         if not math.isfinite(item.score) or not math.isfinite(item.mean_score):
             raise ValueError("Candidate scores must be finite.")
