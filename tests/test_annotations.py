@@ -80,6 +80,43 @@ def test_explicit_video_interval(tmp_path):
     assert clips[0].end == 20.0
 
 
+def test_load_annotations_retains_manifest_line_order(tmp_path):
+    first_video = create_video(tmp_path, "first.mp4")
+    second_video = create_video(tmp_path, "second.mp4")
+    annotation_file = write_annotation_file(
+        tmp_path,
+        f"{first_video.name}\\n"
+        "00:10 00:20\\n"
+        f"{second_video.name} 00:01 00:08\\n",
+    )
+
+    clips, _ = load_annotations(annotation_file)
+
+    assert [clip.annotation_order for clip in clips] == [2, 3]
+
+
+def test_video_only_interval_keeps_declaration_order(tmp_path, monkeypatch):
+    whole_video = create_video(tmp_path, "whole.mp4")
+    interval_video = create_video(tmp_path, "interval.mp4")
+    annotation_file = write_annotation_file(
+        tmp_path,
+        f"{whole_video.name}\\n"
+        f"{interval_video.name} 00:10 00:20\\n",
+    )
+    monkeypatch.setattr(
+        "autocut.video.probe.get_video_info",
+        lambda path: VideoInfo(width=1920, height=1080, fps=30.0, duration=60.0),
+    )
+
+    clips, _ = load_annotations(annotation_file)
+
+    assert [clip.video_name for clip in clips] == [
+        str(whole_video.resolve()),
+        str(interval_video.resolve()),
+    ]
+    assert [clip.annotation_order for clip in clips] == [1, 2]
+
+
 def test_subsequent_intervals_use_previous_video(tmp_path):
     video = create_video(tmp_path)
     annotation_file = write_annotation_file(
