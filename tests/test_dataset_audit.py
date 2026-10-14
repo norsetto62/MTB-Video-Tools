@@ -11,7 +11,7 @@ from autocut.config_loader import load_run_config
 def _run_config(tmp_path: Path):
     path = tmp_path / "autocut.yaml"
     path.write_text(
-        "selection:\n  target_duration: 60\n",
+        "",
         encoding="utf-8",
     )
     return load_run_config(path)
