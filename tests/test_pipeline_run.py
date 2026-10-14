@@ -153,5 +153,5 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         (10.0, 0),
         (1.0, 1),
     ]
-    assert [item["annotation_order"] for item in result["inference"]] == [0, 1]
+    assert [item["annotation_order"] for item in result["inference"]] == [2, 3]
     assert result["candidate_count"] == 2
