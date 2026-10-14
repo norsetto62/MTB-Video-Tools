@@ -1,15 +1,15 @@
-"""Tests for Phase 9 candidate generation."""
+"""Tests for class-aware Phase 9 candidate generation."""
 
 import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
 
+from autocut.ml.inference import InferenceResult
 from autocut.selection.candidates_generation import (
     CandidateGenerationConfig,
     generate_candidates,
 )
-from autocut.ml.inference import InferenceResult
 
 
 def _inference(intervals, probabilities):
@@ -20,120 +20,112 @@ def _inference(intervals, probabilities):
 
 
 def _action():
-    return [0.20, 0.20, 0.60]
+    return [0.10, 0.20, 0.70]
 
 
-def _moderate():
-    return [0.20, 0.70, 0.10]
+def _flow():
+    return [0.10, 0.60, 0.30]
 
 
 def test_overlapping_accepted_windows_union_and_padding_clamps_to_video():
-    result = _inference(
-        [[0, 4], [2, 6], [4, 8]],
-        [_action(), _action(), _action()],
-    )
-
+    result = _inference([[0, 4], [2, 6], [4, 8]], [_action()] * 3)
     clips = generate_candidates(result, clip_duration=8)
-
     assert len(clips) == 1
     assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 8.0, 8.0)
     assert clips[0].tier == "high_action"
-    assert clips[0].mean_score == pytest.approx(1.7)
-    assert clips[0].max_score == pytest.approx(1.7)
+    assert clips[0].mean_score == pytest.approx(1.95)
+    assert clips[0].max_score == pytest.approx(1.95)
+    assert clips[0].window_evidence[0].p2 == pytest.approx(0.7)
 
 
-def test_junk_gate_takes_precedence_over_high_action_and_score():
-    # The weighted score is 1.125, but P0 == junk_threshold rejects the window.
-    result = _inference([[0, 4]], [[0.55, 0.0, 0.45]])
-
-    assert generate_candidates(result, 10) == []
-
-
-def test_action_threshold_equality_is_high_action():
-    result = _inference([[0, 4]], [[0.20, 0.30, 0.50]])
-
-    clips = generate_candidates(result, 10)
-
-    assert len(clips) == 1
-    assert clips[0].tier == "high_action"
+def test_high_action_requires_clean_window_and_action_as_argmax():
+    accepted = _inference([[0, 4]], [[0.10, 0.20, 0.70]])
+    rejected_junk = _inference([[0, 4]], [[0.20, 0.10, 0.70]])
+    rejected_not_argmax = _inference([[0, 4]], [[0.10, 0.50, 0.40]])
+    config = CandidateGenerationConfig(padding_seconds=0.0)
+    assert len(generate_candidates(accepted, 10, config=config)) == 1
+    assert generate_candidates(rejected_junk, 10, config=config) == []
+    assert generate_candidates(rejected_not_argmax, 10, config=config) == []
 
 
-def test_moderate_interest_is_accepted_when_score_meets_threshold():
-    result = _inference([[0, 4]], [[0.20, 0.80, 0.0]])
-
-    clips = generate_candidates(result, 10)
-
+def test_flow_eligibility_is_class_aware_not_weighted_score_only():
+    good_flow = _inference([[0, 4]], [_flow()])
+    junk_dominated = _inference([[0, 4]], [[0.60, 0.30, 0.10]])
+    weak_flow = _inference([[0, 4]], [[0.10, 0.35, 0.55]])
+    config = CandidateGenerationConfig(padding_seconds=0.0)
+    clips = generate_candidates(good_flow, 10, config=config)
     assert len(clips) == 1
     assert clips[0].tier == "moderate_interest"
-    assert clips[0].mean_score == pytest.approx(0.8)
+    assert generate_candidates(junk_dominated, 10, config=config) == []
+    assert generate_candidates(weak_flow, 10, config=config) == []
 
 
-def test_short_span_is_removed_before_padding():
-    result = _inference([[3, 5]], [_action()])
-    config = CandidateGenerationConfig(
-        min_candidate_duration=4.0,
-        padding_seconds=2.0,
-    )
-
-    assert generate_candidates(result, 10, config=config) == []
-
-
-def test_gap_shorter_than_limit_is_bridged():
-    result = _inference(
-        [[0, 2], [4, 6]],
-        [_action(), _action()],
-    )
-    config = CandidateGenerationConfig(
-        min_candidate_duration=4.0,
-        max_gap_to_merge=3.0,
-        padding_seconds=0.0,
-    )
-
+def test_flow_accepts_p1_greater_than_p2_even_when_class_argmax_is_not_flow():
+    result = _inference([[0, 4]], [[0.15, 0.44, 0.41]])
+    config = CandidateGenerationConfig(padding_seconds=0.0)
     clips = generate_candidates(result, 10, config=config)
-
     assert len(clips) == 1
-    assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 6.0, 6.0)
+    assert clips[0].tier == "moderate_interest"
 
 
-def test_gap_equal_to_limit_is_not_bridged():
-    result = _inference(
-        [[0, 2], [5, 7]],
-        [_action(), _action()],
-    )
+def test_min_clip_is_applied_after_padding_and_clamping():
+    result = _inference([[3, 5]], [_action()])
+    config = CandidateGenerationConfig(min_candidate_duration=5.0, padding_seconds=2.0)
+    clips = generate_candidates(result, 10, config=config)
+    assert len(clips) == 1
+    assert (clips[0].start, clips[0].end, clips[0].duration) == (1.0, 7.0, 6.0)
+
+
+def test_min_clip_filters_final_short_clip():
+    result = _inference([[0, 2]], [_action()])
     config = CandidateGenerationConfig(
-        min_candidate_duration=4.0,
-        max_gap_to_merge=3.0,
-        padding_seconds=0.0,
+        min_candidate_duration=3.0, padding_seconds=0.0, max_gap_to_merge=0.0
     )
-
     assert generate_candidates(result, 10, config=config) == []
 
 
-def test_padding_can_merge_surviving_clips_and_scores_are_combined():
-    result = _inference(
-        [[0, 4], [7, 11]],
-        [_moderate(), _action()],
-    )
+def test_gap_equal_to_max_gap_is_bridged_inclusively():
+    result = _inference([[0, 2], [5, 7]], [_action(), _action()])
     config = CandidateGenerationConfig(
-        min_candidate_duration=4.0,
-        max_gap_to_merge=0.0,
-        padding_seconds=2.0,
+        min_candidate_duration=3.0, max_gap_to_merge=3.0, padding_seconds=0.0
     )
+    clips = generate_candidates(result, 10, config=config)
+    assert len(clips) == 1
+    assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 7.0, 7.0)
 
+
+def test_padding_can_merge_regions_after_max_gap_merge():
+    result = _inference([[0, 4], [7, 11]], [_flow(), _action()])
+    config = CandidateGenerationConfig(
+        min_candidate_duration=3.0, max_gap_to_merge=0.0, padding_seconds=2.0
+    )
     clips = generate_candidates(result, 15, config=config)
-
     assert len(clips) == 1
     assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 13.0, 13.0)
     assert clips[0].tier == "high_action"
-    assert clips[0].mean_score == pytest.approx((0.95 + 1.7) / 2)
-    assert clips[0].max_score == pytest.approx(1.7)
+    assert clips[0].mean_score == pytest.approx((0.9 + 1.95) / 2)
+    assert clips[0].max_score == pytest.approx(1.95)
+
+
+def test_asymmetric_p2_envelope_can_preserve_a_short_action_dropout():
+    result = _inference(
+        [[0, 2], [2, 4]],
+        [[0.10, 0.10, 0.80], [0.10, 0.45, 0.45]],
+    )
+    config = CandidateGenerationConfig(
+        action_threshold=0.60, flow_threshold=0.40,
+        p2_envelope_decay=0.80, padding_seconds=0.0,
+        max_gap_to_merge=0.0, min_candidate_duration=3.0,
+    )
+    clips = generate_candidates(result, 10, config=config)
+    assert len(clips) == 1
+    assert clips[0].tier == "high_action"
+    # Scoring/evidence retains the original, unsmoothed probabilities.
+    assert clips[0].window_evidence[1].p2 == pytest.approx(0.45)
 
 
 def test_candidates_reject_unsorted_window_timestamps():
-    result = _inference(
-        [[20, 24], [2, 6]],
-        [_action(), _action()],
-    )
+    result = _inference([[20, 24], [2, 6]], [_action(), _action()])
     with pytest.raises(ValueError, match="strictly increasing"):
         generate_candidates(result, 30)
 
@@ -144,7 +136,8 @@ def test_candidates_reject_unsorted_window_timestamps():
         {"junk_threshold": -0.1},
         {"junk_threshold": 1.1},
         {"action_threshold": float("nan")},
-        {"score_threshold": -0.1},
+        {"flow_threshold": 1.1},
+        {"p2_envelope_decay": -0.1},
         {"min_candidate_duration": 0},
         {"max_gap_to_merge": -1},
         {"padding_seconds": float("inf")},
