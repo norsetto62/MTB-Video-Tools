@@ -72,10 +72,10 @@ def assemble_timeline(
 ) -> Timeline:
     """Place clips in annotation-manifest order, then source-time order.
 
-    Pipeline candidates carry the original annotation row index. Mandatory
-    clips use their sequence_order, which is assigned from that same ordered
-    annotation list. For compatibility, candidates without annotation_order
-    fall back to video_order. Within an annotation, candidate source time
+    Pipeline candidates carry the physical manifest line number of their
+    source interval. Mandatory clips use their sequence_order, which is set to
+    that same line number. For compatibility, candidates without
+    annotation_order fall back to video_order. Within an annotation, source time
     determines order. Output is concatenated without transitions/overlaps.
     """
     if not isinstance(selection, SelectionResult):
