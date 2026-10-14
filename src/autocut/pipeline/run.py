@@ -214,7 +214,7 @@ def _config_summary(settings: object) -> dict:
     return {
         "sample_fps": settings.sample_fps,
         "processing_width": settings.processing_width,
-        "video_encoder": getattr(settings, "video_encoder", "h264_nvenc"),
+        "video_encoder": (video_encoder or getattr(settings, "video_encoder", "h264_nvenc")),
         "window_duration": settings.common.window_duration,
         "window_stride": settings.common.window_stride,
         "checkpoint": str(settings.checkpoint),
@@ -236,6 +236,7 @@ def run_pipeline(
     *,
     output_path: str | Path | None = None,
     debug_render_dir: str | Path | None = None,
+    video_encoder: str | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
 
