@@ -308,9 +308,10 @@ def run_pipeline(
     # manifest row identity throughout inference and candidate generation;
     # merging source ranges here would erase which interval produced a clip.
     for fallback_order, clip in enumerate(clips):
+        source_annotation_order = getattr(clip, "annotation_order", None)
         annotation_order = (
-            clip.annotation_order
-            if clip.annotation_order is not None
+            source_annotation_order
+            if source_annotation_order is not None
             else fallback_order
         )
         video_name = str(Path(clip.video_name).resolve())
@@ -374,8 +375,8 @@ def run_pipeline(
             end=float(clip.end),
             video_order=video_order[str(Path(clip.video_name).resolve())],
             sequence_order=(
-                clip.annotation_order
-                if clip.annotation_order is not None
+                getattr(clip, "annotation_order", None)
+                if getattr(clip, "annotation_order", None) is not None
                 else index
             ),
         )
