@@ -117,34 +117,27 @@ def _validate_inference(result: InferenceResult) -> tuple[np.ndarray, np.ndarray
 
 
 def _merge_spans(spans: Sequence[_Span], *, max_gap: float) -> list[_Span]:
-    """Merge spans of the same semantic tier only; the gap rule is inclusive."""
-    merged: list[_Span] = []
-    for tier in ("high_action", "moderate_interest"):
-        ordered = sorted(
-            (span for span in spans if span.tier == tier),
-            key=lambda span: (span.start, span.end),
-        )
-        if not ordered:
-            continue
-        tier_merged = [
-            _Span(ordered[0].start, ordered[0].end,
-                  list(ordered[0].window_indices), tier)
-        ]
-        for span in ordered[1:]:
-            current = tier_merged[-1]
-            gap = span.start - current.end
-            if gap <= max_gap:
-                current.end = max(current.end, span.end)
-                current.window_indices = sorted(
-                    set(current.window_indices).union(span.window_indices)
-                )
-            else:
-                tier_merged.append(
-                    _Span(span.start, span.end, list(span.window_indices), tier)
-                )
-        merged.extend(tier_merged)
-    return sorted(merged, key=lambda span: (span.start, span.end, span.tier))
-
+    """Merge chronologically adjacent spans only when their semantic tiers match."""
+    ordered = sorted(spans, key=lambda span: (span.start, span.end, span.tier))
+    if not ordered:
+        return []
+    merged = [
+        _Span(ordered[0].start, ordered[0].end,
+              list(ordered[0].window_indices), ordered[0].tier)
+    ]
+    for span in ordered[1:]:
+        current = merged[-1]
+        gap = span.start - current.end
+        if span.tier == current.tier and gap <= max_gap:
+            current.end = max(current.end, span.end)
+            current.window_indices = sorted(
+                set(current.window_indices).union(span.window_indices)
+            )
+        else:
+            merged.append(
+                _Span(span.start, span.end, list(span.window_indices), span.tier)
+            )
+    return merged
 
 def _p2_envelope(values: np.ndarray, decay: float) -> np.ndarray:
     """Follow P2 rises immediately and let falls decay asymmetrically."""
