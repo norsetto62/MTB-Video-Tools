@@ -398,4 +398,14 @@ def load_annotations(
             )
         )
 
+    # A video-only declaration is materialized after parsing because its
+    # duration requires probing. Restore manifest order now that all intervals
+    # exist, using physical line numbers retained on Clip.
+    clips.sort(
+        key=lambda clip: (
+            clip.annotation_order
+            if clip.annotation_order is not None
+            else float("inf")
+        )
+    )
     return clips, audio_config
