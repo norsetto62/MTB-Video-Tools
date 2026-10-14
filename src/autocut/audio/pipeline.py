@@ -23,6 +23,7 @@ def prepare_audio_timeline(
     config: AudioConfig,
     analyze: AudioAnalyzer | None = None,
     cache_dir: str | Path | None = None,
+    analysis: AudioAnalysis | None = None,
 ) -> Timeline:
     """Analyze music and synchronize an already-selected timeline.
 
@@ -55,9 +56,12 @@ def prepare_audio_timeline(
     if cache_dir is not None and not isinstance(cache_dir, (str, Path)):
         raise TypeError("cache_dir must be a string or Path, or None.")
 
+    if analysis is not None and not isinstance(analysis, AudioAnalysis):
+        raise TypeError("analysis must be an AudioAnalysis instance or None.")
     analyzer = analyze_audio if analyze is None else analyze
     try:
-        analysis = analyzer(music_path, cache_dir=cache_dir)
+        if analysis is None:
+            analysis = analyzer(music_path, cache_dir=cache_dir)
         if not isinstance(analysis, AudioAnalysis):
             raise TypeError("Audio analyzer must return an AudioAnalysis instance.")
     except Exception as exc:
