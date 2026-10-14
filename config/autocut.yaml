@@ -7,6 +7,7 @@ paths:
 video:
   sampling_fps: 2.0
   processing_width: 480
+  encoder: h264_nvenc
 
 features:
   window_duration: 4.0
