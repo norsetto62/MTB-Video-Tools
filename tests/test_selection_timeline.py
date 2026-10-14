@@ -108,7 +108,7 @@ def test_timeline_interleaves_mandatory_and_optional_by_manifest_order():
     mandatory = [MandatoryClip(
         "video1.mp4", 2, 6, video_order=0, sequence_order=1
     )]
-    third = candidate("video1.mp4", 0, 0, 4, annotation_order=2)
+    third = candidate("video1.mp4", 0, 7, 11, annotation_order=2)
     selection = select_highlight_budget([first, third], 30, mandatory)
     timeline = assemble_timeline(selection, mandatory)
     assert [
@@ -117,5 +117,5 @@ def test_timeline_interleaves_mandatory_and_optional_by_manifest_order():
     ] == [
         ("video2.mp4", 10, 0, False),
         ("video1.mp4", 2, 1, True),
-        ("video1.mp4", 0, 2, False),
+        ("video1.mp4", 7, 2, False),
     ]
