@@ -426,6 +426,7 @@ def run_pipeline(
             music_directive.path,
             config=settings.audio,
             cache_dir=settings.cache_dir / "audio",
+            analysis=audio_analysis,
         )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
