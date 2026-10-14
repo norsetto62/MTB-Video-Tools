@@ -33,7 +33,7 @@
 - [x] **Phase 11 — Audio / rendering**
   - audio / rendering
         ↓
-- [ ] **Phase 12 — Pipeline + CLI**
+- [x] **Phase 12 — Pipeline + CLI**
   - pipeline + CLI
 
 ## 12
