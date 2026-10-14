@@ -94,17 +94,43 @@ def test_gap_equal_to_max_gap_is_bridged_inclusively():
     assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 7.0, 7.0)
 
 
-def test_padding_can_merge_regions_after_max_gap_merge():
+def test_padding_does_not_merge_different_interest_tiers():
     result = _inference([[0, 4], [7, 11]], [_flow(), _action()])
     config = CandidateGenerationConfig(
         min_candidate_duration=3.0, max_gap_to_merge=0.0, padding_seconds=2.0
     )
     clips = generate_candidates(result, 15, config=config)
-    assert len(clips) == 1
-    assert (clips[0].start, clips[0].end, clips[0].duration) == (0.0, 13.0, 13.0)
-    assert clips[0].tier == "high_action"
-    assert clips[0].mean_score == pytest.approx((1.35 + 1.95) / 2)
-    assert clips[0].max_score == pytest.approx(1.95)
+    assert len(clips) == 2
+    assert [(clip.start, clip.end, clip.tier) for clip in clips] == [
+        (0.0, 5.5, "moderate_interest"),
+        (5.5, 13.0, "high_action"),
+    ]
+    assert clips[0].max_score == pytest.approx(1.35)
+    assert clips[1].max_score == pytest.approx(1.95)
+
+
+def test_moderate_region_before_high_action_remains_separate():
+    intervals = [[0, 4], [2, 6], [4, 8], [6, 10], [8, 12], [10, 14],
+                 [12, 16], [14, 18], [16, 20], [18, 22], [20, 24],
+                 [22, 26], [24, 28], [28, 32], [30, 34], [32, 36]]
+    probabilities = [_flow()] * 13 + [
+        [0.10, 0.40, 0.50],
+        [0.015, 0.329, 0.656],
+        [0.007, 0.224, 0.770],
+        [0.010, 0.307, 0.683],
+    ]
+    # Window #13 is ineligible; it must not let padding or merging promote
+    # the preceding moderate-interest run to high_action.
+    config = CandidateGenerationConfig(
+        min_candidate_duration=3.0, max_gap_to_merge=3.0, padding_seconds=2.0
+    )
+    clips = generate_candidates(_inference(intervals, probabilities), 40, config=config)
+    assert any(clip.tier == "moderate_interest" for clip in clips)
+    assert any(clip.tier == "high_action" for clip in clips)
+    assert all(
+        not (left.tier != right.tier and left.start < right.end and right.start < left.end)
+        for left, right in zip(clips, clips[1:])
+    )
 
 
 def test_asymmetric_p2_envelope_can_preserve_a_short_action_dropout():
