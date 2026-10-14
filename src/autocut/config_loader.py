@@ -43,6 +43,7 @@ class RunConfig:
     cache_dir: Path
     sample_fps: float
     processing_width: int
+    video_encoder: str
     checkpoint: Path
     inference_batch_size: int
     max_clip_duration: float
@@ -148,6 +149,13 @@ def _load_yaml(path: str | Path) -> dict[str, Any]:
     return _mapping(raw, where="root")
 
 
+def _video_encoder(value: Any) -> str:
+    """Validate the encoder used to re-encode selected timeline clips."""
+    if not isinstance(value, str) or value not in {"h264_nvenc", "libx264"}:
+        raise ValueError("video.encoder must be h264_nvenc or libx264.")
+    return value
+
+
 def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
     """Load production settings and map them to existing typed configurations."""
     raw = _load_yaml(path)
@@ -157,7 +165,7 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         raw, "paths",
         {"data_dir", "models_dir", "output_dir", "cache_dir"},
     )
-    video = _section(raw, "video", {"sampling_fps", "processing_width"})
+    video = _section(raw, "video", {"sampling_fps", "processing_width", "encoder"})
     features = _section(raw, "features", {"window_duration", "window_stride"})
     model = _section(raw, "model", {"checkpoint", "inference_batch_size"})
     selection = _section(
@@ -225,6 +233,7 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         processing_width=_positive_int(
             video.get("processing_width", 480), name="video.processing_width"
         ),
+        video_encoder=_video_encoder(video.get("encoder", "h264_nvenc")),
         checkpoint=_path(model.get("checkpoint", "models/best_model.pt"), name="model.checkpoint"),
         inference_batch_size=_positive_int(
             model.get("inference_batch_size", 256), name="model.inference_batch_size"
