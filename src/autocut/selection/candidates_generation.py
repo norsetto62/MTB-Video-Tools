@@ -8,12 +8,15 @@ select the final edit (Phase 10).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import math
 from typing import Sequence
 
 import numpy as np
 
 from ..ml.inference import InferenceResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -215,13 +218,30 @@ def generate_candidates(
             continue
 
         accepted_tiers[index] = tier
-        accepted.append(_Span(float(interval[0]), float(interval[1]), [index]))
+        window_start, window_end = float(interval[0]), float(interval[1])
+        logger.info(
+            "Accepted inference window #%d: [%.3f, %.3f]s, duration=%.3fs, "
+            "tier=%s, score=%.6f.",
+            index, window_start, window_end, window_end - window_start, tier, float(score),
+        )
+        accepted.append(_Span(window_start, window_end, [index]))
 
     if not accepted:
         return []
 
     # Stage 2: dissolve overlapping and touching sliding-window intervals.
     raw_spans = _merge_spans(accepted, max_gap=0.0)
+    logger.info(
+        "Pre-gap-merge/pre-padding spans: %d span(s) from %d accepted window(s).",
+        len(raw_spans), len(accepted),
+    )
+    for span_index, span in enumerate(raw_spans, start=1):
+        logger.info(
+            "Pre-gap-merge/pre-padding span #%d: [%.3f, %.3f]s, duration=%.3fs, "
+            "accepted_windows=%d.",
+            span_index, span.start, span.end, span.end - span.start,
+            len(span.window_indices),
+        )
 
     # Stage 3: bridge only gaps strictly shorter than max_gap_to_merge.
     gap_merged = _merge_spans(raw_spans, max_gap=settings.max_gap_to_merge)
