@@ -10,6 +10,7 @@ from autocut.data_models import Clip, FeatureSequence
 from autocut.dataset.feature_cache import (
     FEATURE_CACHE_VERSION,
     feature_cache_path,
+    source_file_hash,
     load_feature_sequence,
     save_feature_sequence,
 )
@@ -40,6 +41,40 @@ def test_feature_cache_round_trip_and_deterministic_path(tmp_path):
     np.testing.assert_array_equal(actual.features, expected.features)
     np.testing.assert_array_equal(actual.timestamps, expected.timestamps)
 
+
+
+def test_metadata_fingerprint_is_default_and_does_not_hash_source(tmp_path, monkeypatch):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+
+    def fail_if_hashing(_path):
+        raise AssertionError("metadata mode must not hash the full video")
+
+    monkeypatch.setattr("autocut.dataset.feature_cache.source_file_hash", fail_if_hashing)
+    path = save_feature_sequence(sequence, video, cache_dir, clip)
+    assert path.is_file()
+    assert load_feature_sequence(video, cache_dir, clip) is not None
+
+
+def test_sha256_fingerprint_remains_available_as_opt_in(tmp_path, monkeypatch):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    calls = []
+    real_hash = source_file_hash
+
+    def track_hash(path):
+        calls.append(Path(path))
+        return real_hash(path)
+
+    monkeypatch.setattr("autocut.dataset.feature_cache.source_file_hash", track_hash)
+    save_feature_sequence(sequence, video, cache_dir, clip, source_fingerprint_mode="sha256")
+    assert calls
+    assert load_feature_sequence(video, cache_dir, clip, source_fingerprint_mode="sha256") is not None
+
+
+def test_metadata_fingerprint_changes_when_file_stat_changes(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    save_feature_sequence(sequence, video, cache_dir, clip)
+    video.write_bytes(b"video bytes with a different size")
+    assert load_feature_sequence(video, cache_dir, clip) is None
 
 def test_feature_cache_misses_when_source_content_changes(tmp_path):
     video, clip, sequence, cache_dir = _fixture(tmp_path)

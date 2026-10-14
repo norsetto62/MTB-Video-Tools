@@ -23,7 +23,7 @@ from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
 
 logger = logging.getLogger(__name__)
 
-FEATURE_CACHE_VERSION = 1
+FEATURE_CACHE_VERSION = 2
 FEATURE_SCHEMA_VERSION = 1
 _ARRAY_FORMAT_VERSION = 1
 
@@ -72,21 +72,28 @@ def _identity(
     sample_fps: float,
     processing_width: int,
     flow_config: FarnebackConfig,
+    source_fingerprint_mode: str = "metadata",
 ) -> tuple[dict[str, Any], str]:
     source = Path(video_path).expanduser().resolve()
-    fingerprint = source_file_hash(source)
+    stat = source.stat()
+    if source_fingerprint_mode not in {"metadata", "sha256"}:
+        raise ValueError("source_fingerprint_mode must be 'metadata' or 'sha256'.")
     metadata = {
         "cache_version": FEATURE_CACHE_VERSION,
         "array_format_version": _ARRAY_FORMAT_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "feature_names": list(FEATURE_NAMES),
         "source_path": str(source),
-        "source_sha256": fingerprint,
+        "source_fingerprint_mode": source_fingerprint_mode,
+        "source_size_bytes": stat.st_size,
+        "source_mtime_ns": stat.st_mtime_ns,
         "clip": {"start": float(clip.start), "end": float(clip.end)},
         "sample_fps": float(sample_fps),
         "processing_width": int(processing_width),
         "flow_config": _config_payload(flow_config),
     }
+    if source_fingerprint_mode == "sha256":
+        metadata["source_sha256"] = source_file_hash(source)
     encoded = json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False)
     key = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     return metadata, key
@@ -100,11 +107,13 @@ def feature_cache_path(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    source_fingerprint_mode: str = "metadata",
 ) -> Path:
-    """Return the deterministic cache path for a source and extraction contract."""
+    """Return the deterministic cache path; metadata fingerprinting is the default."""
     _, key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
+        source_fingerprint_mode=source_fingerprint_mode,
     )
     return Path(cache_dir) / f"{key}.npz"
 
@@ -128,6 +137,7 @@ def save_feature_sequence(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    source_fingerprint_mode: str = "metadata",
 ) -> Path:
     """Write a feature sequence and metadata via an atomic file replacement."""
     if not isinstance(sequence, FeatureSequence):
@@ -135,6 +145,7 @@ def save_feature_sequence(
     metadata, identity_key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
+        source_fingerprint_mode=source_fingerprint_mode,
     )
     features = np.asarray(sequence.features)
     timestamps = np.asarray(sequence.timestamps)
@@ -201,12 +212,14 @@ def load_feature_sequence(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    source_fingerprint_mode: str = "metadata",
 ) -> FeatureSequence | None:
     """Load a compatible cache entry; missing, stale, or corrupt entries are misses."""
     try:
         expected, key = _identity(
             video_path, clip, sample_fps=sample_fps,
             processing_width=processing_width, flow_config=flow_config,
+            source_fingerprint_mode=source_fingerprint_mode,
         )
         target = Path(cache_dir) / f"{key}.npz"
         with np.load(target, allow_pickle=False) as archive:

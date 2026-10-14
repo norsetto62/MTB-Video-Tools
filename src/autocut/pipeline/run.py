@@ -13,7 +13,8 @@ import cv2
 import numpy as np
 
 from ..annotations import load_annotations
-from ..data_models import FeatureSequence, FeatureWindows, VideoInfo
+from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
+from ..dataset.feature_cache import load_feature_sequence, save_feature_sequence
 from ..dataset.windows import build_windows
 from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows
@@ -48,81 +49,124 @@ def _extract_windows(
     end: float,
     settings: object,
 ) -> FeatureWindows | None:
-    """Decode one requested source range and build its temporal feature windows.
-
-    Returns None when the range is too short to produce a complete window.
-    Timestamps in the returned windows are relative to the range start; this
-    lets candidate generation clamp and merge within that range only.
-    """
-    feature_rows: list[np.ndarray] = []
-    timestamps: list[float] = []
-    previous_gray: np.ndarray | None = None
-    extractor: FeatureExtractor | None = None
-    started = time.monotonic()
-    last_progress = started
-    frames_processed = 0
-    estimated_frames = max(1, int(round((end - start) * settings.sample_fps)))
-
-    logger.info(
-        "Analysing %s range [%.1f, %.1f]s (%.1fs at %.2f sampled FPS).",
-        video_path, start, end, end - start, settings.sample_fps,
+    """Load cached motion features or extract, cache, and window them."""
+    cache_dir = settings.cache_dir / "features"
+    cache_clip = Clip(
+        video_name=str(video_path),
+        start=float(start),
+        end=float(end),
+        mandatory=False,
     )
-
-    with VideoReader(
+    sequence = load_feature_sequence(
         video_path,
-        start=start,
-        duration=end - start,
+        cache_dir,
+        cache_clip,
         sample_fps=settings.sample_fps,
-    ) as reader:
-        for _frame_index, timestamp, frame in reader:
-            frames_processed += 1
-            height, width = frame.shape[:2]
-            target_width = min(width, settings.processing_width)
-            if target_width != width:
-                target_height = max(2, int(round(height * target_width / width)))
-                frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if previous_gray is not None:
-                if extractor is None:
-                    extractor = FeatureExtractor(gray.shape[1], gray.shape[0])
-                flow = calculate_optical_flow(previous_gray, gray)
-                feature_rows.append(extractor.extract_vector(flow))
-                timestamps.append(float(timestamp))
-            previous_gray = gray
-
-            now = time.monotonic()
-            if frames_processed % 20 == 0 or now - last_progress >= 10.0:
-                logger.info(
-                    "Motion analysis: %s — %d/%d sampled frames (%.0f%%), "
-                    "%.1fs elapsed.",
-                    video_path.name,
-                    frames_processed,
-                    estimated_frames,
-                    min(100.0, 100.0 * frames_processed / estimated_frames),
-                    now - started,
-                )
-                last_progress = now
-
-    logger.info(
-        "Motion analysis finished for %s: %d sampled frames, %d motion-feature rows "
-        "in %.1fs.",
-        video_path.name, frames_processed, len(feature_rows), time.monotonic() - started,
+        processing_width=settings.processing_width,
     )
 
-    if len(feature_rows) < 2:
+    if sequence is not None:
         logger.info(
-            "Skipping candidate inference for short range %s [%.3f, %.3f): "
-            "not enough sampled frames.",
-            video_path, start, end,
+            "Feature cache HIT: %s [%.1f, %.1f]s (%d rows).",
+            video_path.name, start, end, len(sequence.timestamps),
         )
-        return None
+        # Cache timestamps are source-absolute; windows stay range-local.
+        sequence = FeatureSequence(
+            features=sequence.features,
+            timestamps=np.asarray(sequence.timestamps - start, dtype=np.float64),
+        )
+    else:
+        logger.info(
+            "Feature cache MISS: %s [%.1f, %.1f]s; extracting motion features.",
+            video_path.name, start, end,
+        )
+        feature_rows: list[np.ndarray] = []
+        timestamps: list[float] = []
+        previous_gray: np.ndarray | None = None
+        extractor: FeatureExtractor | None = None
+        started = time.monotonic()
+        last_progress = started
+        frames_processed = 0
+        estimated_frames = max(1, int(round((end - start) * settings.sample_fps)))
 
-    sequence = FeatureSequence(
-        features=np.asarray(feature_rows, dtype=np.float32),
-        timestamps=np.asarray(timestamps, dtype=np.float64),
-    )
+        logger.info(
+            "Analysing %s range [%.1f, %.1f]s (%.1fs at %.2f sampled FPS).",
+            video_path, start, end, end - start, settings.sample_fps,
+        )
+
+        with VideoReader(
+            video_path,
+            start=start,
+            duration=end - start,
+            sample_fps=settings.sample_fps,
+        ) as reader:
+            for _frame_index, timestamp, frame in reader:
+                frames_processed += 1
+                height, width = frame.shape[:2]
+                target_width = min(width, settings.processing_width)
+                if target_width != width:
+                    target_height = max(2, int(round(height * target_width / width)))
+                    frame = cv2.resize(
+                        frame, (target_width, target_height),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if previous_gray is not None:
+                    if extractor is None:
+                        extractor = FeatureExtractor(gray.shape[1], gray.shape[0])
+                    flow = calculate_optical_flow(previous_gray, gray)
+                    feature_rows.append(extractor.extract_vector(flow))
+                    timestamps.append(float(timestamp))
+                previous_gray = gray
+
+                now = time.monotonic()
+                if frames_processed % 20 == 0 or now - last_progress >= 10.0:
+                    logger.info(
+                        "Motion analysis: %s — %d/%d sampled frames (%.0f%%), "
+                        "%.1fs elapsed.",
+                        video_path.name,
+                        frames_processed,
+                        estimated_frames,
+                        min(100.0, 100.0 * frames_processed / estimated_frames),
+                        now - started,
+                    )
+                    last_progress = now
+
+        logger.info(
+            "Motion analysis finished for %s: %d sampled frames, "
+            "%d motion-feature rows in %.1fs.",
+            video_path.name, frames_processed, len(feature_rows),
+            time.monotonic() - started,
+        )
+
+        if len(feature_rows) < 2:
+            logger.info(
+                "Skipping candidate inference for short range %s [%.3f, %.3f): "
+                "not enough sampled frames.",
+                video_path, start, end,
+            )
+            return None
+
+        sequence = FeatureSequence(
+            features=np.asarray(feature_rows, dtype=np.float32),
+            timestamps=np.asarray(timestamps, dtype=np.float64),
+        )
+        cached_sequence = FeatureSequence(
+            features=sequence.features,
+            timestamps=np.asarray(sequence.timestamps + start, dtype=np.float64),
+        )
+        cache_path = save_feature_sequence(
+            cached_sequence,
+            video_path,
+            cache_dir,
+            cache_clip,
+            sample_fps=settings.sample_fps,
+            processing_width=settings.processing_width,
+        )
+        logger.info("Feature cache SAVED: %s", cache_path)
+
     try:
-        windows = build_windows(
+        return build_windows(
             sequence,
             window=settings.common.window_duration,
             stride=settings.common.window_stride,
@@ -137,8 +181,6 @@ def _extract_windows(
             )
             return None
         raise
-    return windows
-
 
 def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
     """Translate a range-local candidate and its evidence to source timestamps."""
