@@ -57,7 +57,12 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
         ),
     )
     monkeypatch.setattr(run, "get_video_info", lambda path: VideoInfo(1920, 1080, 30.0, 20.0))
-    monkeypatch.setattr(run, "_extract_windows", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run, "_extract_windows",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("mandatory intervals must not be analyzed")
+        ),
+    )
 
     def fake_render(timeline, output_path):
         assert isinstance(timeline, Timeline)
@@ -75,6 +80,15 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
     assert result["status"] == "completed"
     assert result["mandatory_count"] == 1
     assert result["candidate_count"] == 0
+    assert result["inference"] == [{
+        "video": str(source.resolve()),
+        "annotation_order": 0,
+        "range_start": 2.0,
+        "range_end": 8.0,
+        "window_count": 0,
+        "candidate_count": 0,
+        "status": "skipped_mandatory",
+    }]
     assert Path(result["result_manifest"]).is_file()
     assert result["output"]["duration"] == 6.0
 
