@@ -8,12 +8,15 @@ belongs to Phase 10.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import math
 from typing import Sequence
 
 import numpy as np
 
 from ..ml.inference import InferenceResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -168,6 +171,16 @@ def generate_candidates(
     if len(timestamps) == 0:
         return []
 
+    logger.info(
+        "Candidate generation started: windows=%d clip_duration=%.3fs "
+        "junk_threshold=%.3f action_threshold=%.3f flow_threshold=%.3f "
+        "max_gap_to_merge=%.3fs padding_seconds=%.3fs p2_envelope_decay=%.3f.",
+        len(timestamps), float(clip_duration), settings.junk_threshold,
+        settings.action_threshold, settings.flow_threshold,
+        settings.max_gap_to_merge, settings.padding_seconds,
+        settings.p2_envelope_decay,
+    )
+
     p0, p1, p2 = probabilities.T
     p2_envelope = _p2_envelope(p2, settings.p2_envelope_decay)
     smoothed_class = np.argmax(np.column_stack((p0, p1, p2_envelope)), axis=1)
@@ -176,27 +189,78 @@ def generate_candidates(
 
     accepted: list[_Span] = []
     accepted_tiers: dict[int, str] = {}
+    rejected_junk = 0
+    rejected_threshold = 0
+    high_action_count = 0
+    moderate_count = 0
     for index, interval in enumerate(timestamps):
-        if p0[index] >= settings.junk_threshold:
-            continue
-        if p2_envelope[index] >= settings.action_threshold and smoothed_class[index] == 2:
-            tier = "high_action"
-        elif (
+        start, end = float(interval[0]), float(interval[1])
+        action_class = bool(
+            p2_envelope[index] >= settings.action_threshold
+            and smoothed_class[index] == 2
+        )
+        flow_class = bool(
             p1[index] >= settings.flow_threshold
             and (raw_class[index] == 1 or p1[index] > p2[index])
-        ):
+        )
+        if p0[index] >= settings.junk_threshold:
+            rejected_junk += 1
+            reason = "junk_probability"
+            tier = None
+        elif action_class:
+            tier = "high_action"
+            reason = "accepted"
+        elif flow_class:
             tier = "moderate_interest"
+            reason = "accepted"
         else:
+            rejected_threshold += 1
+            tier = None
+            reason = "below_action_and_flow_eligibility"
+        logger.debug(
+            "Candidate window #%d [%.3f, %.3f): P0=%.6f P1=%.6f P2=%.6f "
+            "P2_envelope=%.6f raw_class=%d envelope_class=%d tier=%s reason=%s.",
+            index, start, end, p0[index], p1[index], p2[index],
+            p2_envelope[index], raw_class[index], smoothed_class[index],
+            tier or "-", reason,
+        )
+        if tier is None:
             continue
         accepted_tiers[index] = tier
-        accepted.append(_Span(float(interval[0]), float(interval[1]), [index]))
+        accepted.append(_Span(start, end, [index]))
+        if tier == "high_action":
+            high_action_count += 1
+        else:
+            moderate_count += 1
+
+    logger.info(
+        "Candidate window classification: total=%d accepted=%d high_action=%d "
+        "moderate_interest=%d rejected_junk=%d rejected_below_eligibility=%d.",
+        len(timestamps), len(accepted), high_action_count, moderate_count,
+        rejected_junk, rejected_threshold,
+    )
 
     if not accepted:
+        logger.info("Candidate generation produced no accepted inference windows.")
         return []
 
     # First form semantic regions using max_gap. Padding is context extension,
     # not a way to enlarge the configured gap tolerance.
     merged = _merge_spans(accepted, max_gap=settings.max_gap_to_merge)
+    logger.info(
+        "Candidate spans after semantic merge (gap <= %.3fs): %d.",
+        settings.max_gap_to_merge, len(merged),
+    )
+    for index, span in enumerate(merged, start=1):
+        gaps = [
+            max(0.0, merged[index].start - merged[index - 1].end)
+            for index in range(1, len(merged))
+        ]
+        logger.info(
+            "Semantic span #%d: [%.3f, %.3f) duration=%.3fs evidence_windows=%d.",
+            index, span.start, span.end, span.end - span.start,
+            len(set(span.window_indices)),
+        )
     padded = [
         _Span(
             max(0.0, span.start - settings.padding_seconds),
@@ -205,9 +269,26 @@ def generate_candidates(
         )
         for span in merged
     ]
+    for index, span in enumerate(padded, start=1):
+        logger.info(
+            "Padded span #%d: [%.3f, %.3f) duration=%.3fs evidence_windows=%d.",
+            index, span.start, span.end, span.end - span.start,
+            len(set(span.window_indices)),
+        )
     # Legacy-compatible second merge: padding may make neighboring regions
     # overlap or touch, in which case the final source interval is continuous.
     final_spans = _merge_spans(padded, max_gap=0.0)
+    logger.info(
+        "Candidate spans after padding merge: %d (padding=%.3fs).",
+        len(final_spans), settings.padding_seconds,
+    )
+    for index, span in enumerate(final_spans, start=1):
+        logger.info(
+            "Final candidate span #%d: [%.3f, %.3f) duration=%.3fs "
+            "evidence_windows=%d.",
+            index, span.start, span.end, span.end - span.start,
+            len(set(span.window_indices)),
+        )
 
     candidates: list[CandidateClip] = []
     for span in final_spans:
@@ -242,4 +323,9 @@ def generate_candidates(
                 for index in unique_indices
             ),
         ))
+    logger.info(
+        "Candidate generation complete: accepted_windows=%d semantic_spans=%d "
+        "final_spans=%d emitted_candidates=%d.",
+        len(accepted), len(merged), len(final_spans), len(candidates),
+    )
     return candidates
