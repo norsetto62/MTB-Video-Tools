@@ -26,6 +26,7 @@ from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
 from ..video.reader import VideoReader
 from ..audio.pipeline import prepare_audio_timeline
+from ..audio.analysis import AudioAnalysis, analyze_audio
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,20 @@ def run_pipeline(
     if music_directive is not None and not Path(music_directive.path).is_file():
         raise FileNotFoundError(f"Background music not found: {music_directive.path}")
 
+    audio_analysis: AudioAnalysis | None = None
+    if music_directive is not None:
+        try:
+            audio_analysis = analyze_audio(
+                music_directive.path,
+                cache_dir=settings.cache_dir / "audio",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Audio analysis failed before selection; duration-aware selection "
+                "is unavailable: %s",
+                exc,
+            )
+
     if not clips_by_video:
         raise ValueError("The annotation manifest does not identify any video ranges.")
 
@@ -382,12 +397,13 @@ def run_pipeline(
         for index, clip in enumerate(clips)
         if clip.mandatory
     )
-    logger.info("Selecting from %d candidate(s), independent of total output duration.", len(all_candidates))
+    logger.info("Selecting from %d candidate(s); soundtrack duration=%s.", len(all_candidates), f"{audio_analysis.duration:.3f}s" if audio_analysis else "unavailable")
     selection = select_candidates(
         all_candidates,
         mandatory,
         min_clip_duration=settings.common.min_clip,
         max_clip_duration=settings.max_clip_duration,
+        max_total_duration=audio_analysis.duration if audio_analysis is not None else None,
     )
     timeline = assemble_timeline(selection, mandatory)
 
