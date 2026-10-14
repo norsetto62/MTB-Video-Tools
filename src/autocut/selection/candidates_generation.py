@@ -217,7 +217,7 @@ def generate_candidates(
             rejected_threshold += 1
             tier = None
             reason = "below_action_and_flow_eligibility"
-        logger.debug(
+        logger.info(
             "Candidate window #%d [%.3f, %.3f): P0=%.6f P1=%.6f P2=%.6f "
             "P2_envelope=%.6f raw_class=%d envelope_class=%d tier=%s reason=%s.",
             index, start, end, p0[index], p1[index], p2[index],
@@ -252,10 +252,6 @@ def generate_candidates(
         settings.max_gap_to_merge, len(merged),
     )
     for index, span in enumerate(merged, start=1):
-        gaps = [
-            max(0.0, merged[index].start - merged[index - 1].end)
-            for index in range(1, len(merged))
-        ]
         logger.info(
             "Semantic span #%d: [%.3f, %.3f) duration=%.3fs evidence_windows=%d.",
             index, span.start, span.end, span.end - span.start,
