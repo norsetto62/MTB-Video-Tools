@@ -7,7 +7,7 @@ def test_audit_dispatch_prints_report_and_returns_success(tmp_path, monkeypatch,
     source = tmp_path / "manifest.yaml"
     source.write_text("videos: []\n", encoding="utf-8")
     config = tmp_path / "autocut.yaml"
-    config.write_text("", encoding="utf-8")
+    config.write_text("selection:\n  min_clip: 3.0\n", encoding="utf-8")
     training_config = tmp_path / "train.yaml"
     training_config.write_text("data:\n  train_groups: []\n  validation_groups: []\n")
 
@@ -32,7 +32,7 @@ def test_audit_dispatch_returns_nonzero_for_audit_errors(tmp_path, monkeypatch):
     source = tmp_path / "annotations.txt"
     source.write_text("placeholder", encoding="utf-8")
     config = tmp_path / "autocut.yaml"
-    config.write_text("")
+    config.write_text("selection:\n  min_clip: 3.0\n")
 
     monkeypatch.setattr(
         "autocut.dataset.audit.audit_source",
@@ -43,7 +43,7 @@ def test_audit_dispatch_returns_nonzero_for_audit_errors(tmp_path, monkeypatch):
 
 def test_audit_dispatch_reports_missing_input(tmp_path, capsys):
     config = tmp_path / "autocut.yaml"
-    config.write_text("")
+    config.write_text("selection:\n  min_clip: 3.0\n")
     missing = tmp_path / "missing.txt"
     assert cli.main(["audit", str(missing), "--config", str(config)]) == 2
     assert "Input file not found" in capsys.readouterr().err
