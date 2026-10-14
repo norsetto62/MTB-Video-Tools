@@ -84,6 +84,7 @@ class _Span:
     start: float
     end: float
     window_indices: list[int]
+    tier: str
 
 
 def _validate_inference(result: InferenceResult) -> tuple[np.ndarray, np.ndarray]:
@@ -116,20 +117,33 @@ def _validate_inference(result: InferenceResult) -> tuple[np.ndarray, np.ndarray
 
 
 def _merge_spans(spans: Sequence[_Span], *, max_gap: float) -> list[_Span]:
-    """Merge sorted spans whose gap is at most max_gap (inclusive)."""
-    if not spans:
-        return []
-    ordered = sorted(spans, key=lambda span: (span.start, span.end))
-    merged = [_Span(ordered[0].start, ordered[0].end, list(ordered[0].window_indices))]
-    for span in ordered[1:]:
-        current = merged[-1]
-        gap = span.start - current.end
-        if gap <= max_gap:
-            current.end = max(current.end, span.end)
-            current.window_indices = sorted(set(current.window_indices).union(span.window_indices))
-        else:
-            merged.append(_Span(span.start, span.end, list(span.window_indices)))
-    return merged
+    """Merge spans of the same semantic tier only; the gap rule is inclusive."""
+    merged: list[_Span] = []
+    for tier in ("high_action", "moderate_interest"):
+        ordered = sorted(
+            (span for span in spans if span.tier == tier),
+            key=lambda span: (span.start, span.end),
+        )
+        if not ordered:
+            continue
+        tier_merged = [
+            _Span(ordered[0].start, ordered[0].end,
+                  list(ordered[0].window_indices), tier)
+        ]
+        for span in ordered[1:]:
+            current = tier_merged[-1]
+            gap = span.start - current.end
+            if gap <= max_gap:
+                current.end = max(current.end, span.end)
+                current.window_indices = sorted(
+                    set(current.window_indices).union(span.window_indices)
+                )
+            else:
+                tier_merged.append(
+                    _Span(span.start, span.end, list(span.window_indices), tier)
+                )
+        merged.extend(tier_merged)
+    return sorted(merged, key=lambda span: (span.start, span.end, span.tier))
 
 
 def _p2_envelope(values: np.ndarray, decay: float) -> np.ndarray:
@@ -227,7 +241,7 @@ def generate_candidates(
         if tier is None:
             continue
         accepted_tiers[index] = tier
-        accepted.append(_Span(start, end, [index]))
+        accepted.append(_Span(start, end, [index], tier))
         if tier == "high_action":
             high_action_count += 1
         else:
@@ -257,22 +271,33 @@ def generate_candidates(
             index, span.start, span.end, span.end - span.start,
             len(set(span.window_indices)),
         )
-    padded = [
-        _Span(
-            max(0.0, span.start - settings.padding_seconds),
-            min(float(clip_duration), span.end + settings.padding_seconds),
-            list(span.window_indices),
+    # Padding may extend into a gap, but never across a different-tier region.
+    padded: list[_Span] = []
+    for index, span in enumerate(merged):
+        previous_other = [
+            other.end for other in merged[:index]
+            if other.tier != span.tier and other.end <= span.start
+        ]
+        next_other = [
+            other.start for other in merged[index + 1:]
+            if other.tier != span.tier and other.start >= span.end
+        ]
+        padded_start = max(0.0, span.start - settings.padding_seconds)
+        padded_end = min(float(clip_duration), span.end + settings.padding_seconds)
+        if previous_other:
+            padded_start = max(padded_start, max(previous_other))
+        if next_other:
+            padded_end = min(padded_end, min(next_other))
+        padded.append(
+            _Span(padded_start, padded_end, list(span.window_indices), span.tier)
         )
-        for span in merged
-    ]
     for index, span in enumerate(padded, start=1):
         logger.info(
             "Padded span #%d: [%.3f, %.3f) duration=%.3fs evidence_windows=%d.",
             index, span.start, span.end, span.end - span.start,
             len(set(span.window_indices)),
         )
-    # Legacy-compatible second merge: padding may make neighboring regions
-    # overlap or touch, in which case the final source interval is continuous.
+    # Padding may join regions of the same tier, but must not erase a tier boundary.
     final_spans = _merge_spans(padded, max_gap=0.0)
     logger.info(
         "Candidate spans after padding merge: %d (padding=%.3fs).",
@@ -294,11 +319,7 @@ def generate_candidates(
             continue
         unique_indices = sorted(set(span.window_indices))
         contributing_scores = scores[unique_indices]
-        tier = (
-            "high_action"
-            if any(accepted_tiers[index] == "high_action" for index in unique_indices)
-            else "moderate_interest"
-        )
+        tier = span.tier
         candidates.append(CandidateClip(
             start=start,
             end=end,
