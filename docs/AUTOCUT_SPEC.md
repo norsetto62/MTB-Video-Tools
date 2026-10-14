@@ -90,7 +90,7 @@ MTB-Video-Tools/
 │       │   ├── __init__.py
 │       │   ├── candidates.py
 │       │   ├── ranking.py
-│       │   ├── budget.py
+│       │   ├── selection.py
 │       │   └── timeline.py
 │       ├── audio/
 │       │   ├── __init__.py
@@ -335,17 +335,9 @@ Candidate generation may use thresholds, local maxima, contiguous high-interest 
 
 ## 21. Highlight Selection
 
-Selection transforms candidates into a final timeline subject to target duration and user constraints.
+Selection preserves valid generated candidates independently of total output duration. There is no global target-duration budget: the number and total duration of retained clips are outcomes of candidate generation, overlap suppression, mandatory-clip protection and explicit per-clip constraints—not inputs to candidate selection.
 
-It must account for mandatory clips, target duration, minimum duration, padding, maximum merge gap, overlap/deduplication, score, diversity, temporal distribution and multiple source videos.
-
-Mandatory duration is accounted for first:
-
-```text
-automatic_budget = max(0, target_duration - mandatory_duration)
-```
-
-The selector must never create duplicate or overlapping mandatory material.
+Selection must account for mandatory clips, minimum candidate duration, optional per-clip maximum duration, overlap/deduplication, deterministic ranking and multiple source videos. It must not trim candidates merely to meet an output-duration target. Mandatory intervals remain protected, and duplicate source-time intervals must not be selected twice.
 
 ---
 
@@ -359,7 +351,7 @@ A slightly lower-scoring clip can therefore be preferable to a near-duplicate of
 
 ## 23. Diversity and Temporal Distribution
 
-The selector should avoid spending the entire budget on one small region unless explicitly configured to do so.
+The selector should suppress duplicate or substantially overlapping source-time candidates so one region is not represented repeatedly.
 
 Selection should consider temporal spacing, overlap, similarity/redundancy, source-video balance and preservation of strong regions later in long recordings. This supersedes simplistic sequential accumulation from the start of a video.
 
@@ -369,7 +361,7 @@ Selection should consider temporal spacing, overlap, similarity/redundancy, sour
 
 AutoCut may process multiple source videos in one invocation. Every timeline clip retains its source identity.
 
-Selection must not assume that different videos share a time axis. Budgeting may be global or configurable, but it must be explicit and deterministic. Mandatory clips from every source are protected.
+Selection must not assume that different videos share a time axis. Candidate duration is measured per source interval; total output duration is derived from the assembled timeline. Mandatory clips from every source are protected.
 
 ---
 
@@ -441,7 +433,7 @@ The result manifest is the primary traceability record for a generated result.
 
 Logging must communicate progress through major stages, warnings, final selections, output location and duration during normal use.
 
-Debug logging should allow diagnosis of annotation parsing, probing, feature extraction, model loading, schema mismatches, candidate generation, budget allocation, timeline construction and rendering failures. Errors must not be silently hidden.
+Debug logging should allow diagnosis of annotation parsing, probing, feature extraction, model loading, schema mismatches, candidate generation, duplicate suppression, timeline construction and rendering failures. Errors must not be silently hidden.
 
 ---
 
@@ -493,7 +485,7 @@ Golden tests should preserve expected behavior rather than relying exclusively o
 
 ## 35. Known Failure Modes
 
-Known failure modes include optical-flow false positives caused by rider struggles or camera motion, a rider stuck in a rut, disentangling from vegetation, short interesting events requiring padding, repeated high-motion patterns, temporal leakage from overlapping windows, early concentration of the selection budget and duplicate candidates.
+Known failure modes include optical-flow false positives caused by rider struggles or camera motion, a rider stuck in a rut, disentangling from vegetation, short interesting events requiring padding, repeated high-motion patterns, temporal leakage from overlapping windows, duplicate candidates and broad candidates overlapping more specific intervals.
 
 Hard negatives are important because large motion is not necessarily interesting riding.
 
@@ -768,7 +760,7 @@ Synchronization is configurable and supports these modes:
 
 These are the intended semantics for the new implementation. Before claiming exact compatibility with the legacy script, inspect its original implementation of `forward-beat` and `combined` and preserve any established nuance that does not conflict with the contracts here.
 
-Synchronization adjusts both starts and ends where a valid adjustment is possible. It must not produce negative starts, empty/reversed intervals, clips shorter than the configured minimum, optional clips longer than the configured maximum, or a timeline that silently exceeds its applicable duration budget. If a proposed adjustment violates a constraint, retain the unsynchronized boundary or interval. Mandatory clips are exempt from synchronization and must remain unchanged.
+Synchronization adjusts both starts and ends where a valid adjustment is possible. It must not produce negative starts, empty/reversed intervals, clips shorter than the configured minimum, optional clips longer than the configured maximum, or an invalid or empty interval. If a proposed adjustment violates a constraint, retain the unsynchronized boundary or interval. Mandatory clips are exempt from synchronization and must remain unchanged.
 
 If audio analysis fails or produces unusable synchronization data, issue a warning and continue with unsynchronized editing. Music playback/mixing may still proceed if the music file itself is usable. Do not fabricate beat positions or silently represent failed analysis as successful analysis.
 
@@ -894,7 +886,7 @@ The proposed `autocut.editing` package is a home for synchronization and soundtr
 - `analyze_audio` computes the source content hash, checks a valid cache entry when enabled, otherwise analyzes the file and attempts to cache the result. Cache write failure should warn but need not discard successful analysis.
 - `load_cached_audio` returns `None` for a missing, stale, malformed, incompatible, or invalid cache; it does not return partially validated data.
 - `snap_timestamp` is a pure function. It validates the timestamp and mode, uses only the relevant analysis timestamp set, and does not silently clamp invalid input. `off` returns the supplied timestamp unchanged.
-- `synchronize_timeline` returns a new timeline and never mutates the input. It preserves mandatory clips exactly, and keeps an original optional interval when snapping would violate source bounds, minimum duration, `max_clip_duration`, or the applicable timeline budget.
+- `synchronize_timeline` returns a new timeline and never mutates the input. It preserves mandatory clips exactly, and keeps an original optional interval when snapping would violate source bounds, minimum duration or `max_clip_duration`.
 - Evidence-centred trimming for `max_clip_duration` must happen in the Phase 10 optional-candidate selection/trimming path, where `window_evidence` is available. Synchronization only validates that contract and must not invent missing inference evidence.
 - `render_with_music` consumes the finalized timeline, renders video according to that timeline, mixes or replaces audio according to the selected soundtrack policy, applies the configured ending fade, and returns output path plus measured output duration. It does not select, trim, or synchronize clips itself.
 - All external commands must be passed as argument lists rather than unsafe shell-interpolated strings. FFmpeg errors should retain enough stderr/exit-status context for diagnosis.
@@ -923,7 +915,7 @@ Before claiming legacy compatibility, inspect the original function bodies for:
 - how legacy snapping interacts with clip minimum/maximum duration and any end-time padding;
 - exact fade start-time calculation and output-duration handling in the FFmpeg command.
 
-The old `select_events_beat_synced` scoring/filtering policy is not part of the new API: Phase 10 remains the owner of candidate ranking, budget allocation, evidence-based trimming and mandatory-clip protection. Only verified synchronization behavior and relevant audio-rendering behavior should be carried over.
+The old `select_events_beat_synced` scoring/filtering policy is not part of the new API: Phase 10 owns candidate ranking, duplicate suppression, explicit per-clip limits and mandatory-clip protection; total output duration is derived from the resulting timeline. Only verified synchronization behavior and relevant audio-rendering behavior should be carried over.
 
 
 ### 49.12 Verified legacy behavior and intentional changes
@@ -945,9 +937,9 @@ The original source has now been inspected at `scripts/autocut.py` on the `legac
 1. Keep the verified directional semantics of `forward-beat`: first grid point `>= timestamp`, or unchanged input if no such point exists.
 2. Keep the verified `combined` grid derivation: rounded beat and onset timestamps, deduplicated and bounded by duration. Preserve the legacy three-decimal precision unless a test demonstrates that a different representation is required; any precision change should be deliberate.
 3. Keep nearest-neighbor snapping for `beat`, `measure`, `onset`, and `combined`. The new synchronization stage applies the operation to both eligible start and end boundaries, unlike the legacy event selector which only snapped the end.
-4. Keep legacy selection scoring and annotation-event ranking out of Phase 11; Phase 10 remains authoritative for candidate selection, budgeting, evidence-based trimming and mandatory-clip protection.
+4. Keep legacy selection scoring and annotation-event ranking out of Phase 11; Phase 10 remains authoritative for candidate selection, duplicate suppression, explicit per-clip limits and mandatory-clip protection.
 5. Preserve the FFmpeg stream mapping and efficient video stream-copy approach where the output format and codecs allow it, while making the fade duration configurable and validating the actual rendered duration.
-6. The old selector's extra `start + clip_duration + 2.0` clamp is legacy-specific. Do not carry that unexplained two-second extension into the new timeline synchronizer; use explicit clip duration, source bounds, `mc`, minimum duration and timeline-budget constraints instead.
+6. The old selector's extra `start + clip_duration + 2.0` clamp is legacy-specific. Do not carry that unexplained two-second extension into the new timeline synchronizer; use explicit clip duration, source bounds, `mc` and minimum duration instead.
 
 
 ### 49.13 Alignment with current Phase 10 timeline types
@@ -967,6 +959,6 @@ def synchronize_timeline(
 
 When synchronization is disabled or analysis is unavailable, return a logically equivalent timeline. When optional source boundaries are changed, construct a new immutable timeline, recompute each clip's output positions and the total duration, and recompute duration diagnostics consistently. Do not change mandatory source boundaries. If analysis is `None`, the caller must log the analysis warning once and pass the timeline through unchanged; the synchronizer must not emit duplicate warnings for every clip.
 
-The synchronizer must not silently shorten the total timeline to the music duration. Selection/budget policy remains upstream; Phase 11 may retain original boundaries when snapping would cause a constraint violation and must report the resulting timeline duration for validation. The renderer's output duration must be based on the finalized timeline, not on a stale pre-synchronization duration.
+The synchronizer must not silently shorten the total timeline to the music duration. Candidate selection remains upstream; Phase 11 may retain original boundaries when snapping would cause a constraint violation and must report the resulting timeline duration for validation. The renderer's output duration must be based on the finalized timeline, not on a stale pre-synchronization duration.
 
 `mc` evidence-based trimming is performed by the Phase 10 selection/trimming path, because the current `SelectionCandidate` exposes `window_evidence`. Timeline synchronization must preserve the `mandatory` exemption and enforce that snapping does not make an optional clip exceed the configured maximum. This guard is validation, not a second evidence-trimming algorithm.
