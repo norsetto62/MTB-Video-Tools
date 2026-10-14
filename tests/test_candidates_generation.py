@@ -116,7 +116,7 @@ def test_moderate_region_before_high_action_remains_separate():
     probabilities = [_flow()] * 13 + [
         [0.10, 0.40, 0.50],
         [0.015, 0.329, 0.656],
-        [0.007, 0.224, 0.770],
+        [0.007, 0.224, 0.769],
     ]
     # Window #13 is ineligible; it must not let padding or merging promote
     # the preceding moderate-interest run to high_action.
