@@ -279,6 +279,20 @@ def select_highlight_budget(
             chosen = _trim_to_budget(item, remaining, min_trim)  # type: ignore[assignment]
             if chosen is None:
                 continue
+        # Annotation intervals can overlap in source time. Since provenance
+        # requires processing them independently, prevent selecting the same
+        # source frames twice when candidates originate from overlapping rows.
+        if any(
+            chosen.video_name == previous.video_name
+            and chosen.start < previous.end
+            and previous.start < chosen.end
+            for previous in selected
+        ):
+            logger.info(
+                "Skipping candidate %s [%.3f, %.3f): overlaps an already selected candidate.",
+                chosen.video_name, chosen.start, chosen.end,
+            )
+            continue
         selected.append(chosen)
         selected_duration += chosen.duration
         remaining = max(0.0, optional_budget - selected_duration)
