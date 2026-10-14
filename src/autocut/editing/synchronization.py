@@ -79,7 +79,7 @@ def _rebuild_timeline(
     timeline: Timeline,
     intervals: tuple[tuple[float, float], ...],
 ) -> Timeline:
-    """Recompute output positions and duration diagnostics from source spans."""
+    """Recompute output positions and total duration from source spans."""
     clips: list[TimelineClip] = []
     cursor = 0.0
     for clip, (start, end) in zip(timeline.clips, intervals, strict=True):
@@ -110,9 +110,8 @@ def synchronize_timeline(
 
     Mandatory clip source intervals are immutable. Optional intervals are
     snapped at both boundaries, then checked for positive duration and the
-    configured maximum duration. If the combined result would exceed the
-    applicable duration budget, the original intervals are retained. A
-    missing analysis or disabled mode is a no-op; analysis-failure logging
+    configured per-clip maximum. There is no global output-duration budget.
+    A missing analysis or disabled mode is a no-op; analysis-failure logging
     belongs to the calling pipeline so it can warn only once.
     """
     if not isinstance(timeline, Timeline):
