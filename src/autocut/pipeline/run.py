@@ -330,6 +330,22 @@ def run_pipeline(
         )
         video_name = str(Path(clip.video_name).resolve())
         start, end = float(clip.start), float(clip.end)
+        if clip.mandatory:
+            logger.info(
+                "Skipping motion analysis and inference for mandatory interval "
+                "%s [%.3f, %.3f) (annotation #%d).",
+                Path(video_name).name, start, end, annotation_order,
+            )
+            inference_summaries.append({
+                "video": video_name,
+                "annotation_order": annotation_order,
+                "range_start": start,
+                "range_end": end,
+                "window_count": 0,
+                "candidate_count": 0,
+                "status": "skipped_mandatory",
+            })
+            continue
         order = video_order[video_name]
         windows = _extract_windows(Path(video_name), start, end, settings)
         if windows is None:
