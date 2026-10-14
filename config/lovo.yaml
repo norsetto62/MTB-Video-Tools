@@ -1,0 +1,31 @@
+paths:
+  data_dir: data
+  models_dir: models
+  cache_dir: data/cache
+
+data:
+  manifest: data/manifest/annotations_manifest.yaml
+  sampling_fps: 2.0
+  processing_width: 480
+  window_duration: 4.0
+  window_stride: 2.0
+  train_groups: [ascoli, mentorella, castelli, g2, orvinio, firstday, gas, artemisio, tivoli]
+  validation_groups: [castelli_eval]
+
+training:
+  epochs: 40
+  lr: 0.00007
+  batch_size: 32
+  hidden_dim: 64
+  classifier_mid_dim: 32
+  dropout: 0.5
+  num_classes: 3
+  use_scaling: true
+  patience: 15
+  min_delta: 0.0001
+  weight_decay: 0.01
+  seed: 42
+  class_weights: [0.35, 1.0, 5.2]
+
+logging:
+  level: INFO

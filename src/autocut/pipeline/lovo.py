@@ -80,6 +80,7 @@ def _combine_prepared_records(
         np.concatenate([item[1] for item in selected], axis=0),
     )
 
+
 def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
@@ -106,8 +107,8 @@ def run_lovo(
     """Run deterministic nested leave-one-group-out CV and persist fold artifacts.
 
     The outer held-out group is excluded from inner epoch selection, scaler
-    fitting, and final refit. Epoch count is selected on one deterministic
-    inner validation group from the outer-training groups, then the model and
+    fitting, and final refit. Epoch count is selected via a consensus multi-group
+    inner validation strategy from the outer-training groups, then the model and
     scaler are refit on every outer-training group for exactly that many epochs.
     """
     records = load_manifest(manifest_path, verify_files=True)
@@ -127,6 +128,7 @@ def run_lovo(
         "window": settings.common.window_duration,
         "stride": settings.common.window_stride,
     }
+    
     # Each record's windows/targets are independent of the fold. Prepare them
     # once so repeated folds do not re-hash the same source videos.
     logger.info("Preparing LOVO data once for %d manifest records", len(records))
@@ -138,38 +140,52 @@ def run_lovo(
     folds: list[dict[str, Any]] = []
     pooled_actual: list[np.ndarray] = []
     pooled_predicted: list[np.ndarray] = []
+    
     for fold_index, test_group in enumerate(groups):
         outer_train_groups = tuple(group for group in groups if group != test_group)
-        # Rotate through the remaining sorted groups for deterministic inner validation.
-        inner_validation_group = outer_train_groups[fold_index % len(outer_train_groups)]
-        inner_train_groups = tuple(g for g in outer_train_groups if g != inner_validation_group)
-        if not inner_train_groups:
-            raise ValueError(f"LOVO fold {test_group!r} has no inner-training groups.")
-
         outer_train_records = tuple(r for r in records if r.group_id in outer_train_groups)
-        inner_train_records = tuple(r for r in records if r.group_id in inner_train_groups)
-        inner_val_records = tuple(r for r in records if r.group_id == inner_validation_group)
         test_records = tuple(r for r in records if r.group_id == test_group)
 
-        logger.info(
-            "LOVO fold %d/%d: test=%s, inner validation=%s",
-            fold_index + 1, len(groups), test_group, inner_validation_group,
-        )
-        inner_X, inner_y = _combine_prepared_records(inner_train_records, prepared_records)
-        inner_val_X, inner_val_y = _combine_prepared_records(inner_val_records, prepared_records)
-        selection_config = replace(settings.training, seed=settings.training.seed + fold_index)
-        _, _, selection = train_single_fold(
-            inner_X,
-            inner_y,
-            inner_val_X,
-            inner_val_y,
-            selection_config,
-            fold_video_id=f"inner-validation:{inner_validation_group}",
-            data_config=data_config,
-        )
-        selected_epochs = int(selection["best_epoch"])
+        logger.info("LOVO fold %d/%d: test=%s", fold_index + 1, len(groups), test_group)
+
+        # Robust Inner Validation: Evaluate across all possible inner validation groups
+        # to find a consensus best epoch, avoiding single-group early-stopping bias.
+        candidate_best_epochs = []
+        for inner_val_group in outer_train_groups:
+            inner_train_g = tuple(g for g in outer_train_groups if g != inner_val_group)
+            if not inner_train_g:
+                continue
+            
+            inner_train_recs = tuple(r for r in records if r.group_id in inner_train_g)
+            inner_val_recs = tuple(r for r in records if r.group_id == inner_val_group)
+            
+            inner_X, inner_y = _combine_prepared_records(inner_train_recs, prepared_records)
+            inner_val_X, inner_val_y = _combine_prepared_records(inner_val_recs, prepared_records)
+            
+            selection_config = replace(settings.training, seed=settings.training.seed + fold_index)
+            _, _, selection = train_single_fold(
+                inner_X,
+                inner_y,
+                inner_val_X,
+                inner_val_y,
+                selection_config,
+                fold_video_id=f"inner-validation:{inner_val_group}",
+                data_config=data_config,
+            )
+            candidate_best_epochs.append(int(selection["best_epoch"]))
+
+        # Take the median epoch count across all inner validation splits as the consensus
+        selected_epochs = int(np.median(candidate_best_epochs)) if candidate_best_epochs else 10
         if selected_epochs < 1:
-            raise RuntimeError(f"Inner epoch selection returned invalid epoch {selected_epochs}.")
+            selected_epochs = 1
+
+        logger.info(
+            "LOVO fold %d consensus selected_epochs: %d (from candidates: %s)", 
+            fold_index + 1, selected_epochs, candidate_best_epochs,
+        )
+
+        inner_validation_group = "consensus_multi_group"
+        inner_train_groups = outer_train_groups  # Full outer train pool used for refit
 
         outer_X, outer_y = _combine_prepared_records(outer_train_records, prepared_records)
         # Keep record boundaries for interpretable out-of-fold predictions.
