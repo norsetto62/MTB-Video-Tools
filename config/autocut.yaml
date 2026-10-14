@@ -17,7 +17,6 @@ model:
   inference_batch_size: 256
 
 selection:
-  target_duration: 120.0
   min_clip: 3.0
   max_clip_duration: 0.0
   junk_threshold: 0.20
