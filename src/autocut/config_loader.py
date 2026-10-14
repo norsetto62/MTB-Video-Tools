@@ -45,7 +45,6 @@ class RunConfig:
     processing_width: int
     checkpoint: Path
     inference_batch_size: int
-    target_duration: float
     max_clip_duration: float
     candidates: Any
     audio: AudioConfig
@@ -164,7 +163,7 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
     selection = _section(
         raw, "selection",
         {
-            "target_duration", "min_clip", "max_clip_duration",
+            "min_clip", "max_clip_duration",
             "class_score_weights", "junk_threshold", "action_threshold",
             "flow_threshold", "score_threshold", "min_candidate_duration",
             "max_gap_to_merge", "padding_seconds", "p2_envelope_decay",
@@ -229,9 +228,6 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         checkpoint=_path(model.get("checkpoint", "models/best_model.pt"), name="model.checkpoint"),
         inference_batch_size=_positive_int(
             model.get("inference_batch_size", 256), name="model.inference_batch_size"
-        ),
-        target_duration=_positive_float(
-            selection.get("target_duration", 120.0), name="selection.target_duration"
         ),
         max_clip_duration=_nonnegative_float(
             selection.get("max_clip_duration", 0.0), name="selection.max_clip_duration"
