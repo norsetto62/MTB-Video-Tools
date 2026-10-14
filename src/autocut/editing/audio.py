@@ -186,6 +186,7 @@ def _render_reencoded_transport_stream(
     temporary_directory: Path,
     *,
     include_audio: bool,
+    video_encoder: str,
 ) -> Path:
     """Re-encode each source interval before concatenating MPEG-TS clips."""
     ffmpeg = _find_ffmpeg()
@@ -209,10 +210,13 @@ def _render_reencoded_transport_stream(
             command.extend(["-map", "0:a:0?"])
         else:
             command.append("-an")
-        command.extend([
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-            "-pix_fmt", "yuv420p",
-        ])
+        if video_encoder == "h264_nvenc":
+            command.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"])
+        elif video_encoder == "libx264":
+            command.extend(["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
+        else:
+            raise ValueError("video_encoder must be 'h264_nvenc' or 'libx264'.")
+        command.extend(["-pix_fmt", "yuv420p"])
         if include_audio:
             command.extend(["-c:a", "aac", "-b:a", "320k"])
         command.extend(["-f", "mpegts", str(clip_file)])
@@ -258,6 +262,8 @@ def _render_reencoded_transport_stream(
 def render_timeline(
     timeline: Timeline,
     output_path: str | Path,
+    *,
+    video_encoder: str = "h264_nvenc",
 ) -> RenderResult:
     """Render a timeline by re-encoding each clip before concatenation."""
     if not isinstance(timeline, Timeline):
@@ -274,7 +280,7 @@ def render_timeline(
     ) as directory:
         temporary = Path(directory)
         assembled = _render_reencoded_transport_stream(
-            timeline, temporary, include_audio=True
+            timeline, temporary, include_audio=True, video_encoder=video_encoder
         )
         command = [
             _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
@@ -301,6 +307,7 @@ def render_with_music(
     config: AudioConfig,
     mix_original_audio: bool = False,
     debug_output_dir: str | Path | None = None,
+    video_encoder: str = "h264_nvenc",
 ) -> RenderResult:
     """Re-encode each selected clip, concatenate them, then add the soundtrack."""
     if not isinstance(timeline, Timeline):
@@ -323,7 +330,8 @@ def render_with_music(
     ) as temporary_directory:
         temporary = Path(temporary_directory)
         assembled = _render_reencoded_transport_stream(
-            timeline, temporary, include_audio=mix_original_audio
+            timeline, temporary, include_audio=mix_original_audio,
+            video_encoder=video_encoder,
         )
 
         if debug_output_dir is not None:
