@@ -42,7 +42,7 @@ class MandatoryClip:
 
 @dataclass(frozen=True)
 class SelectionResult:
-    """Optional candidates retained after duplicate-overlap suppression."""
+    """Optional candidates retained after priority, duration, and overlap filtering."""
     selected: tuple[SelectionCandidate, ...]
 
 def _validate_interval(start: float, end: float, label: str) -> None:
