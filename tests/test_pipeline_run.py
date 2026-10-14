@@ -150,8 +150,8 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
 
     timeline = captured["timeline"]
     assert [(clip.source_start, clip.annotation_order) for clip in timeline.clips] == [
-        (10.0, 0),
-        (1.0, 1),
+        (10.0, 2),
+        (1.0, 3),
     ]
     assert [item["annotation_order"] for item in result["inference"]] == [2, 3]
     assert result["candidate_count"] == 2
