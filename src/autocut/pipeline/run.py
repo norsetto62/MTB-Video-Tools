@@ -199,6 +199,9 @@ def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
                 end=window.end + offset,
                 score=window.score,
                 tier=window.tier,
+                p0=window.p0,
+                p1=window.p1,
+                p2=window.p2,
             )
             for window in candidate.window_evidence
         ),
@@ -300,45 +303,64 @@ def run_pipeline(
     all_candidates: list[SelectionCandidate] = []
     inference_summaries: list[dict] = []
     logger.info("Starting motion analysis and model inference.")
-    for video_name, video_clips in clips_by_video.items():
+
+    # Process each annotation interval independently. This retains the
+    # manifest row identity throughout inference and candidate generation;
+    # merging source ranges here would erase which interval produced a clip.
+    for annotation_order, clip in enumerate(clips):
+        video_name = str(Path(clip.video_name).resolve())
+        start, end = float(clip.start), float(clip.end)
         order = video_order[video_name]
-        for start, end in _merge_ranges(video_clips):
-            windows = _extract_windows(Path(video_name), start, end, settings)
-            if windows is None:
-                continue
-            logger.info(
-                "Running model inference on %d window(s) from %s [%.1f, %.1f]s.",
-                int(windows.X.shape[0]), Path(video_name).name, start, end,
-            )
-            inference = infer_windows(
-                settings.checkpoint,
-                windows,
-                batch_size=settings.inference_batch_size,
-            )
-            candidates = generate_candidates(
-                inference,
-                clip_duration=end - start,
-                config=settings.candidates,
-            )
-            logger.info(
-                "Range result: %d inference window(s), %d candidate clip(s).",
-                int(windows.X.shape[0]), len(candidates),
-            )
+        windows = _extract_windows(Path(video_name), start, end, settings)
+        if windows is None:
             inference_summaries.append({
                 "video": video_name,
+                "annotation_order": annotation_order,
                 "range_start": start,
                 "range_end": end,
-                "window_count": int(windows.X.shape[0]),
-                "candidate_count": len(candidates),
+                "window_count": 0,
+                "candidate_count": 0,
+                "status": "skipped_insufficient_features",
             })
-            all_candidates.extend(
-                SelectionCandidate(
-                    video_name=video_name,
-                    video_order=order,
-                    candidate=_offset_candidate(candidate, start),
-                )
-                for candidate in candidates
+            continue
+        logger.info(
+            "Running model inference on %d window(s) from %s [%.1f, %.1f]s "
+            "(annotation #%d).",
+            int(windows.X.shape[0]), Path(video_name).name, start, end,
+            annotation_order,
+        )
+        inference = infer_windows(
+            settings.checkpoint,
+            windows,
+            batch_size=settings.inference_batch_size,
+        )
+        candidates = generate_candidates(
+            inference,
+            clip_duration=end - start,
+            config=settings.candidates,
+        )
+        logger.info(
+            "Annotation #%d result: %d inference window(s), %d candidate clip(s).",
+            annotation_order, int(windows.X.shape[0]), len(candidates),
+        )
+        inference_summaries.append({
+            "video": video_name,
+            "annotation_order": annotation_order,
+            "range_start": start,
+            "range_end": end,
+            "window_count": int(windows.X.shape[0]),
+            "candidate_count": len(candidates),
+            "status": "processed",
+        })
+        all_candidates.extend(
+            SelectionCandidate(
+                video_name=video_name,
+                video_order=order,
+                candidate=_offset_candidate(candidate, start),
+                annotation_order=annotation_order,
             )
+            for candidate in candidates
+        )
 
     mandatory = tuple(
         MandatoryClip(
