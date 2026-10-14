@@ -177,7 +177,7 @@ def dispatch(args: argparse.Namespace) -> int:
             settings,
             output_path=args.output,
             debug_render_dir=args.debug_render_dir,
-            video_encoder=args.video_encoder or settings.video_encoder,
+            video_encoder=args.video_encoder or getattr(settings, "video_encoder", "h264_nvenc"),
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
