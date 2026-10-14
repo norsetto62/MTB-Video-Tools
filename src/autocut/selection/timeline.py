@@ -23,6 +23,7 @@ class TimelineClip:
     mandatory: bool
     score: float | None = None
     tier: str | None = None
+    annotation_order: int | None = None
 
     @property
     def duration(self) -> float:
@@ -56,6 +57,7 @@ class Timeline:
                     "mandatory": clip.mandatory,
                     "score": clip.score,
                     "tier": clip.tier,
+                    "annotation_order": clip.annotation_order,
                 }
                 for clip in self.clips
             ],
@@ -68,15 +70,13 @@ def assemble_timeline(
     *,
     max_clip_duration: float = 0.0,
 ) -> Timeline:
-    """Place selected clips in source order, with mandatory clips preserved.
+    """Place clips in annotation-manifest order, then source-time order.
 
-    Candidate video_order is the order of that source video in the user's
-    input. Within each video, source time determines order. Mandatory clips
-    use the video's original input-order index. Within each video, source
-    time determines order. sequence_order is retained as provenance for
-    multiple mandatory entries, while their source times determine playback.
-
-    Output is concatenated without transitions or overlaps in this phase.
+    Pipeline candidates carry the original annotation row index. Mandatory
+    clips use their sequence_order, which is assigned from that same ordered
+    annotation list. For compatibility, candidates without annotation_order
+    fall back to video_order. Within an annotation, candidate source time
+    determines order. Output is concatenated without transitions/overlaps.
     """
     if not isinstance(selection, SelectionResult):
         raise TypeError("selection must be a SelectionResult instance.")
@@ -102,27 +102,27 @@ def assemble_timeline(
         if previous is None or item.video_order < previous:
             video_order[item.video_name] = item.video_order
 
-    # Build sequence keys. A source video uses its source-order index; within
-    # a video, source time preserves chronological order. A mandatory interval
-    # for a known video is inserted at its source time. A mandatory-only video
-    # is placed using its manifest sequence order.
+    # The annotation index is the primary order key. Source timestamps only
+    # order clips belonging to the same annotation interval.
     items: list[tuple[tuple[int, float, int, str], str, object]] = []
     for candidate in selection.selected:
+        order = (
+            candidate.annotation_order
+            if candidate.annotation_order is not None
+            else candidate.video_order
+        )
         items.append((
-            (candidate.video_order, candidate.start, 1, candidate.video_name),
+            (order, candidate.start, 1, candidate.video_name),
             "candidate",
             candidate,
         ))
     for item in mandatory:
-        order = item.video_order
         items.append((
-            (order, item.start, 0, item.video_name),
+            (item.sequence_order, item.start, 0, item.video_name),
             "mandatory",
             item,
         ))
 
-    # Preserve original source sequence. Equal source times put mandatory
-    # material first, then use stable source names as a final tie-breaker.
     items.sort(key=lambda row: row[0])
 
     timeline_clips: list[TimelineClip] = []
@@ -142,6 +142,7 @@ def assemble_timeline(
             score = candidate.score
             tier = candidate.tier
             video_name = candidate.video_name
+            annotation_order = candidate.annotation_order
         else:
             clip = item
             assert isinstance(clip, MandatoryClip)
@@ -150,6 +151,7 @@ def assemble_timeline(
             score = None
             tier = None
             video_name = clip.video_name
+            annotation_order = clip.sequence_order
 
         duration = source_end - source_start
         timeline_clips.append(TimelineClip(
@@ -161,6 +163,7 @@ def assemble_timeline(
             mandatory=mandatory_flag,
             score=score,
             tier=tier,
+            annotation_order=annotation_order,
         ))
         cursor += duration
 
