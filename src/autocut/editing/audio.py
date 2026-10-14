@@ -181,15 +181,85 @@ def mix_music(
     return RenderResult(output_path=output, duration=measured_duration)
 
 
+def _render_reencoded_transport_stream(
+    timeline: Timeline,
+    temporary_directory: Path,
+    *,
+    include_audio: bool,
+) -> Path:
+    """Re-encode each source interval before concatenating MPEG-TS clips."""
+    ffmpeg = _find_ffmpeg()
+    clip_files: list[Path] = []
+    for index, clip in enumerate(timeline.clips):
+        source = Path(clip.video_name).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"Timeline source video not found: {clip.video_name}")
+        start = _duration("clip source_start", clip.source_start, allow_zero=True)
+        end = _duration("clip source_end", clip.source_end)
+        if end <= start:
+            raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
+
+        clip_file = temporary_directory / f"clip_{index:04d}.ts"
+        command = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", str(start), "-i", str(source), "-t", str(end - start),
+            "-map", "0:v:0",
+        ]
+        if include_audio:
+            command.extend(["-map", "0:a:0?"])
+        else:
+            command.append("-an")
+        command.extend([
+            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+        ])
+        if include_audio:
+            command.extend(["-c:a", "aac", "-b:a", "320k"])
+        command.extend(["-f", "mpegts", str(clip_file)])
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
+            raise RuntimeError(
+                f"Failed to encode timeline clip {index + 1} "
+                f"({source}, {start:.3f}–{end:.3f}; exit status {exc.returncode}): "
+                f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+        clip_files.append(clip_file)
+
+    concat_file = temporary_directory / "clips.ffconcat"
+    lines = ["ffconcat version 1.0"]
+    for clip_file in clip_files:
+        escaped = str(clip_file.resolve()).replace("\\", "/").replace("'", "'\\''")
+        lines.append(f"file '{escaped}'")
+    concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    assembled = temporary_directory / "assembled.ts"
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "concat", "-safe", "0", "-i", str(concat_file),
+        "-c", "copy", str(assembled),
+    ]
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
+        raise RuntimeError(
+            f"Failed to concatenate re-encoded timeline clips (exit status {exc.returncode}): "
+            f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+    return assembled
+
+
 def render_timeline(
     timeline: Timeline,
     output_path: str | Path,
 ) -> RenderResult:
-    """Render a finalized timeline while preserving source audio when present.
-
-    Uses FFmpeg's concat demuxer and stream copy. The timeline is authoritative:
-    source intervals and ordering are not recalculated here.
-    """
+    """Render a timeline by re-encoding each clip before concatenation."""
     if not isinstance(timeline, Timeline):
         raise TypeError("timeline must be a Timeline instance.")
     if not timeline.clips:
@@ -199,38 +269,29 @@ def render_timeline(
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".autocut-render-", dir=str(output.parent)) as directory:
-        concat_file = Path(directory) / "clips.ffconcat"
-        lines = ["ffconcat version 1.0"]
-        for clip in timeline.clips:
-            source = Path(clip.video_name).resolve()
-            if not source.is_file():
-                raise FileNotFoundError(f"Timeline source video not found: {clip.video_name}")
-            start = _duration("clip source_start", clip.source_start, allow_zero=True)
-            end = _duration("clip source_end", clip.source_end)
-            if end <= start:
-                raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
-            escaped = str(source).replace("\\", "/").replace("'", "'\\''")
-            lines.extend([f"file '{escaped}'", f"inpoint {start}", f"outpoint {end}"])
-        concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with tempfile.TemporaryDirectory(
+        prefix=".autocut-render-", dir=str(output.parent)
+    ) as directory:
+        temporary = Path(directory)
+        assembled = _render_reencoded_transport_stream(
+            timeline, temporary, include_audio=True
+        )
         command = [
             _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
-            "-movflags", "+faststart", str(output),
+            "-i", str(assembled), "-map", "0:v:0", "-map", "0:a?",
+            "-c", "copy", "-movflags", "+faststart", str(output),
         ]
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
             stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
             raise RuntimeError(
-                f"Failed to render timeline (exit status {exc.returncode}): "
+                f"Failed to finalize rendered timeline (exit status {exc.returncode}): "
                 f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
             ) from exc
         except OSError as exc:
             raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
     return RenderResult(output_path=output, duration=probe_duration(output))
-
 
 def render_with_music(
     timeline: Timeline,
@@ -241,12 +302,7 @@ def render_with_music(
     mix_original_audio: bool = False,
     debug_output_dir: str | Path | None = None,
 ) -> RenderResult:
-    """Render timeline clips, then replace or mix the soundtrack.
-
-    When mixing is requested, source audio is retained in the intermediate
-    edit and mixed with the background music. Otherwise the intermediate edit
-    is silent and music replaces the original audio.
-    """
+    """Re-encode each selected clip, concatenate them, then add the soundtrack."""
     if not isinstance(timeline, Timeline):
         raise TypeError("timeline must be a Timeline instance.")
     if not isinstance(config, AudioConfig):
@@ -262,68 +318,18 @@ def render_with_music(
         raise FileNotFoundError(f"Music file not found: {music}")
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Keep the temporary concat list and intermediate edit in the output
-    # directory so that final rendering stays on the same filesystem.
     with tempfile.TemporaryDirectory(
         prefix=".autocut-render-", dir=str(output.parent)
     ) as temporary_directory:
         temporary = Path(temporary_directory)
-        concat_file = temporary / "clips.ffconcat"
-        silent_video = temporary / "silent.mp4"
-
-        lines = ["ffconcat version 1.0"]
-        for clip in timeline.clips:
-            source = Path(clip.video_name).resolve()
-            if not source.is_file():
-                raise FileNotFoundError(
-                    f"Timeline source video not found: {clip.video_name}"
-                )
-            start = _duration("clip source_start", clip.source_start, allow_zero=True)
-            end = _duration("clip source_end", clip.source_end)
-            if end <= start:
-                raise ValueError(
-                    f"Invalid source interval for {clip.video_name}: "
-                    f"{start}–{end}."
-                )
-            escaped = str(source).replace("\\", "/").replace("'", "'\\''")
-            lines.extend([
-                f"file '{escaped}'",
-                f"inpoint {start}",
-                f"outpoint {end}",
-            ])
-        concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-        concat_command = [
-            _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
-            "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-map", "0:v:0",
-        ]
-        if mix_original_audio:
-            concat_command.extend([
-                "-map", "0:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k",
-            ])
-        else:
-            concat_command.extend(["-c:v", "copy", "-an"])
-        concat_command.extend(["-movflags", "+faststart", str(silent_video)])
-        try:
-            subprocess.run(
-                concat_command, check=True, capture_output=True, text=True
-            )
-        except subprocess.CalledProcessError as exc:
-            stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
-            detail = stderr or "FFmpeg returned a non-zero exit status."
-            raise RuntimeError(
-                f"Failed to assemble timeline video (exit status "
-                f"{exc.returncode}): {detail}"
-            ) from exc
-        except OSError as exc:
-            raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+        assembled = _render_reencoded_transport_stream(
+            timeline, temporary, include_audio=mix_original_audio
+        )
 
         if debug_output_dir is not None:
             debug_dir = Path(debug_output_dir)
             debug_dir.mkdir(parents=True, exist_ok=True)
-            preserved_video = debug_dir / "assembled_before_music.mp4"
-            shutil.copy2(silent_video, preserved_video)
+            shutil.copy2(assembled, debug_dir / "assembled_before_music.ts")
             manifest_path = debug_dir / "timeline_clips.json"
             manifest_path.write_text(
                 json.dumps(timeline.to_dict(), indent=2, ensure_ascii=False) + "\n",
@@ -331,7 +337,8 @@ def render_with_music(
             )
 
         return mix_music(
-            silent_video, music, output,
+            assembled, music, output,
             duration=timeline.duration, config=config,
             mix_original_audio=mix_original_audio,
         )
+
