@@ -173,9 +173,7 @@ def test_sync_rejects_invalid_config_values():
 
 def test_sync_does_not_extend_an_in_budget_timeline_past_music_duration():
     original = timeline([clip(start=0.9, end=2.1)])
-    data = analysis(beats=(0.0, 2.0, 3.0), duration=1.5)
-    # Use a longer soundtrack for a valid starting timeline; nearest snapping
-    # would expand the selected source interval from 1.2s to 2.0s.
+    # The starting timeline fits; nearest snapping would expand it to 2.0s.
     data = analysis(beats=(0.0, 2.0, 3.0), duration=1.8)
     result = synchronize_timeline(
         original, data,
