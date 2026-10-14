@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 from numbers import Real
 import shutil
@@ -238,6 +239,7 @@ def render_with_music(
     *,
     config: AudioConfig,
     mix_original_audio: bool = False,
+    debug_output_dir: str | Path | None = None,
 ) -> RenderResult:
     """Render timeline clips, then replace or mix the soundtrack.
 
@@ -316,6 +318,17 @@ def render_with_music(
             ) from exc
         except OSError as exc:
             raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+
+        if debug_output_dir is not None:
+            debug_dir = Path(debug_output_dir)
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            preserved_video = debug_dir / "assembled_before_music.mp4"
+            shutil.copy2(silent_video, preserved_video)
+            manifest_path = debug_dir / "timeline_clips.json"
+            manifest_path.write_text(
+                json.dumps(timeline.to_dict(), indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
 
         return mix_music(
             silent_video, music, output,
