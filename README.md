@@ -111,7 +111,7 @@ Candidate generation
 Candidate ranking
   │
   ▼
-Selection under duration / editing constraints
+Candidate selection and duplicate suppression
   │
   ▼
 Timeline
