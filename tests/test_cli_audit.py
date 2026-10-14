@@ -32,7 +32,7 @@ def test_audit_dispatch_returns_nonzero_for_audit_errors(tmp_path, monkeypatch):
     source = tmp_path / "annotations.txt"
     source.write_text("placeholder", encoding="utf-8")
     config = tmp_path / "autocut.yaml"
-    config.write_text("selection:\n  target_duration: 60\n")
+    config.write_text("")
 
     monkeypatch.setattr(
         "autocut.dataset.audit.audit_source",
@@ -43,7 +43,7 @@ def test_audit_dispatch_returns_nonzero_for_audit_errors(tmp_path, monkeypatch):
 
 def test_audit_dispatch_reports_missing_input(tmp_path, capsys):
     config = tmp_path / "autocut.yaml"
-    config.write_text("selection:\n  target_duration: 60\n")
+    config.write_text("")
     missing = tmp_path / "missing.txt"
     assert cli.main(["audit", str(missing), "--config", str(config)]) == 2
     assert "Input file not found" in capsys.readouterr().err
