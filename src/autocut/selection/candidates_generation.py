@@ -1,9 +1,8 @@
 """Generate temporally coherent highlight candidates from inference windows.
 
 Candidate generation is local to one annotated source interval. It applies
-class-aware eligibility, optional asymmetric P2 envelope smoothing, padding,
-temporal merging, and a final minimum-duration filter. Global budget selection
-belongs to Phase 10.
+class-aware eligibility, optional asymmetric P2 envelope smoothing, tier-aware
+padding and temporal merging, and a final minimum-duration filter.
 """
 from __future__ import annotations
 
