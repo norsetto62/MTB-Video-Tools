@@ -41,7 +41,7 @@ def test_overlapping_accepted_windows_union_and_padding_clamps_to_video():
 def test_high_action_requires_clean_window_and_action_as_argmax():
     accepted = _inference([[0, 4]], [[0.10, 0.20, 0.70]])
     rejected_junk = _inference([[0, 4]], [[0.20, 0.10, 0.70]])
-    rejected_not_argmax = _inference([[0, 4]], [[0.10, 0.50, 0.40]])
+    rejected_not_argmax = _inference([[0, 4]], [[0.10, 0.35, 0.55]])
     config = CandidateGenerationConfig(padding_seconds=0.0)
     assert len(generate_candidates(accepted, 10, config=config)) == 1
     assert generate_candidates(rejected_junk, 10, config=config) == []
