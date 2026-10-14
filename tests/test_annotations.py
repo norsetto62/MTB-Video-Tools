@@ -85,9 +85,9 @@ def test_load_annotations_retains_manifest_line_order(tmp_path):
     second_video = create_video(tmp_path, "second.mp4")
     annotation_file = write_annotation_file(
         tmp_path,
-        f"{first_video.name}\\n"
-        "00:10 00:20\\n"
-        f"{second_video.name} 00:01 00:08\\n",
+        f"{first_video.name}\n"
+        "00:10 00:20\n"
+        f"{second_video.name} 00:01 00:08\n",
     )
 
     clips, _ = load_annotations(annotation_file)
@@ -100,8 +100,8 @@ def test_video_only_interval_keeps_declaration_order(tmp_path, monkeypatch):
     interval_video = create_video(tmp_path, "interval.mp4")
     annotation_file = write_annotation_file(
         tmp_path,
-        f"{whole_video.name}\\n"
-        f"{interval_video.name} 00:10 00:20\\n",
+        f"{whole_video.name}\n"
+        f"{interval_video.name} 00:10 00:20\n",
     )
     monkeypatch.setattr(
         "autocut.video.probe.get_video_info",
