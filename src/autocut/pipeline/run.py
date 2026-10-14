@@ -235,7 +235,6 @@ def run_pipeline(
     settings: object,
     *,
     output_path: str | Path | None = None,
-    debug_render_dir: str | Path | None = None,
     video_encoder: str | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
@@ -462,7 +461,6 @@ def run_pipeline(
             destination,
             config=settings.audio,
             mix_original_audio=music_directive.mix,
-            debug_output_dir=debug_render_dir,
             video_encoder=(video_encoder or getattr(settings, "video_encoder", "h264_nvenc")),
         )
 
