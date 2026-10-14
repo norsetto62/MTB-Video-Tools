@@ -93,15 +93,11 @@ def _rebuild_timeline(
             mandatory=clip.mandatory,
             score=clip.score,
             tier=clip.tier,
+            annotation_order=clip.annotation_order,
         ))
         cursor += duration
 
-    return Timeline(
-        clips=tuple(clips),
-        target_duration=timeline.target_duration,
-        duration=cursor,
-        over_budget_by=max(0.0, cursor - timeline.target_duration),
-    )
+    return Timeline(clips=tuple(clips), duration=cursor)
 
 
 def synchronize_timeline(
@@ -160,14 +156,6 @@ def synchronize_timeline(
         proposed.append((start, end))
 
     proposed_intervals = tuple(proposed)
-    proposed_duration = sum(end - start for start, end in proposed_intervals)
-
-    # Selection already owns the budget. Synchronization may shorten the
-    # timeline, but must not make it longer than the original duration or
-    # exceed the requested target when the original fit within that target.
-    applicable_budget = max(timeline.target_duration, timeline.duration)
-    if proposed_duration > applicable_budget + 1e-9:
-        proposed_intervals = original_intervals
 
     if proposed_intervals == original_intervals:
         return timeline
