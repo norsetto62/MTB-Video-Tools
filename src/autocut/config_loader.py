@@ -43,9 +43,9 @@ class RunConfig:
     cache_dir: Path
     sample_fps: float
     processing_width: int
+    video_encoder: str
     checkpoint: Path
     inference_batch_size: int
-    target_duration: float
     max_clip_duration: float
     candidates: Any
     audio: AudioConfig
@@ -149,6 +149,13 @@ def _load_yaml(path: str | Path) -> dict[str, Any]:
     return _mapping(raw, where="root")
 
 
+def _video_encoder(value: Any) -> str:
+    """Validate the encoder used to re-encode selected timeline clips."""
+    if not isinstance(value, str) or value not in {"h264_nvenc", "libx264"}:
+        raise ValueError("video.encoder must be h264_nvenc or libx264.")
+    return value
+
+
 def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
     """Load production settings and map them to existing typed configurations."""
     raw = _load_yaml(path)
@@ -158,16 +165,16 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         raw, "paths",
         {"data_dir", "models_dir", "output_dir", "cache_dir"},
     )
-    video = _section(raw, "video", {"sampling_fps", "processing_width"})
+    video = _section(raw, "video", {"sampling_fps", "processing_width", "encoder"})
     features = _section(raw, "features", {"window_duration", "window_stride"})
     model = _section(raw, "model", {"checkpoint", "inference_batch_size"})
     selection = _section(
         raw, "selection",
         {
-            "target_duration", "min_clip", "max_clip_duration",
+            "min_clip", "max_clip_duration",
             "class_score_weights", "junk_threshold", "action_threshold",
-            "score_threshold", "min_candidate_duration", "max_gap_to_merge",
-            "padding_seconds",
+            "flow_threshold", "score_threshold", "min_candidate_duration",
+            "max_gap_to_merge", "padding_seconds", "p2_envelope_decay",
         },
         required=True,
     )
@@ -202,12 +209,16 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
 
     candidates = CandidateGenerationConfig(
         class_score_weights=tuple(weights),
-        junk_threshold=selection.get("junk_threshold", 0.55),
-        action_threshold=selection.get("action_threshold", 0.50),
-        score_threshold=selection.get("score_threshold", 0.60),
-        min_candidate_duration=selection.get("min_candidate_duration", 4.0),
+        junk_threshold=selection.get("junk_threshold", 0.20),
+        action_threshold=selection.get("action_threshold", 0.60),
+        flow_threshold=selection.get("flow_threshold", 0.40),
+        # min_clip is the sole final candidate-duration filter. The old
+        # min_candidate_duration key remains accepted for config compatibility
+        # but no longer controls filtering independently.
+        min_candidate_duration=common.min_clip,
         max_gap_to_merge=selection.get("max_gap_to_merge", 3.0),
         padding_seconds=selection.get("padding_seconds", 2.0),
+        p2_envelope_decay=selection.get("p2_envelope_decay", 0.0),
     )
     audio_config = AudioConfig(
         sync_mode=audio.get("sync_mode", "off"),
@@ -222,12 +233,10 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         processing_width=_positive_int(
             video.get("processing_width", 480), name="video.processing_width"
         ),
+        video_encoder=_video_encoder(video.get("encoder", "h264_nvenc")),
         checkpoint=_path(model.get("checkpoint", "models/best_model.pt"), name="model.checkpoint"),
         inference_batch_size=_positive_int(
             model.get("inference_batch_size", 256), name="model.inference_batch_size"
-        ),
-        target_duration=_positive_float(
-            selection.get("target_duration", 120.0), name="selection.target_duration"
         ),
         max_clip_duration=_nonnegative_float(
             selection.get("max_clip_duration", 0.0), name="selection.max_clip_duration"

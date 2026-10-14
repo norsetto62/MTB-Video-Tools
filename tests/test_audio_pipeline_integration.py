@@ -13,7 +13,7 @@ def make_timeline():
         output_start=0.0, output_end=2.0, mandatory=False,
         score=1.5, tier="high_action",
     )
-    return Timeline((clip,), 10.0, 2.0, 0.0)
+    return Timeline((clip,), 2.0)
 
 
 def test_analysis_failure_warns_and_returns_unsynchronized_timeline(caplog):

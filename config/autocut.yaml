@@ -7,6 +7,7 @@ paths:
 video:
   sampling_fps: 2.0
   processing_width: 480
+  encoder: h264_nvenc
 
 features:
   window_duration: 4.0
@@ -17,15 +18,14 @@ model:
   inference_batch_size: 256
 
 selection:
-  target_duration: 120.0
   min_clip: 3.0
   max_clip_duration: 0.0
-  junk_threshold: 0.55
-  action_threshold: 0.50
-  score_threshold: 0.60
-  min_candidate_duration: 4.0
+  junk_threshold: 0.20
+  action_threshold: 0.60
+  flow_threshold: 0.40
   max_gap_to_merge: 3.0
   padding_seconds: 2.0
+  p2_envelope_decay: 0.0
 
 audio:
   sync_mode: combined

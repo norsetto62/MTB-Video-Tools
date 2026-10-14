@@ -43,7 +43,7 @@ def clip(name="ride.mp4", start=0.9, end=2.1, out_start=0.0,
     )
 
 
-def timeline(clips, target=10.0):
+def timeline(clips):
     cursor = 0.0
     placed = []
     for item in clips:
@@ -59,7 +59,7 @@ def timeline(clips, target=10.0):
             tier=item.tier,
         ))
         cursor += duration
-    return Timeline(tuple(placed), target, cursor, max(0.0, cursor - target))
+    return Timeline(tuple(placed), cursor)
 
 
 @pytest.mark.parametrize(
@@ -154,13 +154,13 @@ def test_sync_does_not_exceed_positive_maximum_clip_duration():
     assert result.clips[0].duration <= 1.0 + 1e-9
 
 
-def test_sync_keeps_original_optional_interval_if_snapping_breaks_budget():
-    original = timeline([clip(start=0.9, end=2.1)], target=1.2)
+def test_sync_can_lengthen_timeline_when_snapping_without_global_budget():
+    original = timeline([clip(start=0.9, end=2.1)])
     result = synchronize_timeline(
         original, analysis(beats=(0.0, 2.0, 3.0)),
         config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=0),
     )
-    assert (result.clips[0].source_start, result.clips[0].source_end) == (0.9, 2.1)
+    assert (result.clips[0].source_start, result.clips[0].source_end) == (0.0, 2.0)
 
 
 def test_sync_rejects_invalid_config_values():
@@ -168,3 +168,18 @@ def test_sync_rejects_invalid_config_values():
         AudioConfig(max_clip_duration=-1)
     with pytest.raises((ValueError, TypeError)):
         AudioConfig(fade_duration=-0.1)
+
+
+
+def test_sync_does_not_extend_an_in_budget_timeline_past_music_duration():
+    original = timeline([clip(start=0.9, end=2.1)])
+    # Keep every event timestamp inside the soundtrack while making nearest
+    # snapping expand this 1.2s clip beyond the 1.8s music duration.
+    data = analysis(
+        beats=(0.0, 1.8), measures=(1.0,), onsets=(0.8,), duration=1.8,
+    )
+    result = synchronize_timeline(
+        original, data,
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=0),
+    )
+    assert result.duration <= data.duration + 1e-9

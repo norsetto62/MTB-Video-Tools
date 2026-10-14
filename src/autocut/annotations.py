@@ -174,6 +174,7 @@ def load_annotations(
     last_video_name = None
     audio_config = None
     declared_videos: set[str] = set()
+    declared_video_order: dict[str, int] = {}
     videos_with_intervals: set[str] = set()
 
     with annotation_file.open(
@@ -246,6 +247,7 @@ def load_annotations(
 
                 last_video_name = str(video_path.resolve())
                 declared_videos.add(last_video_name)
+                declared_video_order.setdefault(last_video_name, line_number)
 
                 continue
 
@@ -309,6 +311,7 @@ def load_annotations(
                 video_name = str(video_path.resolve())
                 last_video_name = video_name
                 declared_videos.add(video_name)
+                declared_video_order.setdefault(video_name, line_number)
                 videos_with_intervals.add(video_name)
 
                 start_text = parts[1]
@@ -374,6 +377,7 @@ def load_annotations(
                     start = start,
                     end = end,
                     mandatory = mandatory,
+                    annotation_order = line_number,
                 )
             )
 
@@ -390,7 +394,18 @@ def load_annotations(
                 start=0.0,
                 end=float(info.duration),
                 mandatory=False,
+                annotation_order=declared_video_order[video_name],
             )
         )
 
+    # A video-only declaration is materialized after parsing because its
+    # duration requires probing. Restore manifest order now that all intervals
+    # exist, using physical line numbers retained on Clip.
+    clips.sort(
+        key=lambda clip: (
+            clip.annotation_order
+            if clip.annotation_order is not None
+            else float("inf")
+        )
+    )
     return clips, audio_config

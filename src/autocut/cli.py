@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("annotations", type=Path, help="Annotation TXT file.")
     run.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     run.add_argument("--output", type=Path, help="Output video path (default: output/<annotations>_autocut.mp4).")
+    run.add_argument(
+        "--video-encoder",
+        choices=("h264_nvenc", "libx264"),
+        help="Override video.encoder from the run configuration.",
+    )
 
     audit = subparsers.add_parser("audit", help="Audit annotations and derived data.")
     audit.add_argument("source", type=Path, help="Annotation TXT or dataset manifest.")
@@ -140,11 +145,11 @@ def dispatch(args: argparse.Namespace) -> int:
         from .config_loader import load_run_config
         from .dataset.audit import audit_source, print_audit_report
 
-        settings = load_run_config(args.config)
-        _configure_logging(settings.common.log_level)
         if not args.source.is_file():
             print(f"Input file not found: {args.source}", file=sys.stderr)
             return 2
+        settings = load_run_config(args.config)
+        _configure_logging(settings.common.log_level)
         report = audit_source(
             args.source,
             settings,
@@ -162,7 +167,12 @@ def dispatch(args: argparse.Namespace) -> int:
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
-        result = run_pipeline(args.annotations, settings, output_path=args.output)
+        result = run_pipeline(
+            args.annotations,
+            settings,
+            output_path=args.output,
+            video_encoder=args.video_encoder or getattr(settings, "video_encoder", "h264_nvenc"),
+        )
         print(json.dumps(result, indent=2, default=str))
         return 0
 

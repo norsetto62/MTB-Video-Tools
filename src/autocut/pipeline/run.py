@@ -20,12 +20,13 @@ from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows
 from ..motion.features import FeatureExtractor
 from ..motion.flow import calculate_optical_flow
-from ..selection.budget import MandatoryClip, SelectionCandidate, select_highlight_budget
+from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
 from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
 from ..video.reader import VideoReader
 from ..audio.pipeline import prepare_audio_timeline
+from ..audio.analysis import AudioAnalysis, analyze_audio
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,9 @@ def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
                 end=window.end + offset,
                 score=window.score,
                 tier=window.tier,
+                p0=window.p0,
+                p1=window.p1,
+                p2=window.p2,
             )
             for window in candidate.window_evidence
         ),
@@ -210,11 +214,11 @@ def _config_summary(settings: object) -> dict:
     return {
         "sample_fps": settings.sample_fps,
         "processing_width": settings.processing_width,
+        "video_encoder": getattr(settings, "video_encoder", "h264_nvenc"),
         "window_duration": settings.common.window_duration,
         "window_stride": settings.common.window_stride,
         "checkpoint": str(settings.checkpoint),
         "inference_batch_size": settings.inference_batch_size,
-        "target_duration": settings.target_duration,
         "min_clip": settings.common.min_clip,
         "max_clip_duration": settings.max_clip_duration,
         "candidate_generation": asdict(settings.candidates),
@@ -231,6 +235,7 @@ def run_pipeline(
     settings: object,
     *,
     output_path: str | Path | None = None,
+    video_encoder: str | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
 
@@ -294,51 +299,106 @@ def run_pipeline(
     if music_directive is not None and not Path(music_directive.path).is_file():
         raise FileNotFoundError(f"Background music not found: {music_directive.path}")
 
+    audio_analysis: AudioAnalysis | None = None
+    if music_directive is not None:
+        try:
+            audio_analysis = analyze_audio(
+                music_directive.path,
+                cache_dir=settings.cache_dir / "audio",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Audio analysis failed before selection; duration-aware selection "
+                "is unavailable: %s",
+                exc,
+            )
+
     if not clips_by_video:
         raise ValueError("The annotation manifest does not identify any video ranges.")
 
     all_candidates: list[SelectionCandidate] = []
     inference_summaries: list[dict] = []
     logger.info("Starting motion analysis and model inference.")
-    for video_name, video_clips in clips_by_video.items():
-        order = video_order[video_name]
-        for start, end in _merge_ranges(video_clips):
-            windows = _extract_windows(Path(video_name), start, end, settings)
-            if windows is None:
-                continue
+
+    # Process each annotation interval independently. This retains the
+    # manifest row identity throughout inference and candidate generation;
+    # merging source ranges here would erase which interval produced a clip.
+    for fallback_order, clip in enumerate(clips):
+        source_annotation_order = getattr(clip, "annotation_order", None)
+        annotation_order = (
+            source_annotation_order
+            if source_annotation_order is not None
+            else fallback_order
+        )
+        video_name = str(Path(clip.video_name).resolve())
+        start, end = float(clip.start), float(clip.end)
+        if clip.mandatory:
             logger.info(
-                "Running model inference on %d window(s) from %s [%.1f, %.1f]s.",
-                int(windows.X.shape[0]), Path(video_name).name, start, end,
-            )
-            inference = infer_windows(
-                settings.checkpoint,
-                windows,
-                batch_size=settings.inference_batch_size,
-            )
-            candidates = generate_candidates(
-                inference,
-                clip_duration=end - start,
-                config=settings.candidates,
-            )
-            logger.info(
-                "Range result: %d inference window(s), %d candidate clip(s).",
-                int(windows.X.shape[0]), len(candidates),
+                "Skipping motion analysis and inference for mandatory interval "
+                "%s [%.3f, %.3f) (annotation #%d).",
+                Path(video_name).name, start, end, annotation_order,
             )
             inference_summaries.append({
                 "video": video_name,
+                "annotation_order": annotation_order,
                 "range_start": start,
                 "range_end": end,
-                "window_count": int(windows.X.shape[0]),
-                "candidate_count": len(candidates),
+                "window_count": 0,
+                "candidate_count": 0,
+                "status": "skipped_mandatory",
             })
-            all_candidates.extend(
-                SelectionCandidate(
-                    video_name=video_name,
-                    video_order=order,
-                    candidate=_offset_candidate(candidate, start),
-                )
-                for candidate in candidates
+            continue
+        order = video_order[video_name]
+        windows = _extract_windows(Path(video_name), start, end, settings)
+        if windows is None:
+            inference_summaries.append({
+                "video": video_name,
+                "annotation_order": annotation_order,
+                "range_start": start,
+                "range_end": end,
+                "window_count": 0,
+                "candidate_count": 0,
+                "status": "skipped_insufficient_features",
+            })
+            continue
+        logger.info(
+            "Running model inference on %d window(s) from %s [%.1f, %.1f]s "
+            "(annotation #%d).",
+            int(windows.X.shape[0]), Path(video_name).name, start, end,
+            annotation_order,
+        )
+        inference = infer_windows(
+            settings.checkpoint,
+            windows,
+            batch_size=settings.inference_batch_size,
+        )
+        candidates = generate_candidates(
+            inference,
+            clip_duration=end - start,
+            config=settings.candidates,
+        )
+        logger.info(
+            "Annotation #%d result: %d inference window(s), %d candidate clip(s).",
+            annotation_order, int(windows.X.shape[0]), len(candidates),
+        )
+        inference_summaries.append({
+            "video": video_name,
+            "annotation_order": annotation_order,
+            "range_start": start,
+            "range_end": end,
+            "window_count": int(windows.X.shape[0]),
+            "candidate_count": len(candidates),
+            "status": "processed",
+        })
+        all_candidates.extend(
+            SelectionCandidate(
+                video_name=video_name,
+                video_order=order,
+                candidate=_offset_candidate(candidate, start),
+                annotation_order=annotation_order,
             )
+            for candidate in candidates
+        )
 
     mandatory = tuple(
         MandatoryClip(
@@ -346,27 +406,24 @@ def run_pipeline(
             start=float(clip.start),
             end=float(clip.end),
             video_order=video_order[str(Path(clip.video_name).resolve())],
-            sequence_order=index,
+            sequence_order=(
+                getattr(clip, "annotation_order", None)
+                if getattr(clip, "annotation_order", None) is not None
+                else index
+            ),
         )
         for index, clip in enumerate(clips)
         if clip.mandatory
     )
-    logger.info(
-        "Selecting highlights from %d candidate(s) with target duration %.1fs.",
-        len(all_candidates), settings.target_duration,
-    )
-    selection = select_highlight_budget(
+    logger.info("Selecting from %d candidate(s); soundtrack duration=%s.", len(all_candidates), f"{audio_analysis.duration:.3f}s" if audio_analysis else "unavailable")
+    selection = select_candidates(
         all_candidates,
-        settings.target_duration,
         mandatory,
-        min_trimmed_duration=settings.common.min_clip,
+        min_clip_duration=settings.common.min_clip,
         max_clip_duration=settings.max_clip_duration,
+        max_total_duration=audio_analysis.duration if audio_analysis is not None else None,
     )
-    timeline = assemble_timeline(
-        selection,
-        mandatory,
-        max_clip_duration=settings.max_clip_duration,
-    )
+    timeline = assemble_timeline(selection, mandatory)
 
     logger.info(
         "Selection complete: %d optional clip(s) selected, %d mandatory clip(s); "
@@ -387,12 +444,16 @@ def run_pipeline(
             music_directive.path,
             config=settings.audio,
             cache_dir=settings.cache_dir / "audio",
+            analysis=audio_analysis,
         )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Rendering %d timeline clip(s) to %s.", len(timeline.clips), destination.resolve())
     if music_directive is None:
-        render_result = render_timeline(timeline, destination)
+        render_result = render_timeline(
+            timeline, destination,
+            video_encoder=video_encoder or getattr(settings, "video_encoder", "h264_nvenc"),
+        )
     else:
         render_result = render_with_music(
             timeline,
@@ -400,6 +461,7 @@ def run_pipeline(
             destination,
             config=settings.audio,
             mix_original_audio=music_directive.mix,
+            video_encoder=(video_encoder or getattr(settings, "video_encoder", "h264_nvenc")),
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")

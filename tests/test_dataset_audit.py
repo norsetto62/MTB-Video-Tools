@@ -11,7 +11,7 @@ from autocut.config_loader import load_run_config
 def _run_config(tmp_path: Path):
     path = tmp_path / "autocut.yaml"
     path.write_text(
-        "selection:\n  target_duration: 60\n",
+        "selection:\n  min_clip: 3.0\n",
         encoding="utf-8",
     )
     return load_run_config(path)
@@ -165,7 +165,7 @@ def test_annotation_bounds_use_rounded_video_duration(tmp_path, monkeypatch):
     )
     split_config = tmp_path / "train.yaml"
     split_config.write_text(
-        "data:\\n  train_groups: [session]\\n  validation_groups: [other]\\n",
+        "data:\n  train_groups: [session]\n  validation_groups: [other]\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -200,7 +200,7 @@ def test_annotation_bounds_still_reject_more_than_rounded_second(tmp_path, monke
     )
     split_config = tmp_path / "train.yaml"
     split_config.write_text(
-        "data:\\n  train_groups: [session]\\n  validation_groups: [other]\\n",
+        "data:\n  train_groups: [session]\n  validation_groups: [other]\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -246,7 +246,7 @@ def test_manifest_audit_preserves_legacy_cwd_relative_path_resolution(
     )
     split_config = tmp_path / "train.yaml"
     split_config.write_text(
-        "data:\\n  train_groups: []\\n  validation_groups: []\\n",
+        "data:\n  train_groups: []\n  validation_groups: []\n",
         encoding="utf-8",
     )
 
