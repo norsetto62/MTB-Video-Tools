@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("annotations", type=Path, help="Annotation TXT file.")
     run.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     run.add_argument("--output", type=Path, help="Output video path (default: output/<annotations>_autocut.mp4).")
+    run.add_argument(
+        "--debug-render-dir",
+        type=Path,
+        help="Preserve the assembled video before music mixing and a timeline manifest.",
+    )
 
     audit = subparsers.add_parser("audit", help="Audit annotations and derived data.")
     audit.add_argument("source", type=Path, help="Annotation TXT or dataset manifest.")
@@ -162,7 +167,12 @@ def dispatch(args: argparse.Namespace) -> int:
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
-        result = run_pipeline(args.annotations, settings, output_path=args.output)
+        result = run_pipeline(
+            args.annotations,
+            settings,
+            output_path=args.output,
+            debug_render_dir=args.debug_render_dir,
+        )
         print(json.dumps(result, indent=2, default=str))
         return 0
 
