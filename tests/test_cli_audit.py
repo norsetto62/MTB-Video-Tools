@@ -7,7 +7,7 @@ def test_audit_dispatch_prints_report_and_returns_success(tmp_path, monkeypatch,
     source = tmp_path / "manifest.yaml"
     source.write_text("videos: []\n", encoding="utf-8")
     config = tmp_path / "autocut.yaml"
-    config.write_text("selection:\n  target_duration: 60\n", encoding="utf-8")
+    config.write_text("", encoding="utf-8")
     training_config = tmp_path / "train.yaml"
     training_config.write_text("data:\n  train_groups: []\n  validation_groups: []\n")
 
