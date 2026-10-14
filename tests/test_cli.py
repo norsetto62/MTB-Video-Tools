@@ -69,10 +69,11 @@ def test_cli_run_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("autocut.config_loader.load_run_config", lambda path: settings)
     captured = {}
 
-    def fake_run_pipeline(path, loaded_settings, *, output_path=None):
+    def fake_run_pipeline(path, loaded_settings, *, output_path=None, video_encoder=None):
         captured["path"] = path
         captured["settings"] = loaded_settings
         captured["output_path"] = output_path
+        captured["video_encoder"] = video_encoder
         return {"status": "completed"}
 
     monkeypatch.setattr("autocut.pipeline.run.run_pipeline", fake_run_pipeline)
@@ -85,5 +86,6 @@ def test_cli_run_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
         "path": annotations,
         "settings": settings,
         "output_path": output,
+        "video_encoder": "h264_nvenc",
     }
     assert '"status": "completed"' in capsys.readouterr().out
