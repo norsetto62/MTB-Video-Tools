@@ -14,6 +14,7 @@ import numpy as np
 
 from ..ml.inference import InferenceResult
 
+
 @dataclass(frozen=True)
 class CandidateGenerationConfig:
     """Class-aware thresholds and temporal rules for candidate generation."""
@@ -123,10 +124,12 @@ def _merge_spans(spans: Sequence[_Span], *, max_gap: float) -> list[_Span]:
             current.window_indices = sorted(
                 set(current.window_indices).union(span.window_indices)
             )
+        else:
             merged.append(
                 _Span(span.start, span.end, list(span.window_indices), span.tier)
             )
     return merged
+
 
 def _p2_envelope(values: np.ndarray, decay: float) -> np.ndarray:
     """Follow P2 rises immediately and let falls decay asymmetrically."""
@@ -136,6 +139,7 @@ def _p2_envelope(values: np.ndarray, decay: float) -> np.ndarray:
     for index in range(1, len(values)):
         envelope[index] = max(values[index], envelope[index - 1] * decay)
     return envelope
+
 
 def generate_candidates(
     inference: InferenceResult,
@@ -190,6 +194,7 @@ def generate_candidates(
             tier = "high_action"
         elif flow_class:
             tier = "moderate_interest"
+        else:
             tier = None
         if tier is None:
             continue
