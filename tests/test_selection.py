@@ -53,3 +53,43 @@ def test_selection_validates_types_and_durations():
         select_candidates([], min_clip_duration=0)
     with pytest.raises(ValueError):
         select_candidates([], max_clip_duration=-1)
+
+
+
+def test_duration_budget_prioritizes_high_action_then_moderate_by_score():
+    high_low = candidate(start=0, end=4, score=1.5)
+    high_best = candidate(start=10, end=14, score=2.2)
+    moderate_best = SelectionCandidate(
+        "v2.mp4", 1,
+        CandidateClip(0, 4, 4, "moderate_interest", 1.0, 1.0),
+    )
+    moderate_next = SelectionCandidate(
+        "v3.mp4", 2,
+        CandidateClip(0, 4, 4, "moderate_interest", 0.8, 0.8),
+    )
+    result = select_candidates(
+        [moderate_next, high_low, moderate_best, high_best],
+        max_total_duration=12.0,
+    )
+    assert result.selected == (high_best, high_low, moderate_best)
+
+
+def test_duration_budget_preserves_mandatory_and_uses_remaining_space():
+    mandatory = MandatoryClip("v1.mp4", 0, 6, video_order=0)
+    fits = candidate(video="v2.mp4", order=1, start=0, end=4, score=2.0)
+    too_long = candidate(video="v3.mp4", order=2, start=0, end=5, score=2.5)
+    result = select_candidates(
+        [too_long, fits], [mandatory], max_total_duration=10.0,
+    )
+    assert result.selected == (fits,)
+
+
+def test_mandatory_duration_over_budget_keeps_mandatory_and_selects_no_candidates(caplog):
+    mandatory = MandatoryClip("v1.mp4", 0, 8, video_order=0)
+    optional = candidate(video="v2.mp4", order=1, start=0, end=4, score=2.0)
+    with caplog.at_level("WARNING"):
+        result = select_candidates(
+            [optional], [mandatory], max_total_duration=5.0,
+        )
+    assert result.selected == ()
+    assert "exceeding soundtrack duration" in caplog.text
