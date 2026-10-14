@@ -7,7 +7,7 @@ from autocut.selection.candidates_generation import CandidateClip
 from autocut.selection.budget import SelectionCandidate
 
 
-def candidate(video, order, start, end, score=1.0):
+def candidate(video, order, start, end, score=1.0, annotation_order=None):
     return SelectionCandidate(
         video_name=video,
         video_order=order,
@@ -15,6 +15,7 @@ def candidate(video, order, start, end, score=1.0):
             start=start, end=end, duration=end-start, tier="moderate_interest",
             mean_score=score, max_score=score,
         ),
+        annotation_order=annotation_order,
     )
 
 
@@ -79,3 +80,42 @@ def test_timeline_rejects_invalid_max_clip_duration():
 
     with pytest.raises(ValueError, match="max_clip_duration"):
         assemble_timeline(select_highlight_budget([], 10), max_clip_duration=-1)
+
+
+
+def test_timeline_preserves_manifest_interval_order_over_video_and_source_time():
+    # Annotation 0 belongs to video2 and must precede annotation 1 from video1,
+    # even though video1 was declared first and its source timestamp is earlier.
+    later_in_interval = candidate("video2.mp4", 1, 20, 24, annotation_order=0)
+    earlier_in_interval = candidate("video2.mp4", 1, 3, 7, annotation_order=0)
+    next_annotation = candidate("video1.mp4", 0, 1, 5, annotation_order=1)
+    selection = select_highlight_budget(
+        [later_in_interval, next_annotation, earlier_in_interval], 30
+    )
+    timeline = assemble_timeline(selection)
+    assert [
+        (clip.video_name, clip.source_start, clip.annotation_order)
+        for clip in timeline.clips
+    ] == [
+        ("video2.mp4", 3, 0),
+        ("video2.mp4", 20, 0),
+        ("video1.mp4", 1, 1),
+    ]
+
+
+def test_timeline_interleaves_mandatory_and_optional_by_manifest_order():
+    first = candidate("video2.mp4", 1, 10, 14, annotation_order=0)
+    mandatory = [MandatoryClip(
+        "video1.mp4", 2, 6, video_order=0, sequence_order=1
+    )]
+    third = candidate("video1.mp4", 0, 0, 4, annotation_order=2)
+    selection = select_highlight_budget([first, third], 30, mandatory)
+    timeline = assemble_timeline(selection, mandatory)
+    assert [
+        (clip.video_name, clip.source_start, clip.annotation_order, clip.mandatory)
+        for clip in timeline.clips
+    ] == [
+        ("video2.mp4", 10, 0, False),
+        ("video1.mp4", 2, 1, True),
+        ("video1.mp4", 0, 2, False),
+    ]
