@@ -172,7 +172,7 @@ hpo:
     hidden_dim:
       choices: [32, 64, 128]
 data:
-  train_groups: [group_a, group_b, group_c]
+  train_groups: [group_a, group_b, group_d]
   validation_groups: [group_c]
 """,
         encoding="utf-8",
