@@ -47,17 +47,33 @@ def run_hpo(
         sampler=optuna.samplers.TPESampler(seed=settings.training.seed),
     )
 
+    search_space = settings.hpo_search_space
+    if not search_space:
+        raise ValueError(
+            "HPO search space is empty. Configure hpo.search_space in the training YAML."
+        )
+
+    def suggest_parameters(trial: optuna.Trial) -> dict[str, object]:
+        """Build Optuna suggestions from the validated YAML distributions."""
+        params: dict[str, object] = {}
+        for name, spec in search_space.items():
+            if "choices" in spec:
+                params[name] = trial.suggest_categorical(name, spec["choices"])
+            else:
+                params[name] = trial.suggest_float(
+                    name, float(spec["low"]), float(spec["high"]),
+                    log=bool(spec.get("log", False)),
+                )
+        return params
+
     # Define objective function closure
     def objective(trial: optuna.Trial) -> float:
-        lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
-        weight_decay = trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True)
-        dropout = trial.suggest_float("dropout", 0.2, 0.6)
-        
-        w0 = trial.suggest_float("class_weight_0", 0.1, 0.6)
-        w2 = trial.suggest_float("class_weight_2", 2.0, 10.0)
-        class_weights = [w0, 1.0, w2]
-        
-        hidden_dim = trial.suggest_categorical("hidden_dim", [32, 64, 128])
+        params = suggest_parameters(trial)
+        lr = float(params["lr"])
+        weight_decay = float(params["weight_decay"])
+        dropout = float(params["dropout"])
+        class_weights = [float(params["class_weight_0"]), 1.0, float(params["class_weight_2"])]
+        hidden_dim = int(params["hidden_dim"])
 
         filtered_train_groups = [g for g in settings.train_groups if g not in proxy_groups]
 
@@ -93,6 +109,10 @@ def run_hpo(
         for f in folds:
             metrics = f.get("metrics", {})
             class_f1_dict = metrics.get("class_f1", {})
+            if not class_f1_dict:
+                values = metrics.get("per_class_f1")
+                if isinstance(values, (list, tuple)) and len(values) >= 3:
+                    class_f1_dict = {str(i): values[i] for i in range(3)}
             if class_f1_dict:
                 # Ensure ordered array for classes 0, 1, 2
                 arr = np.array([class_f1_dict.get("0", 0.0), class_f1_dict.get("1", 0.0), class_f1_dict.get("2", 0.0)])
