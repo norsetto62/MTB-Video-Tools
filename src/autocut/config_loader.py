@@ -69,6 +69,7 @@ class TrainingRunConfig:
     experiment_name: str
     checkpoint_dir: Path
     results_dir: Path
+    hpo_search_space: dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,63 @@ def _groups(value: Any, *, name: str) -> tuple[str, ...]:
             raise ValueError(f"{name} contains duplicate group ID {group!r}.")
         groups.append(group)
     return tuple(groups)
+
+
+def _hpo_search_space(value: Any) -> dict[str, dict[str, Any]]:
+    """Validate the Optuna distributions supported by the HPO objective."""
+    raw = _mapping(value, where="hpo.search_space")
+    required = {
+        "lr", "weight_decay", "dropout", "class_weight_0",
+        "class_weight_2", "hidden_dim",
+    }
+    missing = required - set(raw)
+    unknown = set(raw) - required
+    if missing or unknown:
+        details = []
+        if missing:
+            details.append("missing: " + ", ".join(sorted(missing)))
+        if unknown:
+            details.append("unknown: " + ", ".join(sorted(unknown)))
+        raise ValueError("Invalid hpo.search_space parameters (" + "; ".join(details) + ").")
+
+    validated: dict[str, dict[str, Any]] = {}
+    for name, value_spec in raw.items():
+        spec = _mapping(value_spec, where=f"hpo.search_space.{name}")
+        if "choices" in spec:
+            if set(spec) != {"choices"}:
+                raise ValueError(
+                    f"hpo.search_space.{name} with choices may contain only the choices field."
+                )
+            choices = spec["choices"]
+            if not isinstance(choices, list) or len(choices) < 2:
+                raise ValueError(f"hpo.search_space.{name}.choices must contain at least two choices.")
+            validated[name] = {"choices": choices}
+            continue
+
+        unknown_fields = set(spec) - {"low", "high", "log"}
+        if unknown_fields or not {"low", "high"}.issubset(spec):
+            raise ValueError(
+                f"hpo.search_space.{name} must define low/high and optional log, "
+                "or define choices."
+            )
+        low = spec["low"]
+        high = spec["high"]
+        if (
+            isinstance(low, bool) or not isinstance(low, (int, float))
+            or isinstance(high, bool) or not isinstance(high, (int, float))
+        ):
+            raise ValueError(f"hpo.search_space.{name}.low and high must be numbers.")
+        low, high = float(low), float(high)
+        if not (low < high and low == low and high == high and abs(low) != float("inf") and abs(high) != float("inf")):
+            raise ValueError(f"hpo.search_space.{name} requires finite low < high.")
+        log = spec.get("log", False)
+        if not isinstance(log, bool):
+            raise ValueError(f"hpo.search_space.{name}.log must be a boolean.")
+        if log and low <= 0:
+            raise ValueError(f"hpo.search_space.{name}.low must be positive when log is true.")
+        validated[name] = {"low": low, "high": high, "log": log}
+
+    return validated
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
@@ -267,7 +325,7 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
     hpo = _section(
         raw, "hpo",
         {
-            "study_name", "n_trials", "proxy_test_groups",
+            "study_name", "n_trials", "proxy_test_groups", "search_space",
         },
         required=False,
     )
@@ -318,10 +376,14 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
             raise ValueError("hpo.study_name must be a non-empty string.")
         n_trials = _positive_int(hpo.get("n_trials"), name="hpo.n_trials")
         proxy_test_groups = _groups(hpo.get("proxy_test_groups"), name="hpo.proxy_test_groups")
+        if "search_space" not in hpo:
+            raise ValueError("Missing required configuration field 'hpo.search_space'.")
+        hpo_search_space = _hpo_search_space(hpo["search_space"])
     else:
         study_name = ''
         n_trials = 0
-        proxy_test_groups = tuple([])
+        proxy_test_groups = tuple()
+        hpo_search_space = {}
 
     train_groups = _groups(data.get("train_groups"), name="data.train_groups")
     validation_groups = _groups(
@@ -367,6 +429,7 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
             experiment.get("results_dir", "output/experiments"),
             name="experiment.results_dir",
         ),
+        hpo_search_space=hpo_search_space,
     )
 
 
