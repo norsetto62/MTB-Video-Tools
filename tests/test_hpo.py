@@ -69,6 +69,18 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr(hpo, "run_lovo", fake_run_lovo)
+    monkeypatch.setattr(hpo, "load_manifest", lambda *args, **kwargs: ["record"])
+    monkeypatch.setattr(
+        hpo, "_combine_records",
+        lambda records, loaded_settings: (
+            np.zeros((2, 54), dtype=np.float32),
+            np.zeros((2, 3), dtype=np.float32),
+        ),
+    )
+    monkeypatch.setattr(
+        hpo, "train_fixed_epochs",
+        lambda **kwargs: (None, None, {"epochs": kwargs["epochs"]}),
+    )
 
     # 3. Redirect working directory to tmp_path to isolate DB and JSON exports
     monkeypatch.chdir(tmp_path)
