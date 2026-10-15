@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from autocut.cli import build_parser, main
 
 
@@ -95,4 +97,4 @@ def test_cli_run_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
 def test_hpo_cli_defaults_to_training_config():
     args = build_parser().parse_args(["hpo"])
     assert args.command == "hpo"
-    assert args.config == __import__("pathlib").Path("config/train.yaml")
+    assert args.config == Path("config/train.yaml")
