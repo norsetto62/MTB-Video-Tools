@@ -111,11 +111,9 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
     assert result["groups"] == ["A", "B", "C"]
     # Each manifest record is prepared once, rather than once per fold/split.
     assert sorted(captured["prepared"]) == [("video-A",), ("video-B",), ("video-C",)]
-    # Expect 3 LOVO folds + 1 final full-dataset master refit
-    assert len(captured["outer"]) == 4
-    # Verify the first 3 are fold evaluations, and the last one is the full dataset refit
-    assert captured["outer"][3][1]["evaluation"] == "full_dataset_refit"
-    for fold, (outer_X, metadata) in zip(result["folds"], captured["outer"][:3], strict=True):
+    # The LOVO pipeline fits one model per held-out group; production refit is a CLI step.
+    assert len(captured["outer"]) == 3
+    for fold, (outer_X, metadata) in zip(result["folds"], captured["outer"], strict=True):
         assert fold["test_group"] not in fold["outer_training_groups"]
         # Verify your multi-group consensus inner validation target is active
         assert fold["inner_validation_group"] == "consensus_multi_group"
