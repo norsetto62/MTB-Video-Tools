@@ -9,9 +9,9 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
+from datetime import datetime
 
-
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "models")
+COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +69,18 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
     models.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
 
+    hpo = subparsers.add_parser(
+        "hpo",
+        help="Run Optuna hyperparameter optimization",
+    )
+    hpo.add_argument(
+        "--config", 
+        type=Path, 
+        default="configs/hpo.yaml", 
+        help="Path to HPO YAML configuration file"
+    )
+    hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    
     return parser
 
 
@@ -176,7 +188,8 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command in {"train", "validate", "lovo"}:
+    if args.command in {"train", "validate", "lovo", "hpo"}:
+
         from .config_loader import load_training_config
 
         settings = load_training_config(args.config)
@@ -191,6 +204,11 @@ def dispatch(args: argparse.Namespace) -> int:
             result = run_training(manifest, settings)
             print(json.dumps(result, indent=2, default=str))
             return 0
+        if args.command == "hpo":
+            from .pipeline.hpo import run_hpo
+
+            run_hpo(manifest, settings)
+            return 0
         if args.command == "validate":
             from .pipeline.validation import run_validation
 
@@ -204,10 +222,50 @@ def dispatch(args: argparse.Namespace) -> int:
             )
             print(json.dumps(result, indent=2, default=str))
             return 0
+        # LOVO
+        from .dataset.manifest import load_manifest
         from .pipeline.lovo import run_lovo
+        from .pipeline.training import _combine_records
+        from .ml.training import train_fixed_epochs
+        import numpy as np
 
         result = run_lovo(manifest, settings)
         print(json.dumps(result, indent=2, default=str))
+        # Determine the optimal epoch count for the final master refit 
+        # (e.g., taking the mean or median of the consensus selected epochs from each fold)
+        fold_epochs = [
+            fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
+            for fold in result["folds"]
+        ]
+        # Fallback to settings.training.epochs if epochs aren't explicitly tracked per fold
+        mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else settings.training.epochs
+
+        print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
+
+        # Load and combine all records using the codebase's native helper
+        records = load_manifest(manifest, verify_files=True)
+        all_windows, all_targets = _combine_records(records, settings)
+
+        # Define your production checkpoint destination
+        base_exp_name = getattr(settings, "experiment_name", "baseline")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_exp_name = f"{base_exp_name}_{timestamp}"
+        models_dir = Path(settings.common.models_dir) / "experiments"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
+
+        # Train and save using your exact fixed-epoch function
+        model, scaler, train_summary = train_fixed_epochs(
+            train_windows=all_windows,
+            train_targets=all_targets,
+            config=settings.training,
+            epochs=mean_epochs,
+            checkpoint_path=checkpoint_path,
+            data_config=result.get("data_config"),
+            metadata={"experiment_name": settings.experiment_name},
+        )
+
+        print(f"Master production model successfully saved to {checkpoint_path}")
         return 0
 
     print(f"Unsupported command: {args.command}", file=sys.stderr)

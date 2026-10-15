@@ -1,10 +1,11 @@
-data_dir: data
-models_dir: models
-cache_dir: data/cache
+paths:
+  data_dir: data
+  models_dir: models
+  cache_dir: data/cache
 
 hpo:
-  study_name: mtb_autocut_study
-  n_trials: 25
+  study_name: study_0
+  n_trials: 10
   proxy_test_groups: [artemisio, ascoli, castelli, mentorella]
 
 data:
@@ -27,5 +28,6 @@ training:
   min_delta: 0.0001
   seed: 42
 
+# Suppress verbose per-epoch training logs to keep the console clean during batch tuning
 logging:
-  level: INFO
+  level: WARNING

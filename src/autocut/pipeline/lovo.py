@@ -291,34 +291,6 @@ def run_lovo(
     }
     result_path = fold_root / f"{slug}_lovo_summary.json"
     _write_json(result_path, result)
-
-    # After the fold loop completes...
-    logger.info("Training final production master model on all 10 groups...")
-
-    master_epochs = int(np.median([f["selected_epochs"] for f in folds]))
-    master_X, master_y = _combine_prepared_records(tuple(records), prepared_records)
-
-    master_checkpoint = settings.checkpoint_dir / f"{slug}_master_production.pt"
-    master_metadata = {
-        "experiment_name": settings.experiment_name,
-        "evaluation": "full_dataset_refit",
-        "training_groups": list(groups),
-        "consensus_epochs": master_epochs,
-        "manifest": str(Path(manifest_path).expanduser().resolve()),
-    }
-
-    master_config = replace(settings.training, seed=settings.training.seed)
-    master_model, master_scaler, master_summary = _fit_fixed_epochs(
-        master_X,
-        master_y,
-        master_config,
-        epochs=master_epochs,
-        checkpoint_path=master_checkpoint,
-        data_config=data_config,
-        metadata=master_metadata,
-    )
-    logger.info("Master production model successfully saved to %s", master_checkpoint)
-
     result["results_path"] = str(result_path)
     return result
 

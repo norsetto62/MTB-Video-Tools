@@ -27,6 +27,9 @@ def _settings(tmp_path):
         manifest=tmp_path / "manifest.yaml",
         sample_fps=2.0,
         processing_width=480,
+        study_name='',
+        n_trials=0,
+        proxy_test_groups=tuple([]),
         train_groups=("unused",),
         validation_groups=("unused-val",),
         training=TrainingConfig(epochs=2, batch_size=2, hidden_dim=4, classifier_mid_dim=4, dropout=0),
@@ -108,10 +111,14 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
     assert result["groups"] == ["A", "B", "C"]
     # Each manifest record is prepared once, rather than once per fold/split.
     assert sorted(captured["prepared"]) == [("video-A",), ("video-B",), ("video-C",)]
-    assert len(captured["outer"]) == 3
-    for fold, (outer_X, metadata) in zip(result["folds"], captured["outer"], strict=True):
+    # Expect 3 LOVO folds + 1 final full-dataset master refit
+    assert len(captured["outer"]) == 4
+    # Verify the first 3 are fold evaluations, and the last one is the full dataset refit
+    assert captured["outer"][3][1]["evaluation"] == "full_dataset_refit"
+    for fold, (outer_X, metadata) in zip(result["folds"], captured["outer"][:3], strict=True):
         assert fold["test_group"] not in fold["outer_training_groups"]
-        assert fold["inner_validation_group"] in fold["outer_training_groups"]
+        # Verify your multi-group consensus inner validation target is active
+        assert fold["inner_validation_group"] == "consensus_multi_group"
         assert fold["inner_validation_group"] not in fold["inner_training_groups"]
         assert metadata["outer_test_group"] == fold["test_group"]
         assert not np.any(outer_X[:, 0, 0] == float(ord(fold["test_group"])))

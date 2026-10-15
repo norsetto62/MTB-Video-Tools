@@ -20,7 +20,7 @@ except ImportError as exc:  # pragma: no cover - dependency is declared in pypro
     ) from exc
 
 from .audio.config import AudioConfig
-
+from .ml.training import TrainingConfig
 
 @dataclass(frozen=True)
 class CommonSettings:
@@ -60,12 +60,24 @@ class TrainingRunConfig:
     manifest: Path
     sample_fps: float
     processing_width: int
+    study_name: str
+    n_trials: int
+    proxy_test_groups: tuple[str, ...]
     train_groups: tuple[str, ...]
     validation_groups: tuple[str, ...]
     training: TrainingConfig
     experiment_name: str
     checkpoint_dir: Path
     results_dir: Path
+
+
+@dataclass(frozen=True)
+class HpoConfig:
+    """Study name, number of trials, proxy test groups  """
+
+    study_name: str
+    n_trials: int
+    proxy_test_groups: tuple[str, ...]
 
 
 def _mapping(value: Any, *, where: str) -> dict[str, Any]:
@@ -244,14 +256,21 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         candidates=candidates,
         audio=audio_config,
     )
-
+  
 
 def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunConfig:
     """Load training YAML and construct the existing TrainingConfig dataclass."""
     raw = _load_yaml(path)
-    _keys(raw, {"paths", "data", "training", "experiment", "logging"})
+    _keys(raw, {"paths", "hpo", "data", "training", "experiment", "logging"})
 
     paths = _section(raw, "paths", {"data_dir", "models_dir", "cache_dir"})
+    hpo = _section(
+        raw, "hpo",
+        {
+            "study_name", "n_trials", "proxy_test_groups",
+        },
+        required=False,
+    )
     data = _section(
         raw, "data",
         {
@@ -293,6 +312,17 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
         ),
     )
 
+    if hpo:
+        study_name = hpo.get("study_name")
+        if not isinstance(study_name, str) or not study_name.strip():
+            raise ValueError("hpo.study_name must be a non-empty string.")
+        n_trials = _positive_int(hpo.get("n_trials"), name="hpo.n_trials")
+        proxy_test_groups = _groups(hpo.get("proxy_test_groups"), name="hpo.proxy_test_groups")
+    else:
+        study_name = ''
+        n_trials = 0
+        proxy_test_groups = tuple([])
+
     train_groups = _groups(data.get("train_groups"), name="data.train_groups")
     validation_groups = _groups(
         data.get("validation_groups"), name="data.validation_groups"
@@ -303,8 +333,6 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
             "Training and validation groups must be disjoint; overlap: "
             + ", ".join(sorted(overlap))
         )
-
-    from .ml.training import TrainingConfig
 
     training = TrainingConfig(**training_values)
     name = experiment.get("name", "baseline")
@@ -324,6 +352,9 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
         processing_width=_positive_int(
             data.get("processing_width", 480), name="data.processing_width"
         ),
+        study_name=study_name,
+        n_trials=n_trials,
+        proxy_test_groups=proxy_test_groups,
         train_groups=train_groups,
         validation_groups=validation_groups,
         training=training,

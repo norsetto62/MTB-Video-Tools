@@ -1,0 +1,225 @@
+import json
+import logging
+from pathlib import Path
+import copy
+from dataclasses import replace
+import numpy as np
+import optuna
+import yaml
+from datetime import datetime
+
+from ..config_loader import TrainingRunConfig
+from .lovo import run_lovo  
+from ..dataset.manifest import load_manifest
+from .lovo import run_lovo
+from .training import _combine_records
+from ..ml.training import train_fixed_epochs
+
+logger = logging.getLogger(__name__)
+
+
+def run_hpo(
+    manifest_path: str | Path,
+    settings: TrainingRunConfig,
+) -> None:
+    """
+    Orchestrates the Optuna HPO study, logs outputs to screen, 
+    and exports winning parameters to output/hpo/.
+    """
+    
+    # Database path explicitly placed in data/db/
+    db_dir = Path("data/db")
+    db_dir.mkdir(parents=True, exist_ok=True)
+    storage_db = f"sqlite:///{db_dir / 'hpo_study.db'}"
+    
+    n_trials = settings.n_trials
+    proxy_groups = settings.proxy_test_groups
+    study_name = settings.study_name
+
+    logger.info("Initializing Optuna study '%s' with storage: %s", study_name, storage_db)
+    logger.info("Proxy validation folds assigned for tuning: %s", proxy_groups)
+
+    study = optuna.create_study(
+        study_name=study_name,
+        storage=storage_db,
+        load_if_exists=True,
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=settings.training.seed),
+    )
+
+    # Define objective function closure
+    def objective(trial: optuna.Trial) -> float:
+        lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
+        weight_decay = trial.suggest_float("weight_decay", 1e-4, 1e-1, log=True)
+        dropout = trial.suggest_float("dropout", 0.2, 0.6)
+        
+        w0 = trial.suggest_float("class_weight_0", 0.1, 0.6)
+        w2 = trial.suggest_float("class_weight_2", 2.0, 10.0)
+        class_weights = [w0, 1.0, w2]
+        
+        hidden_dim = trial.suggest_categorical("hidden_dim", [32, 64, 128])
+
+        filtered_train_groups = [g for g in settings.train_groups if g not in proxy_groups]
+
+        # Construct an updated training sub-config and main config safely using replace()
+        updated_training = replace(
+            settings.training,
+            lr=lr,
+            weight_decay=weight_decay,
+            dropout=dropout,
+            class_weights=class_weights,
+            hidden_dim=hidden_dim,
+        )
+        
+        trial_settings = replace(
+            settings,
+            training=updated_training,
+            train_groups=filtered_train_groups,
+            validation_groups=proxy_groups, # Pass proxy groups as tuple/list expected by our config schema
+        )
+
+        # Execute proxy evaluation across subset folds
+        lovo_results = run_lovo(
+            manifest_path=manifest_path,
+            settings=trial_settings
+        )
+
+        # Extract Macro F1 from the macro_group_mean aggregation dictionary
+        macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
+
+        # Extract per-class F1 scores across the evaluated folds
+        folds = lovo_results.get("folds", [])
+        all_fold_class_f1s = []
+        for f in folds:
+            metrics = f.get("metrics", {})
+            class_f1_dict = metrics.get("class_f1", {})
+            if class_f1_dict:
+                # Ensure ordered array for classes 0, 1, 2
+                arr = np.array([class_f1_dict.get("0", 0.0), class_f1_dict.get("1", 0.0), class_f1_dict.get("2", 0.0)])
+                all_fold_class_f1s.append(arr)
+
+        if all_fold_class_f1s:
+            mean_per_class_f1 = np.mean(all_fold_class_f1s, axis=0)
+            min_class_f1 = float(np.min(mean_per_class_f1))
+            c0_f1, c1_f1, c2_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1]), float(mean_per_class_f1[2])
+        else:
+            min_class_f1 = 0.0
+            c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
+
+        score = float(macro_f1 * min_class_f1)
+
+        # Set user attributes for Optuna tracking
+        trial.set_user_attr("macro_f1", macro_f1)
+        trial.set_user_attr("class_0_f1", c0_f1)
+        trial.set_user_attr("class_1_f1", c1_f1)
+        trial.set_user_attr("class_2_f1", c2_f1)
+
+        return score
+
+    # Run Optuna optimization loop
+
+    # Calculate remaining trials so n_trials acts as a lifetime target
+    completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    remaining_trials = max(0, n_trials - completed_trials)
+
+    if remaining_trials > 0:
+        study.optimize(objective, n_trials=remaining_trials, gc_after_trial=True)
+    else:
+        logger.info("Study already has %d completed trials (target: %d). Skipping optimization.", completed_trials, n_trials)
+
+    # Compile results payload
+    best_attrs = study.best_trial.user_attrs
+    output_payload = {
+        "study_name": study_name,
+        "best_value": study.best_value,
+        "best_params": study.best_params,
+        "best_metrics": {
+            "macro_f1": best_attrs.get("macro_f1", 0.0),
+            "class_0_f1": best_attrs.get("class_0_f1", 0.0),
+            "class_1_f1": best_attrs.get("class_1_f1", 0.0),
+            "class_2_f1": best_attrs.get("class_2_f1", 0.0),
+        },
+    }
+
+    # Mirror output to screen
+    logger.info("=" * 60)
+    logger.info("HPO OPTIMIZATION COMPLETE")
+    logger.info("Best Objective Score: %.4f", study.best_value)
+    logger.info("Best Hyperparameters:")
+    for k, v in study.best_params.items():
+        logger.info("  - %s: %s", k, v)
+    logger.info("Best Metrics -> Macro F1: %.4f | C0 F1: %.4f | C1 F1: %.4f | C2 F1: %.4f",
+                output_payload["best_metrics"]["macro_f1"],
+                output_payload["best_metrics"]["class_0_f1"],
+                output_payload["best_metrics"]["class_1_f1"],
+                output_payload["best_metrics"]["class_2_f1"])
+    logger.info("=" * 60)
+
+    # Save output mirror json to output/hpo/
+    output_dir = Path("output/hpo")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / f"{study_name}_best_params.json"
+    
+    with open(json_path, "w") as f:
+        json.dump(output_payload, f, indent=4)
+        
+    logger.info("Successfully exported winning configuration JSON to %s", json_path)
+
+    # Execute Final Production Master Refit using winning parameters
+    logger.info("Starting Final Production Master Refit with best parameters...")
+    
+    best_params = study.best_params
+    
+    final_training = replace(
+        settings.training,
+        lr=best_params["lr"],
+        weight_decay=best_params["weight_decay"],
+        dropout=best_params["dropout"],
+        class_weights=[best_params["class_weight_0"], 1.0, best_params["class_weight_2"]],
+        hidden_dim=best_params["hidden_dim"],
+    )
+
+    final_settings = replace(
+        settings,
+        training=final_training,
+    )
+
+    result = run_lovo(manifest_path, final_settings)
+    # Determine the optimal epoch count for the final master refit 
+    # (e.g., taking the mean or median of the consensus selected epochs from each fold)
+    fold_epochs = [
+        fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
+        for fold in result["folds"]
+    ]
+    # Fallback to settings.training.epochs if epochs aren't explicitly tracked per fold
+    mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else settings.training.epochs
+
+    print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
+
+    # Load and combine all records using the codebase's native helper
+    records = load_manifest(manifest_path, verify_files=True)
+    all_windows, all_targets = _combine_records(records, settings)
+
+    # Define your production checkpoint destination
+    base_exp_name = getattr(settings, "experiment_name", "baseline")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_exp_name = f"{base_exp_name}_{timestamp}"
+    models_dir = Path(settings.common.models_dir) / "experiments"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
+
+    # Train and save using your exact fixed-epoch function
+    model, scaler, train_summary = train_fixed_epochs(
+        train_windows=all_windows,
+        train_targets=all_targets,
+        config=final_training,
+        epochs=mean_epochs,
+        checkpoint_path=checkpoint_path,
+        data_config=result.get("data_config"),
+        metadata={"experiment_name": unique_exp_name},
+    )
+
+    print(f"Master production model successfully saved to {checkpoint_path}")
+
+    logger.info("Final production model checkpoint successfully saved.")
+ 
