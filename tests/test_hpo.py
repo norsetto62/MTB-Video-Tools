@@ -45,6 +45,14 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
         experiment_name="test_exp",
         checkpoint_dir=tmp_path / "checkpoints",
         results_dir=tmp_path / "results",
+        hpo_search_space={
+            "lr": {"low": 1e-5, "high": 1e-3, "log": True},
+            "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True},
+            "dropout": {"low": 0.2, "high": 0.6},
+            "class_weight_0": {"low": 0.1, "high": 0.6},
+            "class_weight_2": {"low": 2.0, "high": 10.0},
+            "hidden_dim": {"choices": [32, 64, 128]},
+        },
     )
 
     manifest = tmp_path / "manifest.yaml"
