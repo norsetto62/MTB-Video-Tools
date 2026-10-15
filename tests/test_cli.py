@@ -43,8 +43,10 @@ def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text("videos: []\\n", encoding="utf-8")
     settings = SimpleNamespace(
-        common=SimpleNamespace(log_level="INFO"),
+        common=SimpleNamespace(log_level="INFO", models_dir=tmp_path / "models"),
         manifest=manifest,
+        training=SimpleNamespace(epochs=2),
+        experiment_name="cli-test",
     )
     monkeypatch.setattr("autocut.config_loader.load_training_config", lambda path: settings)
     captured = {}
@@ -52,9 +54,29 @@ def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     def fake_run_lovo(path, loaded_settings):
         captured["manifest"] = path
         captured["settings"] = loaded_settings
-        return {"fold_count": 3}
+        return {
+            "fold_count": 3,
+            "folds": [
+                {"selected_epochs": 2},
+                {"selected_epochs": 4},
+                {"selected_epochs": 6},
+            ],
+            "data_config": {"flow_fps": 2.0},
+        }
 
     monkeypatch.setattr("autocut.pipeline.lovo.run_lovo", fake_run_lovo)
+    monkeypatch.setattr(
+        "autocut.dataset.manifest.load_manifest",
+        lambda path, verify_files=True: ["record"],
+    )
+    monkeypatch.setattr(
+        "autocut.pipeline.training._combine_records",
+        lambda records, loaded_settings: ([], []),
+    )
+    monkeypatch.setattr(
+        "autocut.ml.training.train_fixed_epochs",
+        lambda **kwargs: (None, None, {"epochs_trained": kwargs["epochs"]}),
+    )
     assert main(["lovo", str(manifest), "--config", str(tmp_path / "train.yaml")]) == 0
     assert captured["manifest"] == manifest
     assert captured["settings"] is settings
