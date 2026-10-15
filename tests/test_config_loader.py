@@ -140,3 +140,74 @@ def test_training_config_requires_explicit_groups(tmp_path):
     path.write_text("data:\n  train_groups: []\n  validation_groups: [ascoli]\n")
     with pytest.raises(ValueError, match="non-empty YAML list"):
         load_training_config(path)
+
+
+
+def test_load_training_config_maps_hpo_search_space(tmp_path):
+    path = tmp_path / "train.yaml"
+    path.write_text(
+        """
+hpo:
+  study_name: test-study
+  n_trials: 4
+  proxy_test_groups: [group_a, group_b]
+  search_space:
+    lr:
+      low: 0.00001
+      high: 0.001
+      log: true
+    weight_decay:
+      low: 0.0001
+      high: 0.1
+      log: true
+    dropout:
+      low: 0.2
+      high: 0.6
+    class_weight_0:
+      low: 0.1
+      high: 0.6
+    class_weight_2:
+      low: 2.0
+      high: 10.0
+    hidden_dim:
+      choices: [32, 64, 128]
+data:
+  train_groups: [group_a, group_b, group_c]
+  validation_groups: [group_c]
+""",
+        encoding="utf-8",
+    )
+    cfg = load_training_config(path)
+    assert cfg.study_name == "test-study"
+    assert cfg.n_trials == 4
+    assert cfg.proxy_test_groups == ("group_a", "group_b")
+    assert cfg.hpo_search_space["lr"] == {"low": 1e-5, "high": 1e-3, "log": True}
+    assert cfg.hpo_search_space["hidden_dim"] == {"choices": [32, 64, 128]}
+
+
+@pytest.mark.parametrize(
+    "search_space, message",
+    [
+        ("lr: {low: 0.001, high: 0.0001}\n", "missing"),
+        (
+            "lr: {low: 0.001, high: 0.0001}\n"
+            "weight_decay: {low: 0.0001, high: 0.1, log: true}\n"
+            "dropout: {low: 0.2, high: 0.6}\n"
+            "class_weight_0: {low: 0.1, high: 0.6}\n"
+            "class_weight_2: {low: 2, high: 10}\n"
+            "hidden_dim: {choices: [32, 64]}\n",
+            "low < high",
+        ),
+    ],
+)
+def test_training_config_rejects_invalid_hpo_search_space(tmp_path, search_space, message):
+    path = tmp_path / "bad-hpo.yaml"
+    path.write_text(
+        "hpo:\n  study_name: test\n  n_trials: 2\n"
+        "  proxy_test_groups: [group_a]\n  search_space:\n"
+        + "".join("    " + line for line in search_space.splitlines(keepends=True))
+        + "data:\n  train_groups: [group_a, group_b]\n  validation_groups: [group_c]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=message):
+        load_training_config(path)
