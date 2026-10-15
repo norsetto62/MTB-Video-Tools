@@ -89,3 +89,10 @@ def test_cli_run_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
         "video_encoder": "h264_nvenc",
     }
     assert '"status": "completed"' in capsys.readouterr().out
+
+
+
+def test_hpo_cli_defaults_to_training_config():
+    args = build_parser().parse_args(["hpo"])
+    assert args.command == "hpo"
+    assert args.config == __import__("pathlib").Path("config/train.yaml")
