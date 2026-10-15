@@ -69,14 +69,7 @@ class TrainingRunConfig:
     experiment_name: str
     checkpoint_dir: Path
     results_dir: Path
-    hpo_search_space: dict[str, dict[str, Any]] = field(default_factory=lambda: {
-        "lr": {"low": 1e-5, "high": 1e-3, "log": True},
-        "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True},
-        "dropout": {"low": 0.2, "high": 0.6, "log": False},
-        "class_weight_0": {"low": 0.1, "high": 0.6, "log": False},
-        "class_weight_2": {"low": 2.0, "high": 10.0, "log": False},
-        "hidden_dim": {"choices": [32, 64, 128]},
-    })
+    hpo_search_space: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
