@@ -12,6 +12,31 @@ data:
   train_groups: [ascoli, mentorella, castelli, g2, orvinio, firstday, gas, artemisio, tivoli]
   validation_groups: [castelli_eval]
 
+hpo:
+  study_name: mtb_autocut_study
+  n_trials: 10
+  proxy_test_groups: [artemisio, ascoli, castelli, mentorella]
+  search_space:
+    lr:
+      low: 1.0e-5
+      high: 1.0e-3
+      log: true
+    weight_decay:
+      low: 1.0e-4
+      high: 1.0e-1
+      log: true
+    dropout:
+      low: 0.2
+      high: 0.6
+    class_weight_0:
+      low: 0.1
+      high: 0.6
+    class_weight_2:
+      low: 2.0
+      high: 10.0
+    hidden_dim:
+      choices: [32, 64, 128]
+
 training:
   epochs: 40
   lr: 0.00007
