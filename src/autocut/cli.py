@@ -76,8 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     hpo.add_argument(
         "--config", 
         type=Path, 
-        default="configs/hpo.yaml", 
-        help="Path to HPO YAML configuration file"
+        default=Path("config/train.yaml"), 
+        help="Training and HPO YAML configuration file"
     )
     hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     
