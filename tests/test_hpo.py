@@ -61,6 +61,7 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
             },
             "folds": [
                 {
+                    "selected_epochs": 1,
                     "metrics": {
                         "per_class_f1": [0.70, 0.80, 0.75]
                     }
