@@ -14,7 +14,7 @@ features:
   window_stride: 2.0
 
 model:
-  checkpoint: models/experiments/baseline_best.pt
+  checkpoint: models\experiments\baseline_master_production.pt
   inference_batch_size: 256
 
 selection:

@@ -24,3 +24,6 @@ dev = [
 ml = [
     "torch",
 ]
+hpo = [
+    "optuna>=3.0.0",
+]
