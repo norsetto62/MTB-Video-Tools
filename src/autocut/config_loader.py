@@ -249,7 +249,7 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
         required=True,
     )
     audio = _section(
-        raw, "audio", {"sync_mode", "max_clip_duration", "fade_duration"}
+        raw, "audio", {"sync_mode", "max_synced_clip_duration", "fade_duration"}
     )
     logging = _section(raw, "logging", {"level"})
 
@@ -292,7 +292,7 @@ def load_run_config(path: str | Path = "config/autocut.yaml") -> RunConfig:
     )
     audio_config = AudioConfig(
         sync_mode=audio.get("sync_mode", "off"),
-        max_clip_duration=audio.get("max_clip_duration", 0.0),
+        max_synced_clip_duration=audio.get("max_synced_clip_duration", 0.0),
         fade_duration=audio.get("fade_duration", 2.0),
     )
 

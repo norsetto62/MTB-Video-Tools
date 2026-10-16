@@ -44,7 +44,7 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
         candidates=CandidateGenerationConfig(),
         audio=SimpleNamespace(
             sync_mode=SimpleNamespace(value="off"),
-            max_clip_duration=0.0,
+            max_synced_clip_duration=0.0,
             fade_duration=2.0,
         ),
         cache_dir=tmp_path / "cache",
@@ -126,7 +126,7 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         candidates=CandidateGenerationConfig(padding_seconds=0.0),
         audio=SimpleNamespace(
             sync_mode=SimpleNamespace(value="off"),
-            max_clip_duration=0.0,
+            max_synced_clip_duration=0.0,
             fade_duration=2.0,
         ),
         cache_dir=tmp_path / "cache",

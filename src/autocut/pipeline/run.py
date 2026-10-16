@@ -224,7 +224,7 @@ def _config_summary(settings: object) -> dict:
         "candidate_generation": asdict(settings.candidates),
         "audio": {
             "sync_mode": settings.audio.sync_mode.value,
-            "max_clip_duration": settings.audio.max_clip_duration,
+            "max_synced_clip_duration": settings.audio.max_synced_clip_duration,
             "fade_duration": settings.audio.fade_duration,
         },
     }
