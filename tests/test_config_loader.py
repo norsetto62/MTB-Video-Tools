@@ -34,7 +34,7 @@ selection:
   padding_seconds: 1
 audio:
   sync_mode: beat
-  max_clip_duration: 12
+  max_synced_clip_duration: 12
   fade_duration: 1.5
 logging:
   level: DEBUG
@@ -58,6 +58,7 @@ logging:
     assert cfg.candidates.min_candidate_duration == 3
     assert cfg.candidates.flow_threshold == 0.4
     assert cfg.audio.sync_mode.value == "beat"
+    assert cfg.audio.max_synced_clip_duration == 12
     assert cfg.audio.fade_duration == 1.5
     assert cfg.common.log_level == "DEBUG"
 

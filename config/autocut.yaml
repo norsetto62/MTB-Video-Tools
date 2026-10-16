@@ -29,7 +29,7 @@ selection:
 
 audio:
   sync_mode: combined
-  max_clip_duration: 0.0
+  max_synced_clip_duration: 0.0
   fade_duration: 2.0
 
 logging:

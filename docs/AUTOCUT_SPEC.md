@@ -875,7 +875,7 @@ def render_with_music(
 
 `SyncMode` is a string enum with `off`, `beat`, `measure`, `forward-beat`, `onset`, and `combined`. Invalid mode values must raise a clear validation error; they must not silently fall back to beat mode.
 
-`AudioConfig` should contain at least `sync_mode`, `max_clip_duration` (0 means unlimited), and `fade_duration` (default 2.0 seconds). Cache location is derived from `Config.data_dir / "audio_cache"`; do not add a user-selectable cache path yet. Other existing audio-mix options should be added only when required by the manifest and current pipeline contract.
+`AudioConfig` should contain at least `sync_mode`, `max_synced_clip_duration` (0 means unlimited; limits an optional clip after music-boundary snapping), and `fade_duration` (default 2.0 seconds). Cache location is derived from `Config.data_dir / "audio_cache"`; do not add a user-selectable cache path yet. Other existing audio-mix options should be added only when required by the manifest and current pipeline contract.
 
 `AudioAnalysis` is immutable and owns validated, ordered timestamp tuples. The cache module owns JSON serialization and filesystem operations; the analysis module owns librosa calls and analysis derivation. The renderer must not call `analyze_audio`, run inference, or regenerate candidates.
 
@@ -886,7 +886,7 @@ The proposed `autocut.editing` package is a home for synchronization and soundtr
 - `analyze_audio` computes the source content hash, checks a valid cache entry when enabled, otherwise analyzes the file and attempts to cache the result. Cache write failure should warn but need not discard successful analysis.
 - `load_cached_audio` returns `None` for a missing, stale, malformed, incompatible, or invalid cache; it does not return partially validated data.
 - `snap_timestamp` is a pure function. It validates the timestamp and mode, uses only the relevant analysis timestamp set, and does not silently clamp invalid input. `off` returns the supplied timestamp unchanged.
-- `synchronize_timeline` returns a new timeline and never mutates the input. It preserves mandatory clips exactly, and keeps an original optional interval when snapping would violate source bounds, minimum duration or `max_clip_duration`.
+- `synchronize_timeline` returns a new timeline and never mutates the input. It preserves mandatory clips exactly, and keeps an original optional interval when snapping would violate source bounds, minimum duration or `audio.max_synced_clip_duration`.
 - Evidence-centred trimming for `max_clip_duration` must happen in the Phase 10 optional-candidate selection/trimming path, where `window_evidence` is available. Synchronization only validates that contract and must not invent missing inference evidence.
 - `render_with_music` consumes the finalized timeline, renders video according to that timeline, mixes or replaces audio according to the selected soundtrack policy, applies the configured ending fade, and returns output path plus measured output duration. It does not select, trim, or synchronize clips itself.
 - All external commands must be passed as argument lists rather than unsafe shell-interpolated strings. FFmpeg errors should retain enough stderr/exit-status context for diagnosis.
