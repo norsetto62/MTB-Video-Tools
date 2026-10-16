@@ -103,7 +103,7 @@ def test_sync_adjusts_both_optional_boundaries_and_rebuilds_output_positions():
     ])
     result = synchronize_timeline(
         original, analysis(beats=(1.0, 2.0, 3.0, 4.0)),
-        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=0),
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_synced_clip_duration=0),
     )
     assert [(c.source_start, c.source_end) for c in result.clips] == [
         (1.0, 2.0), (3.0, 4.0)
@@ -120,7 +120,7 @@ def test_mandatory_clip_is_unchanged_even_when_mode_is_enabled():
     original = timeline([mandatory])
     result = synchronize_timeline(
         original, analysis(),
-        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=1.0),
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_synced_clip_duration=1.0),
     )
     assert result.clips[0].source_start == 0.9
     assert result.clips[0].source_end == 2.1
@@ -131,7 +131,7 @@ def test_unavailable_analysis_falls_back_to_unchanged_timeline():
     original = timeline([clip()])
     result = synchronize_timeline(
         original, None,
-        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=0),
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_synced_clip_duration=0),
     )
     assert result == original
 
@@ -140,7 +140,7 @@ def test_off_mode_preserves_timeline_exactly():
     original = timeline([clip()])
     result = synchronize_timeline(
         original, analysis(),
-        config=AudioConfig(sync_mode=SyncMode.OFF, max_clip_duration=0),
+        config=AudioConfig(sync_mode=SyncMode.OFF, max_synced_clip_duration=0),
     )
     assert result == original
 
@@ -149,7 +149,7 @@ def test_sync_does_not_exceed_positive_maximum_clip_duration():
     original = timeline([clip(start=0.9, end=2.1)])
     result = synchronize_timeline(
         original, analysis(beats=(0.0, 1.0, 2.0, 3.0)),
-        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=1.0),
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_synced_clip_duration=1.0),
     )
     assert result.clips[0].duration <= 1.0 + 1e-9
 
@@ -158,14 +158,14 @@ def test_sync_can_lengthen_timeline_when_snapping_without_global_budget():
     original = timeline([clip(start=0.9, end=2.1)])
     result = synchronize_timeline(
         original, analysis(beats=(0.0, 2.0, 3.0)),
-        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=0),
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_synced_clip_duration=0),
     )
     assert (result.clips[0].source_start, result.clips[0].source_end) == (0.0, 2.0)
 
 
 def test_sync_rejects_invalid_config_values():
     with pytest.raises((ValueError, TypeError)):
-        AudioConfig(max_clip_duration=-1)
+        AudioConfig(max_synced_clip_duration=-1)
     with pytest.raises((ValueError, TypeError)):
         AudioConfig(fade_duration=-0.1)
 
@@ -180,6 +180,6 @@ def test_sync_does_not_extend_an_in_budget_timeline_past_music_duration():
     )
     result = synchronize_timeline(
         original, data,
-        config=AudioConfig(sync_mode=SyncMode.BEAT, max_clip_duration=0),
+        config=AudioConfig(sync_mode=SyncMode.BEAT, max_synced_clip_duration=0),
     )
     assert result.duration <= data.duration + 1e-9
