@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from autocut.ml.checkpoint import save_checkpoint
 from autocut.ml.model import MTBClassifier
@@ -235,10 +235,31 @@ def train_single_fold(
         )
         generator = torch.Generator(device="cpu")
         generator.manual_seed(config.seed)
+
+        # Compute balanced sample weights for class parity
+        class_counts = np.bincount(train_y)
+        total_samples = len(train_y)
+        num_classes = config.num_classes
+
+        class_weights = np.zeros_like(class_counts, dtype=float)
+        for i, count in enumerate(class_counts):
+            if count > 0:
+                class_weights[i] = total_samples / (num_classes * count)
+
+        sample_weights = class_weights[train_y]
+        sample_weights_tensor = torch.DoubleTensor(sample_weights)
+
+        sampler = WeightedRandomSampler(
+            weights=sample_weights_tensor.tolist(),
+            num_samples=len(sample_weights_tensor),
+            replacement=True,
+            generator=generator,
+        )
+
         loader = DataLoader(
             TensorDataset(train_tensor, train_label_tensor),
             batch_size=config.batch_size,
-            shuffle=True,
+            sampler=sampler,
             generator=generator,
         )
 
@@ -402,10 +423,31 @@ def train_fixed_epochs(
         )
         generator = torch.Generator(device="cpu")
         generator.manual_seed(fit_config.seed)
+
+        # Compute balanced sample weights for class parity
+        class_counts = np.bincount(train_y)
+        total_samples = len(train_y)
+        num_classes = fit_config.num_classes
+
+        class_weights = np.zeros_like(class_counts, dtype=float)
+        for i, count in enumerate(class_counts):
+            if count > 0:
+                class_weights[i] = total_samples / (num_classes * count)
+
+        sample_weights = class_weights[train_y]
+        sample_weights_tensor = torch.DoubleTensor(sample_weights)
+
+        sampler = WeightedRandomSampler(
+            weights=sample_weights_tensor.tolist(),
+            num_samples=len(sample_weights_tensor),
+            replacement=True,
+            generator=generator,
+        )
+
         loader = DataLoader(
             TensorDataset(train_tensor, train_label_tensor),
             batch_size=fit_config.batch_size,
-            shuffle=True,
+            sampler=sampler,
             generator=generator,
         )
         history: list[dict[str, float | int]] = []
