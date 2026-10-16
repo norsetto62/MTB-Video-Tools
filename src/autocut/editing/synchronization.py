@@ -144,15 +144,15 @@ def synchronize_timeline(
         end = snap_timestamp(original_end, analysis, mode=config.sync_mode)
 
         # Do not accept reversed/empty intervals or intervals that violate
-        # the Phase 10 maximum-duration contract. Trimming itself belongs to
+        # the configured synchronized-clip maximum-duration contract. Trimming itself belongs to
         # selection, where inference-window evidence is available.
         if end <= start:
             proposed.append((original_start, original_end))
             continue
         duration = end - start
         if (
-            config.max_clip_duration > 0
-            and duration > config.max_clip_duration + 1e-9
+            config.max_synced_clip_duration > 0
+            and duration > config.max_synced_clip_duration + 1e-9
         ):
             proposed.append((original_start, original_end))
             continue
