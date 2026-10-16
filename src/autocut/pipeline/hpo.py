@@ -100,39 +100,74 @@ def run_hpo(
             settings=trial_settings
         )
 
-        # Extract Macro F1 from the macro_group_mean aggregation dictionary
-        macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
-
-        # Extract per-class F1 scores across the evaluated folds
+        # Aggregate confusion matrices across validation folds
         folds = lovo_results.get("folds", [])
+        total_cm = np.zeros((3, 3), dtype=np.float64)
+
         all_fold_class_f1s = []
         for f in folds:
             metrics = f.get("metrics", {})
+            cm = metrics.get("confusion_matrix")
+            if cm is not None:
+                total_cm += np.array(cm, dtype=np.float64)
+
             class_f1_dict = metrics.get("class_f1", {})
             if not class_f1_dict:
                 values = metrics.get("per_class_f1")
                 if isinstance(values, (list, tuple)) and len(values) >= 3:
                     class_f1_dict = {str(i): values[i] for i in range(3)}
             if class_f1_dict:
-                # Ensure ordered array for classes 0, 1, 2
                 arr = np.array([class_f1_dict.get("0", 0.0), class_f1_dict.get("1", 0.0), class_f1_dict.get("2", 0.0)])
                 all_fold_class_f1s.append(arr)
 
         if all_fold_class_f1s:
             mean_per_class_f1 = np.mean(all_fold_class_f1s, axis=0)
-            min_class_f1 = float(np.min(mean_per_class_f1))
             c0_f1, c1_f1, c2_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1]), float(mean_per_class_f1[2])
         else:
-            min_class_f1 = 0.0
             c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
 
-        score = float(macro_f1 * min_class_f1)
+        # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
+        total_true_0 = max(1.0, np.sum(total_cm[0]))
+        total_true_1 = max(1.0, np.sum(total_cm[1]))
+        #total_true_2 = max(1.0, np.sum(total_cm[2]))
+        total_pred_2 = max(1.0, np.sum(total_cm[:, 2]))
+
+        # 1. TARGET METRICS (Class 2 is what we want)
+        #class_2_recall = total_cm[2][2] / total_true_2     # Catch as many real Class 2s as possible
+        class_2_precision = total_cm[2][2] / total_pred_2  # Ensure Class 2 predictions aren't false alarms
+
+        # 2. FALSE TRIGGER RATES FROM BACKGROUND (Class 0 & 1)
+        rate_0_to_2 = total_cm[0][2] / total_true_0  # DISASTER: Class 0 guessed as Class 2
+        rate_1_to_2 = total_cm[1][2] / total_true_1  # BAD: Class 1 guessed as Class 2
+        """
+        # 3. WEIGHTED SCORE CALCULATION
+        # Reward finding Class 2 accurately (balancing recall and precision)
+        reward = (0.5 * class_2_recall) + (0.5 * class_2_precision)
+
+        # Heavy penalties for background data bleeding into Class 2
+        penalty = (1.5 * rate_0_to_2) + (0.5 * rate_1_to_2)
+
+        # Bounded final score (0.0 to 1.0 floor)
+        score = float(max(0.0, reward - penalty))
+        """
+        # 3. Heuristic Penalty Multiplier 
+        # Business Rule: Class 0 false triggers are 4x more toxic than Class 1 false triggers.
+        # We accumulate total penalty pressure (bounded or scaled).
+        penalty_pressure = (4.0 * rate_0_to_2) + (1.0 * rate_1_to_2)
+
+        # 4. Multiplicative Scaling (Smoothly penalizes precision without arbitrary negative clipping)
+        # If penalty_pressure is 0, score = precision. 
+        # If penalty_pressure is high, score scales down toward 0 smoothly.
+        score = float(class_2_precision / (1.0 + penalty_pressure))
 
         # Set user attributes for Optuna tracking
+        macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
         trial.set_user_attr("macro_f1", macro_f1)
         trial.set_user_attr("class_0_f1", c0_f1)
         trial.set_user_attr("class_1_f1", c1_f1)
         trial.set_user_attr("class_2_f1", c2_f1)
+        trial.set_user_attr("class_2_precision", class_2_precision)
+        trial.set_user_attr("custom_rate_score", score)
 
         return score
 
@@ -186,7 +221,16 @@ def run_hpo(
     logger.info("Successfully exported winning configuration JSON to %s", json_path)
 
     # Execute Final Production Master Refit using winning parameters
-    logger.info("Starting Final Production Master Refit with best parameters...")
+    log_msg = (
+            f"Starting Final Production Master Refit with best parameters..."
+    )
+
+    # Let the logger do its job if INFO is enabled
+    logger.info(log_msg)
+
+    # If the logger is silenced at WARNING or above, print directly to the console
+    if logger.getEffectiveLevel() >= logging.WARNING:
+            print(log_msg)
     
     best_params = study.best_params
     
@@ -240,6 +284,5 @@ def run_hpo(
     )
 
     print(f"Master production model successfully saved to {checkpoint_path}")
-
     logger.info("Final production model checkpoint successfully saved.")
  

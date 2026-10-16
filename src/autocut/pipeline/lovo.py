@@ -262,11 +262,19 @@ def run_lovo(
         _write_json(predictions_path, predictions_payload)
         fold_result["predictions_path"] = str(predictions_path)
         folds.append(fold_result)
-        logger.info(
-            "LOVO fold %d complete: group=%s windows=%d accuracy=%.4f macro_f1=%.4f",
-            fold_index + 1, test_group, metrics["windows"], metrics["accuracy"], metrics["macro_f1"],
+
+        log_msg = (
+            f"LOVO fold {fold_index + 1} complete: group={test_group} "
+            f"windows={metrics['windows']} accuracy={metrics['accuracy']:.4f} "
+            f"macro_f1={metrics['macro_f1']:.4f}"
         )
 
+        # Let the logger do its job if INFO is enabled
+        logger.info(log_msg)
+
+        # If the logger is silenced at WARNING or above, print directly to the console
+        if logger.getEffectiveLevel() >= logging.WARNING:
+            print(log_msg)
     all_actual = np.concatenate(pooled_actual)
     all_predicted = np.concatenate(pooled_predicted)
     pooled_metrics = _metrics(all_actual, all_predicted)
