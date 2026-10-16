@@ -1,9 +1,26 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from tools.plot_window_probabilities import annotation_color, validate_plot_data
+# The plotting helper is intentionally a standalone script in tools/, not a
+# Python package. Load it by file path rather than importing a tools package.
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "tools"
+    / "plot_window_probabilities.py"
+)
+SPEC = importlib.util.spec_from_file_location("plot_window_probabilities", SCRIPT_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise ImportError(f"Could not load plotting helper from {SCRIPT_PATH}")
+PLOT_HELPER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(PLOT_HELPER)
+
+annotation_color = PLOT_HELPER.annotation_color
+validate_plot_data = PLOT_HELPER.validate_plot_data
 
 
 @pytest.mark.parametrize("score", [0, 1, 2, 3])
