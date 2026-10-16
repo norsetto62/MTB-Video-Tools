@@ -31,12 +31,12 @@ def _finite_nonnegative(name: str, value: Real) -> float:
 class AudioConfig:
     """Validated settings for synchronization and final music fade.
 
-    A max_clip_duration of 0 disables the optional-clip duration limit.
+    A max_synced_clip_duration of 0 disables the optional-clip duration limit.
     A fade_duration of 0 disables the fade.
     """
 
     sync_mode: SyncMode = SyncMode.OFF
-    max_clip_duration: float = 0.0
+    max_synced_clip_duration: float = 0.0
     fade_duration: float = 2.0
 
     def __post_init__(self) -> None:
@@ -54,8 +54,8 @@ class AudioConfig:
 
         object.__setattr__(self, "sync_mode", mode)
         object.__setattr__(
-            self, "max_clip_duration",
-            _finite_nonnegative("max_clip_duration", self.max_clip_duration),
+            self, "max_synced_clip_duration",
+            _finite_nonnegative("max_synced_clip_duration", self.max_synced_clip_duration),
         )
         object.__setattr__(
             self, "fade_duration",
