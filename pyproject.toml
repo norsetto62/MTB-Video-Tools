@@ -24,6 +24,9 @@ dev = [
 ml = [
     "torch",
 ]
+plot = [
+    "matplotlib",
+]
 hpo = [
     "optuna>=3.0.0",
 ]
