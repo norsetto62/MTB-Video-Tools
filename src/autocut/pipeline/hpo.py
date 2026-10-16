@@ -129,36 +129,17 @@ def run_hpo(
         # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
         total_true_0 = max(1.0, np.sum(total_cm[0]))
         total_true_1 = max(1.0, np.sum(total_cm[1]))
-        #total_true_2 = max(1.0, np.sum(total_cm[2]))
-        total_pred_2 = max(1.0, np.sum(total_cm[:, 2]))
+        total_true_2 = max(1.0, np.sum(total_cm[2]))
 
         # 1. TARGET METRICS (Class 2 is what we want)
-        #class_2_recall = total_cm[2][2] / total_true_2     # Catch as many real Class 2s as possible
-        class_2_precision = total_cm[2][2] / total_pred_2  # Ensure Class 2 predictions aren't false alarms
+        class_2_recall = total_cm[2][2] / total_true_2     # Catch as many real Class 2s as possible
 
         # 2. FALSE TRIGGER RATES FROM BACKGROUND (Class 0 & 1)
         rate_0_to_2 = total_cm[0][2] / total_true_0  # DISASTER: Class 0 guessed as Class 2
         rate_1_to_2 = total_cm[1][2] / total_true_1  # BAD: Class 1 guessed as Class 2
-        """
-        # 3. WEIGHTED SCORE CALCULATION
-        # Reward finding Class 2 accurately (balancing recall and precision)
-        reward = (0.5 * class_2_recall) + (0.5 * class_2_precision)
 
-        # Heavy penalties for background data bleeding into Class 2
-        penalty = (1.5 * rate_0_to_2) + (0.5 * rate_1_to_2)
-
-        # Bounded final score (0.0 to 1.0 floor)
-        score = float(max(0.0, reward - penalty))
-        """
-        # 3. Heuristic Penalty Multiplier 
-        # Business Rule: Class 0 false triggers are 4x more toxic than Class 1 false triggers.
-        # We accumulate total penalty pressure (bounded or scaled).
-        penalty_pressure = (4.0 * rate_0_to_2) + (1.0 * rate_1_to_2)
-
-        # 4. Multiplicative Scaling (Smoothly penalizes precision without arbitrary negative clipping)
-        # If penalty_pressure is 0, score = precision. 
-        # If penalty_pressure is high, score scales down toward 0 smoothly.
-        score = float(class_2_precision / (1.0 + penalty_pressure))
+        # 3. Multiplicative Scaling
+        score = float(class_2_recall * (1.0 - rate_0_to_2) * (1.0 - rate_1_to_2))
 
         # Set user attributes for Optuna tracking
         macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
@@ -166,7 +147,7 @@ def run_hpo(
         trial.set_user_attr("class_0_f1", c0_f1)
         trial.set_user_attr("class_1_f1", c1_f1)
         trial.set_user_attr("class_2_f1", c2_f1)
-        trial.set_user_attr("class_2_precision", class_2_precision)
+        trial.set_user_attr("class_2_recall", class_2_recall)
         trial.set_user_attr("custom_rate_score", score)
 
         return score
