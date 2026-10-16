@@ -18,7 +18,7 @@ def test_sync_modes_are_explicit_string_enums():
 def test_audio_config_defaults_are_safe_and_documented():
     config = AudioConfig()
     assert config.sync_mode is SyncMode.OFF
-    assert config.max_clip_duration == 0.0
+    assert config.max_synced_clip_duration == 0.0
     assert config.fade_duration == 2.0
 
 
@@ -38,7 +38,7 @@ def test_audio_config_rejects_unknown_sync_modes(mode):
         AudioConfig(sync_mode=mode)
 
 
-@pytest.mark.parametrize("field", ["max_clip_duration", "fade_duration"])
+@pytest.mark.parametrize("field", ["max_synced_clip_duration", "fade_duration"])
 @pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), -float("inf")])
 def test_audio_config_rejects_invalid_durations(field, value):
     with pytest.raises((ValueError, TypeError)):
@@ -46,8 +46,8 @@ def test_audio_config_rejects_invalid_durations(field, value):
 
 
 def test_audio_config_accepts_zero_clip_limit_and_zero_fade():
-    config = AudioConfig(max_clip_duration=0, fade_duration=0)
-    assert config.max_clip_duration == 0.0
+    config = AudioConfig(max_synced_clip_duration=0, fade_duration=0)
+    assert config.max_synced_clip_duration == 0.0
     assert config.fade_duration == 0.0
 
 
