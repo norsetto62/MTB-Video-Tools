@@ -18,6 +18,9 @@ models/
 # Generated audit
 audit/
 
+# Config
+config/
+
 # Python tooling
 .pytest_cache/
 .mypy_cache/
