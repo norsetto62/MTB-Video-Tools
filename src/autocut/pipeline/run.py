@@ -7,7 +7,7 @@ import json
 import logging
 from pathlib import Path
 import time
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import cv2
 import numpy as np
@@ -17,7 +17,8 @@ from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
 from ..dataset.feature_cache import load_feature_sequence, save_feature_sequence
 from ..dataset.windows import build_windows
 from ..editing.audio import render_timeline, render_with_music
-from ..ml.inference import infer_windows
+from ..ml.inference import infer_windows, InferenceResult
+from ..ml.checkpoint import load_checkpoint, validate_checkpoint
 from ..motion.features import FeatureExtractor
 from ..motion.flow import calculate_optical_flow
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
@@ -372,8 +373,42 @@ def run_pipeline(
             windows,
             batch_size=settings.inference_batch_size,
         )
+        probabilities = inference.probabilities  # shape: [N, 3]
+
+        if isinstance(settings.checkpoint, (str, Path)):
+            payload = load_checkpoint(settings.checkpoint, map_location="cpu")
+        elif isinstance(settings.checkpoint, Mapping):
+            payload = validate_checkpoint(dict(settings.checkpoint))
+        else:
+            raise TypeError("checkpoint must be a path or a checkpoint mapping.")
+
+        c2_threshold = float(payload.get("c2_threshold", 0.50))
+
+        # 2. Inject c2_threshold filtering right here (Option 1)
+        if c2_threshold != 0.50:
+            # Copy so we don't mutate in place unexpectedly
+            probabilities = probabilities.copy()
+            c2_probs = probabilities[:, 2]
+            
+            # If Class 2 probability is below the threshold, suppress it 
+            # (e.g., redistribute or shift weight so it doesn't win argmax/envelope)
+            below_threshold = c2_probs < c2_threshold
+            
+            # For windows where p2 fails the threshold, force p2 to 0 
+            # (or reallocate its mass so classes 0/1 take over)
+            probabilities[below_threshold, 2] = 0.0
+            
+            # Renormalize rows so probabilities still sum to 1.0
+            row_sums = probabilities.sum(axis=1, keepdims=True)
+            probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
+
+        # 3. Wrap back into InferenceResult and pass to candidates
+        cleaned_inference = InferenceResult(
+            timestamps=inference.timestamps,
+            probabilities=probabilities,
+        )
         candidates = generate_candidates(
-            inference,
+            cleaned_inference,
             clip_duration=end - start,
             config=settings.candidates,
         )

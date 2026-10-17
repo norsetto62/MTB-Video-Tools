@@ -180,11 +180,11 @@ def _hpo_search_space(value: Any) -> dict[str, dict[str, Any]]:
             validated[name] = {"choices": choices}
             continue
 
-        unknown_fields = set(spec) - {"low", "high", "log"}
+        unknown_fields = set(spec) - {"low", "high", "log", "step"}
         if unknown_fields or not {"low", "high"}.issubset(spec):
             raise ValueError(
                 f"hpo.search_space.{name} must define low/high and optional log, "
-                "or define choices."
+                "step or define choices."
             )
         low = spec["low"]
         high = spec["high"]
@@ -201,7 +201,21 @@ def _hpo_search_space(value: Any) -> dict[str, dict[str, Any]]:
             raise ValueError(f"hpo.search_space.{name}.log must be a boolean.")
         if log and low <= 0:
             raise ValueError(f"hpo.search_space.{name}.low must be positive when log is true.")
-        validated[name] = {"low": low, "high": high, "log": log}
+
+        step = spec.get("step")
+        if step is not None:
+            if isinstance(step, bool) or not isinstance(step, (int, float)):
+                raise ValueError(f"hpo.search_space.{name}.step must be a number.")
+            step = float(step)
+            if step <= 0 or step != step or abs(step) == float("inf"):
+                raise ValueError(f"hpo.search_space.{name}.step requires a positive finite number.")
+            if log:
+                raise ValueError(f"hpo.search_space.{name} cannot specify both step and log.")
+
+        param_spec: dict[str, Any] = {"low": low, "high": high, "log": log}
+        if step is not None:
+            param_spec["step"] = step
+        validated[name] = param_spec
 
     return validated
 

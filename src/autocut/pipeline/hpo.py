@@ -77,8 +77,8 @@ def run_hpo(
 
         # --- ADD THRESHOLD HYPERPARAMETER ---
         # Forces Optuna to evaluate configurations under different safety margins
-        c2_threshold = float(trial.suggest_float("c2_threshold", 0.50, 0.95, step=0.05))
-        
+        c2_threshold = float(params["c2_threshold"])
+
         filtered_train_groups = [g for g in settings.train_groups if g not in proxy_groups]
 
         # Construct an updated training sub-config and main config safely using replace()
@@ -226,6 +226,7 @@ def run_hpo(
         weight_decay=best_params["weight_decay"],
         dropout=best_params["dropout"],
         class_weights=[best_params["class_weight_0"], 1.0, best_params["class_weight_2"]],
+        c2_threshold=best_params["c2_threshold"],
         hidden_dim=best_params["hidden_dim"],
     )
 

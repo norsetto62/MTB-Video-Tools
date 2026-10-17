@@ -103,10 +103,10 @@ def _predict(
     if c2_threshold != 0.50:
         # Extract probability specifically for Class 2
         c2_probs = probabilities[:, 2]
-        
+
         # Argmax strictly among Class 0 and Class 1 (columns 0 and 1)
         fallback_preds = probabilities[:, :2].argmax(axis=1)
-        
+
         # If Class 2 probability meets/exceeds threshold, pick 2; else use fallback
         predictions = np.where(c2_probs >= c2_threshold, 2, fallback_preds).astype(np.int64)
     else:
