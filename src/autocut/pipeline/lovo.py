@@ -85,6 +85,7 @@ def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
     windows: np.ndarray,
+    c2_threshold: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray]:
     transformed = scaler.transform(windows)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
@@ -97,7 +98,22 @@ def _predict(
                 torch.softmax(model(batch), dim=1).cpu().numpy()
             )
     probabilities = np.concatenate(probability_batches, axis=0)
-    return probabilities.argmax(axis=1).astype(np.int64), probabilities
+
+    # --- CUSTOM HIGH-PRECISION SELECTION LOGIC ---
+    if c2_threshold != 0.50:
+        # Extract probability specifically for Class 2
+        c2_probs = probabilities[:, 2]
+        
+        # Argmax strictly among Class 0 and Class 1 (columns 0 and 1)
+        fallback_preds = probabilities[:, :2].argmax(axis=1)
+        
+        # If Class 2 probability meets/exceeds threshold, pick 2; else use fallback
+        predictions = np.where(c2_probs >= c2_threshold, 2, fallback_preds).astype(np.int64)
+    else:
+        # Standard unadjusted predictions
+        predictions = probabilities.argmax(axis=1).astype(np.int64)
+
+    return predictions.astype(np.int64), probabilities
 
 
 def run_lovo(
@@ -222,7 +238,8 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        predicted, probabilities = _predict(model, scaler, test_X)
+        c2_threshold = getattr(settings.training, "c2_threshold", 0.50)
+        predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
         pooled_predicted.append(predicted)

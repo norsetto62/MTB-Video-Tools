@@ -41,6 +41,8 @@ class TrainingConfig:
     weight_decay: float = 1e-2
     seed: int = 42
     class_weights: tuple[float, float, float] = (0.2, 1.0, 6.5)
+    c2_threshold: float = 0.5
+
 
     def __post_init__(self) -> None:
         for name in ("epochs", "batch_size", "hidden_dim", "classifier_mid_dim"):

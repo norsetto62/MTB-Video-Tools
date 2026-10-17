@@ -75,6 +75,10 @@ def run_hpo(
         class_weights = [float(params["class_weight_0"]), 1.0, float(params["class_weight_2"])]
         hidden_dim = int(params["hidden_dim"])
 
+        # --- ADD THRESHOLD HYPERPARAMETER ---
+        # Forces Optuna to evaluate configurations under different safety margins
+        c2_threshold = float(trial.suggest_float("c2_threshold", 0.50, 0.95, step=0.05))
+        
         filtered_train_groups = [g for g in settings.train_groups if g not in proxy_groups]
 
         # Construct an updated training sub-config and main config safely using replace()
@@ -85,6 +89,7 @@ def run_hpo(
             dropout=dropout,
             class_weights=class_weights,
             hidden_dim=hidden_dim,
+            c2_threshold=c2_threshold,
         )
         
         trial_settings = replace(
@@ -129,17 +134,17 @@ def run_hpo(
         # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
         total_true_0 = max(1.0, np.sum(total_cm[0]))
         total_true_1 = max(1.0, np.sum(total_cm[1]))
-        total_true_2 = max(1.0, np.sum(total_cm[2]))
+        #total_true_2 = max(1.0, np.sum(total_cm[2]))
 
         # 1. TARGET METRICS (Class 2 is what we want)
-        class_2_recall = total_cm[2][2] / total_true_2     # Catch as many real Class 2s as possible
+        #class_2_recall = total_cm[2][2] / total_true_2     # Catch as many real Class 2s as possible
 
         # 2. FALSE TRIGGER RATES FROM BACKGROUND (Class 0 & 1)
         rate_0_to_2 = total_cm[0][2] / total_true_0  # DISASTER: Class 0 guessed as Class 2
         rate_1_to_2 = total_cm[1][2] / total_true_1  # BAD: Class 1 guessed as Class 2
 
         # 3. Multiplicative Scaling
-        score = float(class_2_recall * (1.0 - rate_0_to_2) * (1.0 - rate_1_to_2))
+        score = c2_f1 * (1.0 - rate_0_to_2) * (1.0 - rate_0_to_2) * (1.0 - rate_1_to_2)
 
         # Set user attributes for Optuna tracking
         macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
@@ -147,7 +152,7 @@ def run_hpo(
         trial.set_user_attr("class_0_f1", c0_f1)
         trial.set_user_attr("class_1_f1", c1_f1)
         trial.set_user_attr("class_2_f1", c2_f1)
-        trial.set_user_attr("class_2_recall", class_2_recall)
+        trial.set_user_attr("class2_threshold", c2_threshold)
         trial.set_user_attr("custom_rate_score", score)
 
         return score

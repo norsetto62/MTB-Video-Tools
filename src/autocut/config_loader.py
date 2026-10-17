@@ -79,6 +79,7 @@ class HpoConfig:
     study_name: str
     n_trials: int
     proxy_test_groups: tuple[str, ...]
+    c2_threshold: float
 
 
 def _mapping(value: Any, *, where: str) -> dict[str, Any]:
@@ -153,7 +154,7 @@ def _hpo_search_space(value: Any) -> dict[str, dict[str, Any]]:
     raw = _mapping(value, where="hpo.search_space")
     required = {
         "lr", "weight_decay", "dropout", "class_weight_0",
-        "class_weight_2", "hidden_dim",
+        "class_weight_2", "hidden_dim", "c2_threshold",
     }
     missing = required - set(raw)
     unknown = set(raw) - required
