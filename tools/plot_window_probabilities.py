@@ -63,13 +63,11 @@ def plot_probabilities(
     output_path: str | Path,
     show: bool = False,
 ) -> Path:
-    """Save a probability plot with a separate coloured annotation strip."""
+    """Save a single-axis probability plot with background annotation shading."""
     timestamps = np.asarray(timestamps, dtype=np.float64)
     probabilities = np.asarray(probabilities, dtype=np.float64)
     validate_plot_data(timestamps, probabilities)
 
-    # Import lazily so --help and validation can run without the optional
-    # plotting dependency installed.
     try:
         import matplotlib.pyplot as plt
         from matplotlib.patches import Patch
@@ -82,63 +80,78 @@ def plot_probabilities(
 
     centres = timestamps.mean(axis=1)
     duration = max(float(timestamps[:, 1].max()), max(a.end for a in annotations))
-    figure, (annotation_axis, probability_axis) = plt.subplots(
-        2,
-        1,
-        figsize=(16, 7),
-        sharex=True,
-        gridspec_kw={"height_ratios": [1, 4], "hspace": 0.08},
-    )
+    
+    # 1. Single plot setup instead of two subplots
+    figure, ax = plt.subplots(figsize=(16, 6))
 
+    # Draw background annotation shading (alpha=0.25 keeps it behind lines nicely)
     for annotation in annotations:
-        annotation_axis.axvspan(
+        ax.axvspan(
             annotation.start,
             annotation.end,
             color=annotation_color(annotation.score),
-            alpha=0.95,
+            alpha=0.25,
             linewidth=0,
+            zorder=1,
         )
+        # 3. Improved remarks: placed near the top with a white bbox for readability
         if annotation.remarks:
             midpoint = (annotation.start + annotation.end) / 2
-            annotation_axis.text(
+            ax.text(
                 midpoint,
-                0.5,
+                0.88,
                 annotation.remarks,
                 ha="center",
                 va="center",
-                fontsize=7,
+                fontsize=9,
+                fontweight="medium",
                 rotation=0,
                 clip_on=True,
+                zorder=3,
+                bbox=dict(
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.85,
+                    boxstyle="round,pad=0.3",
+                ),
             )
 
-    annotation_axis.set_ylim(0, 1)
-    annotation_axis.set_yticks([])
-    annotation_axis.set_ylabel("Human\nlabel")
-    annotation_axis.set_title(f"Window probabilities and annotations — {video_name}", loc="left")
-    annotation_axis.legend(
-        handles=[
-            Patch(facecolor=ANNOTATION_COLORS[score], label=f"MTB score {score}")
-            for score in range(4)
-        ],
-        ncol=4,
-        loc="upper right",
-        frameon=False,
-    )
-
+    # 2. High-contrast line colors and explicit zorder so lines sit cleanly on top
+    # (Using distinct, saturated colors that pop against pastel background bands)
+    line_colors = ["#1f77b4", "#d62728", "#2ca02c"]  # Blue, Red, Green
     for class_id in range(3):
-        probability_axis.plot(
+        ax.plot(
             centres,
             probabilities[:, class_id],
             label=f"p_{class_id}",
-            linewidth=1.7,
+            color=line_colors[class_id],
+            linewidth=2.0,
+            zorder=2,
         )
-    probability_axis.set_xlim(0, duration)
-    probability_axis.set_ylim(0, 1)
-    probability_axis.set_ylabel("Predicted probability")
-    probability_axis.set_xlabel("Video time (min:sec)")
-    probability_axis.grid(True, alpha=0.25)
-    probability_axis.legend(loc="upper right", ncol=3, frameon=False)
-    probability_axis.xaxis.set_major_formatter(
+
+    ax.set_xlim(0, duration)
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Predicted probability", fontsize=10)
+    ax.set_xlabel("Video time (min:sec)", fontsize=10)
+    ax.set_title(f"Window probabilities and annotations — {video_name}", loc="left", fontsize=12, fontweight="bold")
+    ax.grid(True, alpha=0.3, zorder=0)
+    
+    # Combined legend for both probability lines and annotation scores
+    line_handles, line_labels = ax.get_legend_handles_labels()
+    annotation_handles = [
+        Patch(facecolor=ANNOTATION_COLORS[score], alpha=0.5, label=f"MTB score {score}")
+        for score in range(4)
+    ]
+    ax.legend(
+        handles=line_handles + annotation_handles,
+        loc="upper right",
+        ncol=len(line_handles) + len(annotation_handles),
+        frameon=True,
+        facecolor="white",
+        framealpha=0.9,
+    )
+
+    ax.xaxis.set_major_formatter(
         FuncFormatter(lambda value, _position: f"{int(value // 60):02d}:{int(value % 60):02d}")
     )
 
@@ -150,7 +163,6 @@ def plot_probabilities(
         plt.show()
     plt.close(figure)
     return destination
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
