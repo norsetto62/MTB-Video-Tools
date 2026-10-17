@@ -389,15 +389,15 @@ def run_pipeline(
             # Copy so we don't mutate in place unexpectedly
             probabilities = probabilities.copy()
             c2_probs = probabilities[:, 2]
-            
-            # If Class 2 probability is below the threshold, suppress it 
+
+            # If Class 2 probability is below the threshold, suppress it
             # (e.g., redistribute or shift weight so it doesn't win argmax/envelope)
             below_threshold = c2_probs < c2_threshold
-            
+
             # For windows where p2 fails the threshold, force p2 to 0 
             # (or reallocate its mass so classes 0/1 take over)
             probabilities[below_threshold, 2] = 0.0
-            
+
             # Renormalize rows so probabilities still sum to 1.0
             row_sums = probabilities.sum(axis=1, keepdims=True)
             probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
