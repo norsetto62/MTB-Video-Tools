@@ -170,6 +170,10 @@ hpo:
     class_weight_2:
       low: 2.0
       high: 10.0
+    c2_threshold:
+      low: 0.5
+      high: 0.95
+      step: 0.05
     hidden_dim:
       choices: [32, 64, 128]
 data:
@@ -196,7 +200,8 @@ data:
             "dropout: {low: 0.2, high: 0.6}\n"
             "class_weight_0: {low: 0.1, high: 0.6}\n"
             "class_weight_2: {low: 2, high: 10}\n"
-            "hidden_dim: {choices: [32, 64]}\n",
+            "hidden_dim: {choices: [32, 64]}\n"
+            "c2_threshold: {low: 0.5, high: 0.95}\n", 
             "low < high",
         ),
     ],

@@ -52,6 +52,7 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
             "class_weight_0": {"low": 0.1, "high": 0.6},
             "class_weight_2": {"low": 2.0, "high": 10.0},
             "hidden_dim": {"choices": [32, 64, 128]},
+            "c2_threshold": {"low": 0.5, "high": 0.95, "step":0.05},
         },
     )
 

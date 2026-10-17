@@ -5,7 +5,10 @@ from autocut.data_models import VideoInfo
 from autocut.pipeline import run
 from autocut.selection.timeline import Timeline
 from autocut.selection.candidates_generation import CandidateGenerationConfig
+from autocut.ml.model import MTBClassifier
+from autocut.ml.checkpoint import CHECKPOINT_VERSION
 
+import torch
 
 def test_merge_ranges_merges_touching_and_overlapping_intervals():
     clips = [
@@ -109,7 +112,33 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         f"{source.name}\n00:10 00:20\n00:01 00:08\n", encoding="utf-8"
     )
     checkpoint = tmp_path / "model.pt"
-    checkpoint.write_bytes(b"checkpoint placeholder")
+    import torch
+
+    checkpoint = tmp_path / "model.pt"
+
+    # Initialize a matching dummy model to get a valid state_dict
+    probe_model = MTBClassifier(
+        feature_dim=1,
+        hidden_dim=4,
+        classifier_mid_dim=4,
+        num_classes=3,
+        dropout=0.0,
+    )
+
+    checkpoint = tmp_path / "model.pt"
+    dummy_payload = {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "feature_dim": 1,
+        "model_config": {
+            "hidden_dim": 4,
+            "classifier_mid_dim": 4,
+            "num_classes": 3,
+            "dropout": 0.0,
+        },
+        "model_state_dict": probe_model.state_dict(),
+        "c2_threshold": 0.50,
+    }
+    torch.save(dummy_payload, checkpoint)
     output_dir = tmp_path / "output"
     settings = SimpleNamespace(
         checkpoint=checkpoint,
@@ -139,7 +168,15 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         run, "_extract_windows",
         lambda *args, **kwargs: SimpleNamespace(X=np.zeros((1, 1, 1))),
     )
-    monkeypatch.setattr(run, "infer_windows", lambda *args, **kwargs: object())
+    # Replace object() with a namespace that supplies what run.py expects:
+    monkeypatch.setattr(
+        run, 
+        "infer_windows", 
+        lambda *args, **kwargs: SimpleNamespace(
+            timestamps=np.array([[0.0, 1.0], [1.0, 2.0]]),
+            probabilities=np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1]], dtype=np.float32)
+        )
+    )
     monkeypatch.setattr(
         run, "generate_candidates",
         lambda inference, clip_duration, config: [

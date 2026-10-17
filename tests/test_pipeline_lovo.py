@@ -97,7 +97,7 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
         checkpoint_path.write_text("stub", encoding="utf-8")
         return object(), object(), {"epochs_trained": epochs}
 
-    def fake_predict(model, scaler, test_X):
+    def fake_predict(model, scaler, test_X, **kwargs):
         return np.zeros(len(test_X), dtype=np.int64), np.tile([1.0, 0.0, 0.0], (len(test_X), 1))
 
     monkeypatch.setattr(pipeline_lovo, "_combine_records", fake_combine)
