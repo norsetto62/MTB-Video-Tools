@@ -325,7 +325,7 @@ def load_checkpoint(
         raise FileNotFoundError(f"Checkpoint file does not exist: {source}")
 
     try:
-        payload = torch.load(source, map_location=map_location, weights_only=True)
+        payload = torch.load(source, map_location=map_location, weights_only=False)
     except TypeError:
         # Compatibility with older PyTorch releases without weights_only.
         payload = torch.load(source, map_location=map_location)
