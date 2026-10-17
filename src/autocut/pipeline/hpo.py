@@ -60,10 +60,18 @@ def run_hpo(
             if "choices" in spec:
                 params[name] = trial.suggest_categorical(name, spec["choices"])
             else:
-                params[name] = trial.suggest_float(
-                    name, float(spec["low"]), float(spec["high"]),
-                    log=bool(spec.get("log", False)),
-                )
+                step = spec.get("step")
+                if step is not None:
+                    #step and log cannot be used together
+                    params[name] = trial.suggest_float(
+                        name, float(spec["low"]), float(spec["high"]),
+                        step=float(step)
+                    )
+                else:
+                    params[name] = trial.suggest_float(
+                        name, float(spec["low"]), float(spec["high"]),
+                        log=bool(spec.get("log", False)),
+                    )
         return params
 
     # Define objective function closure
