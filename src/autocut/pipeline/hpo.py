@@ -167,7 +167,7 @@ def run_hpo(
         Since f05[2] is so importanto to us, we could use weights:
 
         score = (1+a*a+b*b)*(c0_f2 * c1_f2 * c2_f05)/(a*a*c1_f2*c2_f05+b*b*c0_f2*c1_f2+c0_f2*c2_f05)
-        
+
         With a*a=1 and b*b=4 we would make c0_f05 more important:
 
         score = 6.0 *(c0_f2 * c1_f2 * c2_f05)/(c1_f2*c2_f05+c0_f2*c2_f05+4.0*c0_f2*c1_f2)
@@ -255,8 +255,8 @@ def run_hpo(
         weight_decay=resolved_params["weight_decay"],
         dropout=resolved_params["dropout"],
         class_weights=[
-            resolved_params["class_weight_0"], 
-            1.0, 
+            resolved_params["class_weight_0"],
+            1.0,
             resolved_params["class_weight_2"]
         ],
         c2_threshold=resolved_params["c2_threshold"],
