@@ -169,6 +169,18 @@ def _hpo_search_space(value: Any) -> dict[str, dict[str, Any]]:
     validated: dict[str, dict[str, Any]] = {}
     for name, value_spec in raw.items():
         spec = _mapping(value_spec, where=f"hpo.search_space.{name}")
+        
+        if "fixed" in spec:
+            if set(spec) != {"fixed"}:
+                raise ValueError(
+                    f"hpo.search_space.{name} with fixed may contain only the fixed field."
+                )
+            val = spec["fixed"]
+            if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+                raise ValueError(f"hpo.search_space.{name}.fixed must be a number or scalar value.")
+            validated[name] = {"fixed": val}
+            continue
+
         if "choices" in spec:
             if set(spec) != {"choices"}:
                 raise ValueError(

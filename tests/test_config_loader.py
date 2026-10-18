@@ -158,9 +158,7 @@ hpo:
       high: 0.001
       log: true
     weight_decay:
-      low: 0.0001
-      high: 0.1
-      log: true
+      fixed: 0.1
     dropout:
       low: 0.2
       high: 0.6
@@ -186,6 +184,7 @@ data:
     assert cfg.study_name == "test-study"
     assert cfg.n_trials == 4
     assert cfg.proxy_test_groups == ("group_a", "group_b")
+    assert cfg.hpo_search_space["weight_decay"] == {"fixed": 0.1}
     assert cfg.hpo_search_space["lr"] == {"low": 1e-5, "high": 1e-3, "log": True}
     assert cfg.hpo_search_space["hidden_dim"] == {"choices": [32, 64, 128]}
 
@@ -203,6 +202,27 @@ data:
             "hidden_dim: {choices: [32, 64]}\n"
             "c2_threshold: {low: 0.5, high: 0.95}\n", 
             "low < high",
+        ),
+        # --- New tests for 'fixed' validation ---
+        (
+            "lr: {low: 0.00001, high: 0.001, log: true}\n"
+            "weight_decay: {fixed: 0.1, low: 0.05}\n"  # mixing fixed with other fields
+            "dropout: {low: 0.2, high: 0.6}\n"
+            "class_weight_0: {low: 0.1, high: 0.6}\n"
+            "class_weight_2: {low: 2, high: 10}\n"
+            "c2_threshold: {low: 0.5, high: 0.95, step: 0.05}\n"
+            "hidden_dim: {choices: [32, 64, 128]}\n",
+            "may contain only the fixed field",
+        ),
+        (
+            "lr: {low: 0.00001, high: 0.001, log: true}\n"
+            "weight_decay: {fixed: true}\n"  # invalid type (boolean) for fixed
+            "dropout: {low: 0.2, high: 0.6}\n"
+            "class_weight_0: {low: 0.1, high: 0.6}\n"
+            "class_weight_2: {low: 2, high: 10}\n"
+            "c2_threshold: {low: 0.5, high: 0.95, step: 0.05}\n"
+            "hidden_dim: {choices: [32, 64, 128]}\n",
+            "must be a number or scalar value",
         ),
     ],
 )

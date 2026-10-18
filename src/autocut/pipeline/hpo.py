@@ -57,6 +57,9 @@ def run_hpo(
         """Build Optuna suggestions from the validated YAML distributions."""
         params: dict[str, object] = {}
         for name, spec in search_space.items():
+            if "fixed" in spec:
+                params[name] = spec["fixed"]
+                continue
             if "choices" in spec:
                 params[name] = trial.suggest_categorical(name, spec["choices"])
             else:
@@ -140,22 +143,18 @@ def run_hpo(
             c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
 
         # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
-        total_true_2= max(1.0, np.sum(total_cm[2]))
-        pred_true_2 = max(1.0, np.sum(total_cm[:2]))
+        total_pred=np.sum(total_cm, axis=0, keepdims=True)
+        total_true=np.sum(total_cm, axis=1, keepdims=True)
+        total_pred[total_pred == 0] = 1.0
+        total_true[total_true == 0] = 1.0
+        recall = np.diag(total_cm/total_true, k=0)
+        precision = np.diag(total_cm/total_pred, k=0)
+        #f1 = 2.0 * recall * precision / (recall + precision)
+        f2 = 5.0 * recall * precision / (recall + 4.0 * precision)
+        #f05 = 1.25 * recall * precision / (recall + 0.25 * precision)
 
-        # 1. TARGET METRICS (Class 2 is what we want)
-        class_2_recall = total_cm[2][2] / total_true_2   # Catch as many real Class 2s as possible
-        class_2_precision = total_cm[2][2] / pred_true_2 # Catched Class 2s are really Class 2
-
-        # 2. FALSE TRIGGER RATES FROM BACKGROUND (Class 0 & 1)
-        #rate_0_to_2 = total_cm[0][2] / total_true_0  # DISASTER: Class 0 guessed as Class 2
-        #rate_1_to_2 = total_cm[1][2] / total_true_1  # BAD: Class 1 guessed as Class 2
-
-        # 3. Multiplicative Scaling (c2_f2)
-        if (class_2_recall*class_2_precision == 0.0):
-            score = 0.0
-        else:
-            score = 5.0 * class_2_precision * class_2_recall / (4.0*class_2_precision + class_2_recall)
+        # Multiplicative Scaling (c0_f2*c1_f2*c2_f2)
+        score = np.prod(f2)
 
         # Set user attributes for Optuna tracking
         macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])

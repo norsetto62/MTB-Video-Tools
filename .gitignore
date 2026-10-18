@@ -21,6 +21,9 @@ audit/
 # Config
 config/
 
+# Tools
+tools/scores.py
+
 # Python tooling
 .pytest_cache/
 .mypy_cache/
