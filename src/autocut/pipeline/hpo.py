@@ -140,19 +140,22 @@ def run_hpo(
             c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
 
         # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
-        total_true_0 = max(1.0, np.sum(total_cm[0]))
-        total_true_1 = max(1.0, np.sum(total_cm[1]))
-        #total_true_2 = max(1.0, np.sum(total_cm[2]))
+        total_true_2= max(1.0, np.sum(total_cm[2]))
+        pred_true_2 = max(1.0, np.sum(total_cm[:2]))
 
         # 1. TARGET METRICS (Class 2 is what we want)
-        #class_2_recall = total_cm[2][2] / total_true_2     # Catch as many real Class 2s as possible
+        class_2_recall = total_cm[2][2] / total_true_2   # Catch as many real Class 2s as possible
+        class_2_precision = total_cm[2][2] / pred_true_2 # Catched Class 2s are really Class 2
 
         # 2. FALSE TRIGGER RATES FROM BACKGROUND (Class 0 & 1)
-        rate_0_to_2 = total_cm[0][2] / total_true_0  # DISASTER: Class 0 guessed as Class 2
-        rate_1_to_2 = total_cm[1][2] / total_true_1  # BAD: Class 1 guessed as Class 2
+        #rate_0_to_2 = total_cm[0][2] / total_true_0  # DISASTER: Class 0 guessed as Class 2
+        #rate_1_to_2 = total_cm[1][2] / total_true_1  # BAD: Class 1 guessed as Class 2
 
-        # 3. Multiplicative Scaling
-        score = c2_f1 * (1.0 - rate_0_to_2) * (1.0 - rate_0_to_2) * (1.0 - rate_1_to_2)
+        # 3. Multiplicative Scaling (c2_f2)
+        if (class_2_recall*class_2_precision == 0.0):
+            score = 0.0
+        else:
+            score = 5.0 * class_2_precision * class_2_recall / (4.0*class_2_precision + class_2_recall)
 
         # Set user attributes for Optuna tracking
         macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])

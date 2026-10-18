@@ -384,25 +384,24 @@ def run_pipeline(
 
         c2_threshold = float(payload.get("c2_threshold", 0.50))
 
-        # 2. Inject c2_threshold filtering right here (Option 1)
-        if c2_threshold != 0.50:
-            # Copy so we don't mutate in place unexpectedly
-            probabilities = probabilities.copy()
-            c2_probs = probabilities[:, 2]
+        #c2_threshold filtering
+        # Copy so we don't mutate in place unexpectedly
+        probabilities = probabilities.copy()
+        c2_probs = probabilities[:, 2]
 
-            # If Class 2 probability is below the threshold, suppress it
-            # (e.g., redistribute or shift weight so it doesn't win argmax/envelope)
-            below_threshold = c2_probs < c2_threshold
+        # If Class 2 probability is below the threshold, suppress it
+        # (e.g., redistribute or shift weight so it doesn't win argmax/envelope)
+        below_threshold = c2_probs < c2_threshold
 
-            # For windows where p2 fails the threshold, force p2 to 0 
-            # (or reallocate its mass so classes 0/1 take over)
-            probabilities[below_threshold, 2] = 0.0
+        # For windows where p2 fails the threshold, force p2 to 0 
+        # (or reallocate its mass so classes 0/1 take over)
+        probabilities[below_threshold, 2] = 0.0
 
-            # Renormalize rows so probabilities still sum to 1.0
-            row_sums = probabilities.sum(axis=1, keepdims=True)
-            probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
+        # Renormalize rows so probabilities still sum to 1.0
+        row_sums = probabilities.sum(axis=1, keepdims=True)
+        probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
 
-        # 3. Wrap back into InferenceResult and pass to candidates
+        # Wrap back into InferenceResult and pass to candidates
         cleaned_inference = InferenceResult(
             timestamps=inference.timestamps,
             probabilities=probabilities,
