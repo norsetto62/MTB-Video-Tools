@@ -283,9 +283,86 @@ quality of motion signal
 downstream prediction performance
 ```
 
----
+# 3. Training Losses
 
-# 3. Future Optimizations
+## 1. Which training losses are worth trying?
+
+
+A. Weighted cross-entropy — keep as the baseline
+
+This is what you already use. It penalizes incorrect predictions according to their class weights:
+\[
+L=-w_y\log p_y
+\]
+
+It's a strong, well-understood baseline. Since your HPO already tunes class weights, first establish whether a better weight range helps before replacing the loss. One caution: class weights alter the effective balance of learning and can change the probability calibration, so the raw \(p_2\) values may not remain directly comparable.
+
+
+B. Focal loss — first alternative to test
+Recommended experiment
+Focal loss reduces the contribution of examples the model already classifies confidently and focuses more on difficult examples:
+\[
+L=-\alpha_y(1-p_y)^\gamma\log p_y
+\]
+
+Here, \(\alpha_y\) can account for class imbalance, and \(\gamma\) controls how strongly easy examples are down-weighted.
+Start with \(\gamma=1\) and \(\gamma=2\), comparing each with \(\gamma=0\), which recovers weighted cross-entropy when the same class weights are used.
+Why it may help: if class 2 has a recognizable but subtle pattern, focal loss may encourage learning from class-2 examples that the model currently struggles with.
+The risk: it can overemphasize noisy labels, ambiguous boundaries, or unusual outliers. If many class-2 annotations are inherently ambiguous, focal loss may make the problem worse.
+
+
+C. Class-balanced cross-entropy
+Rather than choosing class weights only through broad manual ranges, derive them from class frequencies. One approach uses the effective number of samples, which reduces the tendency to give an extremely rare class an excessively large weight.
+This is worth testing if class 2 is substantially less frequent than classes 0 and 1. It is less compelling if the class frequencies are reasonably balanced and the main issue is overlap between classes.
+
+
+D. Logit-adjusted cross-entropy or balanced softmax
+These methods adjust for differences in class prevalence at the logit or softmax level. They can help when a model tends to favor frequent classes, but they overlap conceptually with class weighting, so I would test them later rather than add them to the first experiment.
+
+## 2. Experiments to be done
+
+Experiment	    Training loss	        Purpose
+1	Weighted    cross-entropy	        Baseline with current settings
+2	Weighted    focal, \(\gamma=1\)	    Mild focus on difficult examples
+3	Weighted    focal, \(\gamma=2\)	    Stronger focus on difficult examples
+4	Class-balanced cross-entropy	    Test a more systematic imbalance correction
+
+# 4. Inference classifier
+
+We have the following options:
+
+1. Soft Dampening (Instead of a Hard Zero Cliff)
+Instead of slamming Class 2 straight to 0.0 when it fails the threshold, apply a smooth scaling factor or a ramp function.
+
+ * If p_2 is below our threshold, gently scale it down proportional to how close it was, rather than executing a discontinuous step function. This preserves relative confidences and prevents sudden spike artifacts in our probability plots.
+
+2. Margin-Based Thresholding
+Instead of evaluating Class 2 in a vacuum (p_2 > threshold), evaluate it relative to its biggest rival (Class 1, since that's where our bleed is happening).
+
+ * The Rule: Class 2 is only triggered if p_2 - p_1 > margin (or a dynamic threshold offset).
+ * Why it works: This directly addresses our root bottleneck—the Class 1 Class 2 confusion. It ensures the model doesn't just clear an arbitrary global number, but actually has to be more confident in Class 2 than in the adjacent Class 1 setup.
+
+3. Temporal Smoothing (Hysteresis / Moving Window)
+Because this is a video pipeline, isolated single-frame flickers where p_2 bounces above and below the threshold create annoying false-cut artifacts.
+ * Running a light rolling average or temporal median filter across the probability vector timeline before applying your thresholding logic will naturally clean out high-frequency noise. Real actions have duration; brief single-window spikes are almost always feature-space stutter.
+Also remember we alredy implemented an asymmetric envelope filter on p2 even though that was further down the pipeline
+
+## 1. Proposed testing
+
+1. Fix threshold consistency
+Remove the special case for c2_threshold != 0.5, so the configured decision rule is applied consistently at every threshold. Keep a baseline evaluation for comparison. [x] DONE
+
+2. Compare threshold versus margin
+Use identical model outputs and LOVO folds. Compare class-2 precision, recall, F1/F2, false triggers from classes 0 and 1, and event-level results. [ ] ON-GOING
+
+3. Inspect the envelope and test temporal logic
+Establish what the current filter already does, then compare no additional filter against hysteresis or light smoothing.
+
+4. Plot each stage separately
+Plot raw model probabilities, the class-2 decision score, and the output after the existing envelope. That should make it much easier to distinguish model confusion from post-processing artifacts.
+
+# 5. Future Optimizations
+
 
 Additional performance work should be recorded here as it is investigated.
 
@@ -297,7 +374,7 @@ Possible areas include:
 - optical-flow calculation
 - feature extraction
 - temporal derivatives
-- spatial aggregation
+- spatial aggregation (windows stride)
 - dataset generation
 - inference batching
 
@@ -305,7 +382,7 @@ Optimizations should be added only when there is a measurable or well-understood
 
 ---
 
-# 4. General Principle
+# 6. General Principle
 
 The motion pipeline should avoid repeating work.
 

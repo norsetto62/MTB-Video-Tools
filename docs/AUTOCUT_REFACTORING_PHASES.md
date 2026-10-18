@@ -36,7 +36,7 @@
 - [x] **Phase 12 — Pipeline + CLI**
   - pipeline + CLI
 
-## 12
+## 12 [x] DONE
 
 Complete the end-to-end pipeline.
 Connect the modules and establish a repeatable training and inference workflow. The orchestration should support the training process without prematurely depending on a final model.
@@ -146,7 +146,7 @@ flowchart TD
     M --> N["Optional audio → rendering"]
 ```
 
-## 13
+## 13 [x] DONE
 
 Dataset and training readiness
 
@@ -157,7 +157,7 @@ Audit the additional training videos, check annotation quality and class balance
 4. Make sure validation splits are grouped by video to prevent leakage.
 5. Preserve the original held-out-video results when comparing recipes.
 
-## 14 - LOVO validation and model-recipe selection
+## 14 - LOVO validation and model-recipe selection [ ] ONGOING
 
 Compare candidate training recipes using held-out videos. Select the recipe based on generalization, not merely its training score.
 
@@ -169,7 +169,7 @@ Use LOVO for validation and recipe selection, then train the final LSTM producti
 - LSTM — the model architecture we train and ultimately use for inference.
 - Production training — after choosing the recipe, use `train_production_model.py` to train on all eight annotated datasets. The production checkpoint is what the extractor will use.
 
-## 15 - Train the production model
+## 15 - Train the production model [ ]
 
 Once the recipe is chosen, train the final model on all eight annotated datasets and use that checkpoint for AutoCut inference.
 Generate and audit the dataset.
@@ -178,7 +178,7 @@ Train the intended 3-class LSTM.
 Evaluate using leakage-safe, grouped or leave-one-video-out validation.
 Save and verify the production checkpoint and its metadata.
 
-## 16 - End-to-end testing and validation
+## 16 - End-to-end testing and validation [ ]
 
 Verify the CLI can take the videos, annotations, model checkpoint, and music through to a finished highlight video.
 Run the complete workflow with a trained model, first without music and then with music. Validate the final rendered videos.
