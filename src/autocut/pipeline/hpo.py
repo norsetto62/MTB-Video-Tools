@@ -145,17 +145,33 @@ def run_hpo(
         # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
         total_pred=np.sum(total_cm, axis=0, keepdims=True)
         total_true=np.sum(total_cm, axis=1, keepdims=True)
-        total_pred[total_pred == 0] = 1.0
-        total_true[total_true == 0] = 1.0
-        recall = np.diag(total_cm/total_true, k=0)
-        precision = np.diag(total_cm/total_pred, k=0)
+        empty_pred = (total_pred.squeeze() == 0)
+        empty_true = (total_true.squeeze() == 0)
+        safe_pred = np.where(total_pred == 0, 1.0, total_pred)
+        safe_true = np.where(total_true == 0, 1.0, total_true)
+        recall = np.diag(total_cm/safe_true, k=0).copy()
+        precision = np.diag(total_cm/safe_pred, k=0).copy()
+        recall[empty_true] = 1.0
+        precision[empty_pred] = 1.0
         #f1 = 2.0 * recall * precision / (recall + precision)
         f2 = 5.0 * recall * precision / (recall + 4.0 * precision)
-        #f05 = 1.25 * recall * precision / (recall + 0.25 * precision)
+        f05 = 1.25 * recall * precision / (recall + 0.25 * precision)
 
-        # Multiplicative Scaling (c0_f2*c1_f2*c2_f2)
-        score = np.prod(f2)
+        # Multiplicative Scaling (harmonic mean of class_0 f2, class_1 f2 and class_2 f0.5)
+        den = f2[1] * f05[2] + f2[0] * f05[2] + f2[0] * f2[1]
+        if den == 0.0:
+            score = 0.0
+        else:
+            score = 3.0 * f2[0] * f2[1] * f05[2] / den
+        """
+        Since f05[2] is so importanto to us, we could use weights:
 
+        score = (1+a*a+b*b)*(c0_f2 * c1_f2 * c2_f05)/(a*a*c1_f2*c2_f05+b*b*c0_f2*c1_f2+c0_f2*c2_f05)
+        
+        With a*a=1 and b*b=4 we would make c0_f05 more important:
+
+        score = 6.0 *(c0_f2 * c1_f2 * c2_f05)/(c1_f2*c2_f05+c0_f2*c2_f05+4.0*c0_f2*c1_f2)
+        """
         # Set user attributes for Optuna tracking
         macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
         trial.set_user_attr("macro_f1", macro_f1)
@@ -227,17 +243,24 @@ def run_hpo(
     # If the logger is silenced at WARNING or above, print directly to the console
     if logger.getEffectiveLevel() >= logging.WARNING:
             print(log_msg)
-    
-    best_params = study.best_params
-    
+
+    resolved_params = dict(study.best_params)
+    for name, spec in search_space.items():
+        if "fixed" in spec:
+            resolved_params[name] = spec["fixed"]
+
     final_training = replace(
         settings.training,
-        lr=best_params["lr"],
-        weight_decay=best_params["weight_decay"],
-        dropout=best_params["dropout"],
-        class_weights=[best_params["class_weight_0"], 1.0, best_params["class_weight_2"]],
-        c2_threshold=best_params["c2_threshold"],
-        hidden_dim=best_params["hidden_dim"],
+        lr=resolved_params["lr"],
+        weight_decay=resolved_params["weight_decay"],
+        dropout=resolved_params["dropout"],
+        class_weights=[
+            resolved_params["class_weight_0"], 
+            1.0, 
+            resolved_params["class_weight_2"]
+        ],
+        c2_threshold=resolved_params["c2_threshold"],
+        hidden_dim=resolved_params["hidden_dim"],
     )
 
     final_settings = replace(
