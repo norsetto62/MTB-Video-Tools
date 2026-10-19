@@ -237,3 +237,20 @@ def test_training_config_rejects_invalid_hpo_search_space(tmp_path, search_space
     )
     with pytest.raises(ValueError, match=message):
         load_training_config(path)
+
+
+
+def test_compat_loader_preserves_generic_loader_empty_file_error(tmp_path):
+    path = tmp_path / "empty.yaml"
+    path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Configuration file is empty"):
+        load_run_config(path)
+
+
+def test_compat_loader_preserves_generic_loader_invalid_yaml_error(tmp_path):
+    path = tmp_path / "invalid.yaml"
+    path.write_text("selection: [unterminated", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid YAML"):
+        load_run_config(path)
