@@ -15,7 +15,7 @@ def test_config_supports_mapping_and_attribute_access():
 
 
 def test_config_is_recursively_immutable():
-    config = Config({"nested": {"value": 1}, "items": [1, 2]})
+    config = Config({"nested": {"value": 1}, "list_values": [1, 2]})
 
     with pytest.raises(AttributeError, match="immutable"):
         config.nested.value = 2
@@ -24,7 +24,7 @@ def test_config_is_recursively_immutable():
     with pytest.raises(TypeError):
         config.nested["value"] = 2
     with pytest.raises(AttributeError):
-        config.items.append(3)
+        config.list_values.append(3)
 
 
 def test_overrides_are_copy_on_write_and_support_delete():
