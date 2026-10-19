@@ -14,15 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-try:
-    import yaml
-except ImportError as exc:  # pragma: no cover - dependency is declared in pyproject
-    raise ImportError(
-        "YAML configuration requires PyYAML. Install AutoCut with its project "
-        "dependencies (for example: pip install -e .)."
-    ) from exc
-
 from .audio.config import AudioConfig
+from .config_loader import load_config
 from .ml.training import TrainingConfig
 
 @dataclass(frozen=True)
@@ -236,17 +229,8 @@ def _hpo_search_space(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
-    config_path = _path(path, name="config path")
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    try:
-        with config_path.open("r", encoding="utf-8-sig") as stream:
-            raw = yaml.safe_load(stream)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid YAML in {config_path}: {exc}") from exc
-    if raw is None:
-        raise ValueError(f"Configuration file is empty: {config_path}")
-    return _mapping(raw, where="root")
+    """Load generic YAML values before applying this module's domain validation."""
+    return load_config(_path(path, name="config path")).to_dict()
 
 
 def _video_encoder(value: Any) -> str:
