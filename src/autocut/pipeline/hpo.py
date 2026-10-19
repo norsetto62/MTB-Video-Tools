@@ -8,7 +8,7 @@ import optuna
 import yaml
 from datetime import datetime
 
-from ..config_loader import TrainingRunConfig
+from ..config_compat import TrainingRunConfig
 from .lovo import run_lovo  
 from ..dataset.manifest import load_manifest
 from .lovo import run_lovo
