@@ -5,7 +5,7 @@ import yaml
 from autocut.data_models import Annotation, VideoInfo
 from autocut.dataset import audit as audit_module
 from autocut.dataset.audit import audit_manifest, audit_production_annotations
-from autocut.config_loader import load_run_config
+from autocut.config_compat import load_run_config
 
 
 def _run_config(tmp_path: Path):
