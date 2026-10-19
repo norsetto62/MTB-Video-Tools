@@ -122,7 +122,7 @@ def test_cli_train_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     _manifest(manifest, tmp_path)
     config_path = tmp_path / "train.yaml"
     captured = {}
-    monkeypatch.setattr("autocut.config_loader.load_training_config", lambda path: settings)
+    monkeypatch.setattr("autocut.config_compat.load_training_config", lambda path: settings)
 
     def fake_run(path, loaded_settings):
         captured["manifest"] = path
