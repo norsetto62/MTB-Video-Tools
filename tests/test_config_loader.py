@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from autocut.config_loader import load_run_config, load_training_config
+from autocut.config_compat import load_run_config, load_training_config
 
 
 def test_load_run_config_maps_existing_dataclasses(tmp_path):
