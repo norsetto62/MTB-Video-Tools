@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..config_loader import TrainingRunConfig
+from ..config_compat import TrainingRunConfig
 from ..dataset.manifest import get_unique_groups, load_manifest
 from ..ml.model import MTBClassifier
 from ..ml.scaling import FeatureScaler
