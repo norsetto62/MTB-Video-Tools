@@ -1,8 +1,11 @@
-"""Load and validate AutoCut run and training YAML configuration.
+"""Transitional AutoCut-specific configuration builders.
+
+This module is intentionally separate from config_loader.py. It preserves the
+legacy typed API while consumers migrate to generic Config values and take
+ownership of constructing their own domain objects. Do not add new callers.
 
 Paths in YAML are interpreted relative to the current working directory, not
-relative to the YAML file. Configuration sections map onto the existing
-validated dataclasses wherever possible.
+relative to the YAML file.
 """
 
 from __future__ import annotations
