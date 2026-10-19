@@ -112,24 +112,78 @@ def _predict(
     return predictions.astype(np.int64), probabilities
 
 
+def _resolve_group_splits(
+    all_groups: tuple[str, ...],
+    *,
+    test_groups: tuple[str, ...] | None = None,
+    train_groups: tuple[str, ...] | None = None,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Resolve evaluation folds and training pools, optionally isolating proxy groups."""
+    if test_groups is None:
+        if train_groups is not None:
+            raise ValueError("train_groups can only be supplied when test_groups are specified.")
+        if len(all_groups) < 3:
+            raise ValueError(
+                f"LOVO requires at least 3 distinct manifest groups (found {len(all_groups)}): "
+                "one outer test group, one inner validation group, and at least one inner training group."
+            )
+        return tuple(
+            (test_group, tuple(group for group in all_groups if group != test_group))
+            for test_group in all_groups
+        )
+
+    if not test_groups:
+        raise ValueError("test_groups must contain at least one proxy test group.")
+    if len(set(test_groups)) != len(test_groups):
+        raise ValueError("test_groups must not contain duplicates.")
+    unknown_test = set(test_groups) - set(all_groups)
+    if unknown_test:
+        raise ValueError("Unknown test group(s): " + ", ".join(sorted(unknown_test)))
+
+    if train_groups is None:
+        resolved_train = tuple(group for group in all_groups if group not in test_groups)
+    else:
+        if not train_groups:
+            raise ValueError("train_groups must contain at least one training group.")
+        if len(set(train_groups)) != len(train_groups):
+            raise ValueError("train_groups must not contain duplicates.")
+        unknown_train = set(train_groups) - set(all_groups)
+        if unknown_train:
+            raise ValueError("Unknown training group(s): " + ", ".join(sorted(unknown_train)))
+        overlap = set(train_groups) & set(test_groups)
+        if overlap:
+            raise ValueError(
+                "Proxy test groups must be excluded from training; overlap: "
+                + ", ".join(sorted(overlap))
+            )
+        resolved_train = tuple(group for group in all_groups if group in set(train_groups))
+
+    if len(resolved_train) < 2:
+        raise ValueError(
+            "Proxy HPO evaluation requires at least two training groups so inner "
+            "epoch selection has both training and validation groups."
+        )
+    return tuple((test_group, resolved_train) for test_group in test_groups)
+
+
 def run_lovo(
     manifest_path: str | Path,
     settings: TrainingRunConfig,
+    *,
+    test_groups: tuple[str, ...] | None = None,
+    train_groups: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Run deterministic nested leave-one-group-out CV and persist fold artifacts.
+    """Run nested group CV, optionally evaluating proxy groups only.
 
-    The outer held-out group is excluded from inner epoch selection, scaler
-    fitting, and final refit. Epoch count is selected via a consensus multi-group
-    inner validation strategy from the outer-training groups, then the model and
-    scaler are refit on every outer-training group for exactly that many epochs.
+    When test_groups are supplied, train_groups is the exclusive training pool:
+    proxy test groups are excluded from all fitting and inner epoch selection.
     """
     records = load_manifest(manifest_path, verify_files=True)
-    groups = get_unique_groups(records)
-    if len(groups) < 3:
-        raise ValueError(
-            f"LOVO requires at least 3 distinct manifest groups (found {len(groups)}): "
-            "one outer test group, one inner validation group, and at least one inner training group."
-        )
+    all_groups = get_unique_groups(records)
+    group_splits = _resolve_group_splits(
+        all_groups, test_groups=test_groups, train_groups=train_groups
+    )
+    groups = tuple(test_group for test_group, _ in group_splits)
 
     slug = _experiment_slug(settings.experiment_name)
     fold_root = settings.results_dir / f"{slug}_lovo"
@@ -153,8 +207,7 @@ def run_lovo(
     pooled_actual: list[np.ndarray] = []
     pooled_predicted: list[np.ndarray] = []
     
-    for fold_index, test_group in enumerate(groups):
-        outer_train_groups = tuple(group for group in groups if group != test_group)
+    for fold_index, (test_group, outer_train_groups) in enumerate(group_splits):
         outer_train_records = tuple(r for r in records if r.group_id in outer_train_groups)
         test_records = tuple(r for r in records if r.group_id == test_group)
 
@@ -215,7 +268,7 @@ def run_lovo(
         fold_checkpoint = checkpoint_root / f"fold_{fold_index + 1:02d}_{_experiment_slug(test_group)}.pt"
         fold_metadata = {
             "experiment_name": settings.experiment_name,
-            "evaluation": "nested_leave_one_group_out",
+            "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
             "outer_test_group": test_group,
             "outer_training_groups": list(outer_train_groups),
             "inner_validation_group": inner_validation_group,
@@ -293,9 +346,10 @@ def run_lovo(
     pooled_metrics = _metrics(all_actual, all_predicted)
     result: dict[str, Any] = {
         "experiment_name": settings.experiment_name,
-        "evaluation": "nested_leave_one_group_out",
+        "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "groups": list(groups),
+        "training_groups": list(group_splits[0][1]) if test_groups is not None else None,
         "fold_count": len(folds),
         "training_config": asdict(settings.training),
         "data_config": data_config,
