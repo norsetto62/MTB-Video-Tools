@@ -48,7 +48,7 @@ def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
         training=SimpleNamespace(epochs=2),
         experiment_name="cli-test",
     )
-    monkeypatch.setattr("autocut.config_loader.load_training_config", lambda path: settings)
+    monkeypatch.setattr("autocut.config_compat.load_training_config", lambda path: settings)
     captured = {}
 
     def fake_run_lovo(path, loaded_settings):
@@ -90,7 +90,7 @@ def test_cli_run_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     annotations = tmp_path / "annotations.txt"
     annotations.write_text("placeholder", encoding="utf-8")
     settings = SimpleNamespace(common=SimpleNamespace(log_level="INFO"))
-    monkeypatch.setattr("autocut.config_loader.load_run_config", lambda path: settings)
+    monkeypatch.setattr("autocut.config_compat.load_run_config", lambda path: settings)
     captured = {}
 
     def fake_run_pipeline(path, loaded_settings, *, output_path=None, video_encoder=None):
