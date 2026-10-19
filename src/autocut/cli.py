@@ -147,14 +147,14 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "models":
         checkpoint = args.checkpoint
         if checkpoint is None:
-            from .config_loader import load_run_config
+            from .config_compat import load_run_config
 
             settings = load_run_config(args.config)
             checkpoint = settings.checkpoint
         return _inspect_checkpoint(checkpoint)
 
     if args.command == "audit":
-        from .config_loader import load_run_config
+        from .config_compat import load_run_config
         from .dataset.audit import audit_source, print_audit_report
 
         if not args.source.is_file():
@@ -171,7 +171,7 @@ def dispatch(args: argparse.Namespace) -> int:
         return 1 if report["status"] == "error" else 0
 
     if args.command == "run":
-        from .config_loader import load_run_config
+        from .config_compat import load_run_config
         from .pipeline.run import run_pipeline
 
         settings = load_run_config(args.config)
@@ -190,7 +190,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command in {"train", "validate", "lovo", "hpo"}:
 
-        from .config_loader import load_training_config
+        from .config_compat import load_training_config
 
         settings = load_training_config(args.config)
         _configure_logging(settings.common.log_level)
