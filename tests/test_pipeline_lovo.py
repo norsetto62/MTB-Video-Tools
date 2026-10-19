@@ -10,7 +10,7 @@ from autocut.pipeline import lovo as pipeline_lovo
 
 
 def _settings(tmp_path):
-    from autocut.config_loader import CommonSettings, TrainingRunConfig
+    from autocut.config_compat import CommonSettings, TrainingRunConfig
     from autocut.ml.training import TrainingConfig
 
     return TrainingRunConfig(
