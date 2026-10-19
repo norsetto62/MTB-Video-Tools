@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from ..annotations import load_training_annotations
-from ..config_loader import TrainingRunConfig
+from ..config_compat import TrainingRunConfig
 from ..data_models import Clip
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
