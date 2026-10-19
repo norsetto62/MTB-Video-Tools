@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from ..annotations import load_training_annotations
-from ..config_loader import TrainingRunConfig
+from ..config_compat import TrainingRunConfig
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
 from ..dataset.targets import build_targets, validate_targets
