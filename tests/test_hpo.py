@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autocut.config_loader import TrainingRunConfig, TrainingConfig, CommonSettings
+from autocut.config_compat import TrainingRunConfig, TrainingConfig, CommonSettings
 from autocut.pipeline import hpo
 from autocut.ml.training import TrainingConfig
 
