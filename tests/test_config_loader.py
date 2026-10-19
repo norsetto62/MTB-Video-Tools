@@ -64,22 +64,22 @@ def test_load_config_loads_generic_values_without_domain_conversion(tmp_path: Pa
 
 
 def test_config_does_not_alias_mutable_input_values():
-    nested = {"items": [1, {"value": 2}]}
+    nested = {"payload": [1, {"value": 2}]}
     config = Config(nested)
 
-    nested["items"][1]["value"] = 99
-    nested["items"].append(3)
+    nested["payload"][1]["value"] = 99
+    nested["payload"].append(3)
 
-    assert config.items == (1, Config({"value": 2}))
-    assert config.to_dict() == {"items": [1, {"value": 2}]}
+    assert config.payload == (1, Config({"value": 2}))
+    assert config.to_dict() == {"payload": [1, {"value": 2}]}
 
 
 def test_override_freezes_inserted_values_without_mutating_caller_data():
     config = Config({"section": {"existing": True}})
-    inserted = {"values": [1, 2]}
+    inserted = {"numbers": [1, 2]}
 
     changed = config.override("section.added", inserted)
     inserted["values"].append(3)
 
     assert config.section == Config({"existing": True})
-    assert changed.section.added.values == (1, 2)
+    assert changed.section.added.numbers == (1, 2)
