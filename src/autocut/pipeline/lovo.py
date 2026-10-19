@@ -184,6 +184,12 @@ def run_lovo(
         all_groups, test_groups=test_groups, train_groups=train_groups
     )
     groups = tuple(test_group for test_group, _ in group_splits)
+    selected_groups = set(groups)
+    for _, training_pool in group_splits:
+        selected_groups.update(training_pool)
+    # Do not even prepare records outside the selected proxy/test and training
+    # groups; this keeps proxy trials cheaper as well as preventing leakage.
+    records = tuple(record for record in records if record.group_id in selected_groups)
 
     slug = _experiment_slug(settings.experiment_name)
     fold_root = settings.results_dir / f"{slug}_lovo"
