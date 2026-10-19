@@ -110,10 +110,13 @@ def run_hpo(
             validation_groups=proxy_groups, # Pass proxy groups as tuple/list expected by our config schema
         )
 
-        # Execute proxy evaluation across subset folds
+        # Explicitly restrict evaluation to proxy folds and the configured non-proxy
+        # training pool. run_lovo validates these group IDs against the manifest.
         lovo_results = run_lovo(
             manifest_path=manifest_path,
-            settings=trial_settings
+            settings=trial_settings,
+            test_groups=tuple(proxy_groups),
+            train_groups=tuple(filtered_train_groups),
         )
 
         # Aggregate confusion matrices across validation folds
