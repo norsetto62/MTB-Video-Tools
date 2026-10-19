@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autocut.config_loader import load_training_config
+from autocut.config_compat import load_training_config
 from autocut.dataset.manifest import load_manifest
 from autocut.pipeline import training as pipeline_training
 
