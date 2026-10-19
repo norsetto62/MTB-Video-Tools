@@ -14,7 +14,7 @@ from typing import Sequence
 import numpy as np
 
 from autocut.annotations import load_training_annotations
-from autocut.config_loader import load_run_config
+from autocut.config_compat import load_run_config
 from autocut.ml.inference import infer_windows
 from autocut.pipeline.run import _extract_windows
 from autocut.video.probe import get_video_info
