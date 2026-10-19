@@ -61,9 +61,11 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
 
     # 2. Mock run_lovo to return a valid result structure expected by the objective
     lovo_call_count = {"count": 0}
+    lovo_calls = []
 
-    def fake_run_lovo(manifest_path, settings):
+    def fake_run_lovo(manifest_path, settings, **kwargs):
         lovo_call_count["count"] += 1
+        lovo_calls.append({"settings": settings, **kwargs})
         return {
             "aggregation": {
                 "macro_group_mean": {"macro_f1": 0.75}
@@ -101,6 +103,13 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
     # 5. Assertions
     # 2 trial runs + 1 final master refit = 3 total calls to run_lovo
     assert lovo_call_count["count"] == 3
+    for call in lovo_calls[:2]:
+        assert call["test_groups"] == ("group_A",)
+        assert call["train_groups"] == ("group_B", "group_C")
+        assert call["settings"].train_groups == ("group_B", "group_C")
+    # The final production run remains a full-manifest LOVO refit/evaluation.
+    assert "test_groups" not in lovo_calls[2]
+    assert "train_groups" not in lovo_calls[2]
 
     # Check that the JSON export file was created successfully under output/hpo/
     expected_json_path = tmp_path / "output" / "hpo" / "test_autocut_study_best_params.json"
