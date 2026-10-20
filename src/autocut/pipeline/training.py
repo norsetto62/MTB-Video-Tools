@@ -19,14 +19,14 @@ import numpy as np
 
 from ..annotations import load_training_annotations
 from ..config_loader import Config
-from ..ml.training import TrainingConfig
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows
-from ..ml.training import train_single_fold
+from ..ml.training import TrainingConfig, train_single_fold
 
 logger = logging.getLogger(__name__)
+
 
 def _section(settings: Mapping[str, Any], name: str) -> Mapping[str, Any]:
     value = settings.get(name, {})
@@ -82,7 +82,6 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
 
 def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
     data = _section(settings, "data")
-    paths = _section(settings, "paths")
     manifest = _path(
         data.get("manifest", "data/manifest/annotations_manifest.yaml"),
         name="data.manifest",
@@ -97,8 +96,6 @@ def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, 
     window_stride = _positive_float(
         data.get("window_stride", 2.0), name="data.window_stride"
     )
-    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
-    # Keep cache_dir available through the original configuration mapping.
     return manifest, sample_fps, processing_width, window_duration, window_stride
 
 
