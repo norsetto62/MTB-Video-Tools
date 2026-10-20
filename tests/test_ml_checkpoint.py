@@ -136,6 +136,8 @@ def test_custom_class_count_requires_explicit_class_mapping():
         class_mapping={"0": "a", "1": "b", "2": "c", "3": "d"},
     )
     assert payload["model_config"]["num_classes"] == 4
+    with pytest.raises(ValueError, match="binary two-class"):
+        validate_checkpoint(payload)
 
 
 @pytest.mark.parametrize("epoch", [-1, 1.5, True])
