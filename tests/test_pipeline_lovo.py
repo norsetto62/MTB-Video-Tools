@@ -161,3 +161,47 @@ def test_fixed_epoch_refit_saves_scaler_and_training_metadata(tmp_path):
     assert payload["scaler_state"] is not None
     assert model.training is False
     assert scaler.mean_ is not None
+
+
+
+def test_lovo_prediction_uses_one_binary_good_threshold(monkeypatch):
+    import torch
+
+    class FixedModel:
+        def eval(self):
+            return self
+
+        def __call__(self, batch):
+            return torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32)
+
+    class IdentityScaler:
+        def transform(self, values):
+            return values
+
+    windows = np.zeros((2, 8, 54), dtype=np.float32)
+    predicted, probabilities = pipeline_lovo._predict(
+        FixedModel(), IdentityScaler(), windows, good_threshold=0.70
+    )
+    np.testing.assert_array_equal(predicted, [1, 0])
+    assert probabilities.shape == (2, 2)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
+
+
+def test_lovo_prediction_rejects_invalid_good_threshold():
+    import torch
+
+    class FixedModel:
+        def eval(self):
+            return self
+
+    class IdentityScaler:
+        def transform(self, values):
+            return values
+
+    for threshold in (-0.1, 1.1, float("nan"), True):
+        with pytest.raises(ValueError, match="good_threshold"):
+            pipeline_lovo._predict(
+                FixedModel(), IdentityScaler(),
+                np.zeros((1, 8, 54), dtype=np.float32),
+                good_threshold=threshold,
+            )
