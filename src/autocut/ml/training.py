@@ -90,6 +90,13 @@ class TrainingConfig:
         object.__setattr__(self, "weight_decay", float(self.weight_decay))
         object.__setattr__(self, "min_delta", float(self.min_delta))
         object.__setattr__(self, "dropout", float(self.dropout))
+        if (
+            isinstance(self.good_threshold, bool)
+            or not isinstance(self.good_threshold, (int, float))
+            or not math.isfinite(float(self.good_threshold))
+            or not 0.0 <= float(self.good_threshold) <= 1.0
+        ):
+            raise ValueError("good_threshold must be finite and between 0 and 1.")
         object.__setattr__(self, "good_threshold", float(self.good_threshold))
 
 
