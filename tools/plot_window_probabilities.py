@@ -14,9 +14,9 @@ from typing import Sequence
 import numpy as np
 
 from autocut.annotations import load_training_annotations
-from autocut.config_compat import load_run_config
+from autocut.config_loader import load_config
 from autocut.ml.inference import infer_windows
-from autocut.pipeline.run import _extract_windows
+from autocut.pipeline.run import _extract_windows, _run_config_sections
 from autocut.video.probe import get_video_info
 
 
@@ -193,22 +193,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise FileNotFoundError(f"Annotation file not found: {args.annotations}")
 
     video_path, annotations = load_training_annotations(args.annotations)
-    settings = load_run_config(args.config)
-    if not settings.checkpoint.is_file():
-        raise FileNotFoundError(f"Model checkpoint not found: {settings.checkpoint}")
+    settings, _candidate_config, _audio_config = _run_config_sections(load_config(args.config))
+    if not settings.model.checkpoint.is_file():
+        raise FileNotFoundError(f"Model checkpoint not found: {settings.model.checkpoint}")
 
     video_info = get_video_info(video_path)
     windows = _extract_windows(video_path, 0.0, video_info.duration, settings)
     if windows is None:
         raise ValueError(
             f"Video is too short to produce windows of "
-            f"{settings.common.window_duration:g} seconds: {video_path}"
+            f"{settings.features.window_duration:g} seconds: {video_path}"
         )
 
     result = infer_windows(
-        settings.checkpoint,
+        settings.model.checkpoint,
         windows,
-        batch_size=settings.inference_batch_size,
+        batch_size=settings.model.inference_batch_size,
     )
     output_path = args.output or args.annotations.with_name(
         f"{args.annotations.stem}_probabilities.png"
