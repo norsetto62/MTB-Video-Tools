@@ -36,13 +36,12 @@ def test_build_checkpoint_captures_model_and_canonical_feature_order():
     assert payload["model_config"] == {
         "hidden_dim": 128,
         "classifier_mid_dim": 64,
-        "num_classes": 3,
+        "num_classes": 2,
         "dropout": pytest.approx(0.4),
     }
     assert payload["class_mapping"] == {
-        "0": "negative_or_non_riding",
-        "1": "ordinary_or_intermediate",
-        "2": "interesting",
+        "0": "bad",
+        "1": "good",
     }
     assert payload["optimizer_state_dict"] is None
     assert payload["epoch"] is None
