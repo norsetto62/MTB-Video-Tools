@@ -306,6 +306,8 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
     candidate_values = {
         key: value for key, value in raw["selection"].items() if key in candidate_fields
     }
+    if isinstance(candidate_values.get("class_score_weights"), list):
+        candidate_values["class_score_weights"] = tuple(candidate_values["class_score_weights"])
     # min_clip is the sole final candidate-duration filter.
     candidate_values["min_candidate_duration"] = raw["selection"]["min_clip"]
     candidate_config = CandidateGenerationConfig(**candidate_values)
@@ -339,7 +341,7 @@ def _config_summary(
 
 def run_pipeline(
     annotation_path: str | Path,
-    settings: object,
+    settings: Config,
     *,
     output_path: str | Path | None = None,
     video_encoder: str | None = None,
