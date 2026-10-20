@@ -5,18 +5,18 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-from ..config_compat import TrainingRunConfig
+from .training import _combine_records, _experiment_slug, _data_values, _path, _section, _training_config
 from ..dataset.manifest import get_unique_groups, load_manifest
 from ..ml.model import MTBClassifier
 from ..ml.scaling import FeatureScaler
 from ..ml.training import targets_to_classes, train_fixed_epochs, train_single_fold
-from .training import _combine_records, _experiment_slug
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def _resolve_group_splits(
 
 def run_lovo(
     manifest_path: str | Path,
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
     *,
     test_groups: tuple[str, ...] | None = None,
     train_groups: tuple[str, ...] | None = None,
@@ -178,6 +178,16 @@ def run_lovo(
     When test_groups are supplied, train_groups is the exclusive training pool:
     proxy test groups are excluded from all fitting and inner epoch selection.
     """
+    if not isinstance(settings, Mapping):
+        raise ValueError("LOVO settings must be a configuration mapping.")
+    experiment = _section(settings, "experiment")
+    experiment_name = experiment.get("name", "baseline")
+    if not isinstance(experiment_name, str) or not experiment_name.strip():
+        raise ValueError("experiment.name must be a non-empty string.")
+    results_dir = _path(experiment.get("results_dir", "output/experiments"), name="experiment.results_dir")
+    checkpoint_dir = _path(experiment.get("checkpoint_dir", "models/experiments"), name="experiment.checkpoint_dir")
+    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    training_config = _training_config(settings)
     records = load_manifest(manifest_path, verify_files=True)
     all_groups = get_unique_groups(records)
     group_splits = _resolve_group_splits(
@@ -191,14 +201,14 @@ def run_lovo(
     # groups; this keeps proxy trials cheaper as well as preventing leakage.
     records = tuple(record for record in records if record.group_id in selected_groups)
 
-    slug = _experiment_slug(settings.experiment_name)
-    fold_root = settings.results_dir / f"{slug}_lovo"
-    checkpoint_root = settings.checkpoint_dir / f"{slug}_lovo"
+    slug = _experiment_slug(experiment_name)
+    fold_root = results_dir / f"{slug}_lovo"
+    checkpoint_root = checkpoint_dir / f"{slug}_lovo"
     data_config = {
-        "flow_fps": settings.sample_fps,
-        "processing_width": settings.processing_width,
-        "window": settings.common.window_duration,
-        "stride": settings.common.window_stride,
+        "flow_fps": sample_fps,
+        "processing_width": processing_width,
+        "window": window_duration,
+        "stride": window_stride,
     }
     
     # Each record's windows/targets are independent of the fold. Prepare them
@@ -233,7 +243,7 @@ def run_lovo(
             inner_X, inner_y = _combine_prepared_records(inner_train_recs, prepared_records)
             inner_val_X, inner_val_y = _combine_prepared_records(inner_val_recs, prepared_records)
             
-            selection_config = replace(settings.training, seed=settings.training.seed + fold_index)
+            selection_config = replace(training_config, seed=training_config.seed + fold_index)
             _, _, selection = train_single_fold(
                 inner_X,
                 inner_y,
@@ -273,7 +283,7 @@ def run_lovo(
         ]
         fold_checkpoint = checkpoint_root / f"fold_{fold_index + 1:02d}_{_experiment_slug(test_group)}.pt"
         fold_metadata = {
-            "experiment_name": settings.experiment_name,
+            "experiment_name": experiment_name,
             "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
             "outer_test_group": test_group,
             "outer_training_groups": list(outer_train_groups),
@@ -281,7 +291,7 @@ def run_lovo(
             "inner_training_groups": list(inner_train_groups),
             "manifest": str(Path(manifest_path).expanduser().resolve()),
         }
-        final_config = replace(settings.training, seed=settings.training.seed + fold_index)
+        final_config = replace(training_config, seed=training_config.seed + fold_index)
         model, scaler, refit_summary = _fit_fixed_epochs(
             outer_X,
             outer_y,
@@ -293,7 +303,7 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        c2_threshold = getattr(settings.training, "c2_threshold", 0.50)
+        c2_threshold = getattr(training_config, "c2_threshold", 0.50)
         predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
@@ -351,13 +361,13 @@ def run_lovo(
     all_predicted = np.concatenate(pooled_predicted)
     pooled_metrics = _metrics(all_actual, all_predicted)
     result: dict[str, Any] = {
-        "experiment_name": settings.experiment_name,
+        "experiment_name": experiment_name,
         "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "groups": list(groups),
         "training_groups": list(group_splits[0][1]) if test_groups is not None else None,
         "fold_count": len(folds),
-        "training_config": asdict(settings.training),
+        "training_config": asdict(training_config),
         "data_config": data_config,
         "aggregation": {
             "micro": pooled_metrics,

@@ -1,15 +1,16 @@
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from dataclasses import replace
 import numpy as np
 import optuna
 from datetime import datetime
+from typing import Any
 
-from ..config_compat import TrainingRunConfig
-from ..dataset.manifest import load_manifest
+from ..config_loader import Config
 from .lovo import run_lovo
-from .training import _combine_records
+from ..dataset.manifest import load_manifest
+from .training import _combine_records, _section, _training_config
 from ..ml.training import train_fixed_epochs
 
 logger = logging.getLogger(__name__)
@@ -17,21 +18,37 @@ logger = logging.getLogger(__name__)
 
 def run_hpo(
     manifest_path: str | Path,
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
 ) -> None:
     """
     Orchestrates the Optuna HPO study, logs outputs to screen, 
     and exports winning parameters to output/hpo/.
     """
     
+    if not isinstance(settings, Mapping):
+        raise ValueError("HPO settings must be a configuration mapping.")
+    hpo = _section(settings, "hpo")
+    data = _section(settings, "data")
+    paths = _section(settings, "paths")
+    n_trials = hpo.get("n_trials", 0)
+    if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials <= 0:
+        raise ValueError("hpo.n_trials must be a positive integer.")
+    proxy_groups = tuple(hpo.get("proxy_test_groups", ()))
+    if not proxy_groups or any(not isinstance(g, str) or not g.strip() for g in proxy_groups):
+        raise ValueError("hpo.proxy_test_groups must contain non-empty group IDs.")
+    study_name = hpo.get("study_name")
+    if not isinstance(study_name, str) or not study_name.strip():
+        raise ValueError("hpo.study_name must be a non-empty string.")
+    training_config = _training_config(settings)
+    train_groups = tuple(data.get("train_groups", ()))
+    search_space = hpo.get("search_space", {})
+    if isinstance(search_space, Config):
+        search_space = search_space.to_dict()
+
     # Database path explicitly placed in data/db/
     db_dir = Path("data/db")
     db_dir.mkdir(parents=True, exist_ok=True)
     storage_db = f"sqlite:///{db_dir / 'hpo_study.db'}"
-    
-    n_trials = settings.n_trials
-    proxy_groups = settings.proxy_test_groups
-    study_name = settings.study_name
 
     logger.info("Initializing Optuna study '%s' with storage: %s", study_name, storage_db)
     logger.info("Proxy validation folds assigned for tuning: %s", proxy_groups)
@@ -41,10 +58,9 @@ def run_hpo(
         storage=storage_db,
         load_if_exists=True,
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=settings.training.seed),
+        sampler=optuna.samplers.TPESampler(seed=training_config.seed),
     )
 
-    search_space = settings.hpo_search_space
     if not search_space:
         raise ValueError(
             "HPO search space is empty. Configure hpo.search_space in the training YAML."
@@ -87,25 +103,18 @@ def run_hpo(
         # Forces Optuna to evaluate configurations under different safety margins
         c2_threshold = float(params["c2_threshold"])
 
-        filtered_train_groups = [g for g in settings.train_groups if g not in proxy_groups]
+        filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
 
-        # Construct an updated training sub-config and main config safely using replace()
-        updated_training = replace(
-            settings.training,
-            lr=lr,
-            weight_decay=weight_decay,
-            dropout=dropout,
-            class_weights=class_weights,
-            hidden_dim=hidden_dim,
-            c2_threshold=c2_threshold,
-        )
-        
-        trial_settings = replace(
-            settings,
-            training=updated_training,
-            train_groups=tuple(filtered_train_groups),
-            validation_groups=tuple(proxy_groups),
-        )
+        trial_settings = Config(settings).with_overrides({
+            "training.lr": lr,
+            "training.weight_decay": weight_decay,
+            "training.dropout": dropout,
+            "training.class_weights": tuple(class_weights),
+            "training.hidden_dim": hidden_dim,
+            "training.c2_threshold": c2_threshold,
+            "data.train_groups": filtered_train_groups,
+            "data.validation_groups": tuple(proxy_groups),
+        })
 
         # Explicitly restrict evaluation to proxy folds and the configured non-proxy
         # training pool. run_lovo validates these group IDs against the manifest.
@@ -249,24 +258,19 @@ def run_hpo(
         if "fixed" in spec:
             resolved_params[name] = spec["fixed"]
 
-    final_training = replace(
-        settings.training,
-        lr=resolved_params["lr"],
-        weight_decay=resolved_params["weight_decay"],
-        dropout=resolved_params["dropout"],
-        class_weights=[
+    final_settings = Config(settings).with_overrides({
+        "training.lr": resolved_params["lr"],
+        "training.weight_decay": resolved_params["weight_decay"],
+        "training.dropout": resolved_params["dropout"],
+        "training.class_weights": (
             resolved_params["class_weight_0"],
             1.0,
-            resolved_params["class_weight_2"]
-        ],
-        c2_threshold=resolved_params["c2_threshold"],
-        hidden_dim=resolved_params["hidden_dim"],
-    )
-
-    final_settings = replace(
-        settings,
-        training=final_training,
-    )
+            resolved_params["class_weight_2"],
+        ),
+        "training.c2_threshold": resolved_params["c2_threshold"],
+        "training.hidden_dim": resolved_params["hidden_dim"],
+    })
+    final_training = _training_config(final_settings)
 
     result = run_lovo(manifest_path, final_settings)
     # Determine the optimal epoch count for the final master refit 
@@ -275,20 +279,21 @@ def run_hpo(
         fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
         for fold in result["folds"]
     ]
-    # Fallback to settings.training.epochs if epochs aren't explicitly tracked per fold
-    mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else settings.training.epochs
+    # Fallback to training_config.epochs if epochs aren't explicitly tracked per fold
+    mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else training_config.epochs
 
     print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
 
     # Load and combine all records using the codebase's native helper
     records = load_manifest(manifest_path, verify_files=True)
-    all_windows, all_targets = _combine_records(records, settings)
+    all_windows, all_targets = _combine_records(records, final_settings)
 
     # Define your production checkpoint destination
-    base_exp_name = getattr(settings, "experiment_name", "baseline")
+    experiment = _section(settings, "experiment")
+    base_exp_name = experiment.get("name", "baseline")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     unique_exp_name = f"{base_exp_name}_{timestamp}"
-    models_dir = Path(settings.common.models_dir) / "experiments"
+    models_dir = Path(paths.get("models_dir", "models")).expanduser() / "experiments"
     models_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
 
