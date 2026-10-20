@@ -23,7 +23,7 @@ def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
         "selection": {
             "min_clip": 3.0,
             "max_clip_duration": 0.0,
-            "class_score_weights": [0.0, 1.0, 2.5],
+            "class_score_weights": [0.0, 1.0],
             "junk_threshold": 0.20,
             "action_threshold": 0.60,
             "flow_threshold": 0.40,
@@ -130,7 +130,7 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         feature_dim=1,
         hidden_dim=4,
         classifier_mid_dim=4,
-        num_classes=3,
+        num_classes=2,
         dropout=0.0,
     )
 
@@ -141,7 +141,7 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         "model_config": {
             "hidden_dim": 4,
             "classifier_mid_dim": 4,
-            "num_classes": 3,
+            "num_classes": 2,
             "dropout": 0.0,
         },
         "model_state_dict": probe_model.state_dict(),
@@ -166,7 +166,7 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         "infer_windows", 
         lambda *args, **kwargs: SimpleNamespace(
             timestamps=np.array([[0.0, 1.0], [1.0, 2.0]]),
-            probabilities=np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1]], dtype=np.float32)
+            probabilities=np.array([[0.8, 0.2], [0.2, 0.8]], dtype=np.float32)
         )
     )
     monkeypatch.setattr(
