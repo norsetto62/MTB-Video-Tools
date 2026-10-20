@@ -41,7 +41,7 @@ class TrainingConfig:
     weight_decay: float = 1e-2
     seed: int = 42
     class_weights: tuple[float, float] = (1.0, 1.0)
-    c2_threshold: float = 0.5
+    good_threshold: float = 0.5
 
 
     def __post_init__(self) -> None:
@@ -90,7 +90,7 @@ class TrainingConfig:
         object.__setattr__(self, "weight_decay", float(self.weight_decay))
         object.__setattr__(self, "min_delta", float(self.min_delta))
         object.__setattr__(self, "dropout", float(self.dropout))
-        object.__setattr__(self, "c2_threshold", float(self.c2_threshold))
+        object.__setattr__(self, "good_threshold", float(self.good_threshold))
 
 
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
@@ -124,7 +124,7 @@ def _validate_windows(windows: np.ndarray, *, name: str, feature_dim: int = 54) 
     return values
 
 
-def _macro_f1(predicted: np.ndarray, actual: np.ndarray, *, num_classes: int = 3) -> float:
+def _macro_f1(predicted: np.ndarray, actual: np.ndarray, *, num_classes: int = 2) -> float:
     scores = []
     for class_id in range(num_classes):
         tp = int(np.sum((predicted == class_id) & (actual == class_id)))
