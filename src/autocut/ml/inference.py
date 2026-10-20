@@ -1,6 +1,6 @@
 """Window-level inference for trained AutoCut MTB-interest models.
 
-Inference returns the model's three class probabilities for each input window,
+Inference returns the model's two binary class probabilities for each input window,
 along with the window timestamps. It does not classify windows with argmax,
 apply candidate-selection thresholds, or merge/select segments.
 """
@@ -26,7 +26,7 @@ class InferenceResult:
 
     Attributes:
         timestamps: Window start/end times in seconds, shape (N, 2).
-        probabilities: Class probabilities in class-ID order (0, 1, 2),
+        probabilities: Class probabilities in class-ID order (0=bad, 1=good),
             shape (N, 3). Each row sums to approximately one.
     """
 
@@ -53,7 +53,7 @@ def infer_windows(
 
     Returns:
         InferenceResult with the input window timestamps and float32
-        probabilities ordered as class 0, class 1, class 2.
+        probabilities ordered as class 0 (bad), class 1 (good).
 
     Notes:
         If the checkpoint contains a feature mask, it is applied to the full
@@ -190,9 +190,9 @@ def infer_windows(
         np.float32,
         copy=False,
     )
-    if probabilities.shape != (X.shape[0], 3):
+    if probabilities.shape != (X.shape[0], 2):
         raise RuntimeError(
-            "Model output must contain exactly three class probabilities."
+            "Model output must contain exactly two binary class probabilities."
         )
     if not np.isfinite(probabilities).all():
         raise RuntimeError("Inference produced non-finite class probabilities.")
