@@ -1,8 +1,11 @@
+import sys
 import optuna
 
 # Point to your database and study name
 storage_url = r"sqlite:///C:\VideoTools\MTB-Video-Tools\data\db\hpo_study.db"
-study_name = "study_12"  # Update with your Study #12 name
+study_name = "study_12"
+if sys.argv[1] != None:
+    study_name = sys.argv[1]  # Update with your Study #12 name
 
 study = optuna.load_study(study_name=study_name, storage=storage_url)
 

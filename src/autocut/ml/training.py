@@ -90,6 +90,7 @@ class TrainingConfig:
         object.__setattr__(self, "weight_decay", float(self.weight_decay))
         object.__setattr__(self, "min_delta", float(self.min_delta))
         object.__setattr__(self, "dropout", float(self.dropout))
+        object.__setattr__(self, "c2_threshold", float(self.c2_threshold))
 
 
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:

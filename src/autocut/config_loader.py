@@ -369,7 +369,7 @@ def load_training_config(path: str | Path = "config/train.yaml") -> TrainingRunC
         {
             "epochs", "lr", "batch_size", "hidden_dim", "classifier_mid_dim",
             "dropout", "num_classes", "use_scaling", "patience", "min_delta",
-            "weight_decay", "seed", "class_weights",
+            "weight_decay", "seed", "class_weights", "c2_threshold",
         },
     )
     experiment = _section(
