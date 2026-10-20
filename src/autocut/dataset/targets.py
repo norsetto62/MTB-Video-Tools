@@ -38,15 +38,14 @@ def validate_targets(
 ) -> list[str]:
     """Validate interestingness targets and their alignment with feature windows.
 
-    Target values may be fractional because windows can cross annotation
-    boundaries. Every target must be finite and within the inclusive range
-    0–3. Target-distribution summaries belong in the dataset audit rather
-    than in this structural/value validator.
+    Targets are binary: 1.0 for positive and 0.0 for negative. Target-
+    distribution summaries belong in the dataset audit rather than in this
+    structural/value validator.
 
     Args:
         X: Windowed feature matrix of shape (N, T, F).
         timestamps: Window start/end times of shape (N, 2).
-        y: Interestingness targets of shape (N,), in the range [0, 3].
+        y: Binary targets of shape (N,), containing only 0 or 1.
 
     Returns:
         List of validation error strings (empty if valid).
@@ -79,11 +78,11 @@ def validate_targets(
 
     finite_values = y_arr[np.isfinite(y_arr)]
     invalid_values = np.unique(
-        finite_values[(finite_values < 0.0) | (finite_values > 3.0)]
+        finite_values[~np.isin(finite_values, [0.0, 1.0])]
     )
     if invalid_values.size:
         errors.append(
-            f"Interest scores must be within [0, 3]; invalid values: "
+            f"Binary targets must be 0 or 1; invalid values: "
             f"{invalid_values.tolist()}."
         )
 
