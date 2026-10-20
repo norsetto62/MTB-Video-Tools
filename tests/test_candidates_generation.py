@@ -17,14 +17,15 @@ def _inference(intervals, probabilities):
 
 
 def _config(**kwargs):
-    return CandidateGenerationConfig(
+    values = dict(
         action_threshold=0.70,
         flow_threshold=0.40,
         padding_seconds=0.0,
         min_candidate_duration=1.0,
         max_gap_to_merge=0.0,
-        **kwargs,
     )
+    values.update(kwargs)
+    return CandidateGenerationConfig(**values)
 
 
 def test_binary_good_probability_generates_high_confidence_candidate():
@@ -74,7 +75,7 @@ def test_minimum_duration_applies_after_padding_and_merging():
 def test_optional_good_probability_envelope_preserves_short_dropout():
     result = _inference([[0, 2], [2, 4]], [[0.1, 0.8], [0.1, 0.45]])
     config = _config(
-        action_threshold=0.7,
+        action_threshold=0.6,
         flow_threshold=0.4,
         p2_envelope_decay=0.8,
         min_candidate_duration=3.0,
