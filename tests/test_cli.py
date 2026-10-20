@@ -120,3 +120,45 @@ def test_hpo_cli_defaults_to_training_config():
     args = build_parser().parse_args(["hpo"])
     assert args.command == "hpo"
     assert args.config == Path("config/train.yaml")
+
+
+def test_models_command_loads_checkpoint_from_generic_config(tmp_path, monkeypatch):
+    config = tmp_path / "minimal.yaml"
+    checkpoint = tmp_path / "trained" / "model.pt"
+    config.write_text(
+        f"model:\\n  checkpoint: {checkpoint.as_posix()}\\n",
+        encoding="utf-8",
+    )
+    captured = {}
+    monkeypatch.setattr(
+        "autocut.cli._inspect_checkpoint",
+        lambda path: captured.update(checkpoint=path) or 0,
+    )
+
+    assert main(["models", "--config", str(config)]) == 0
+    assert captured["checkpoint"] == checkpoint
+
+
+def test_models_command_rejects_non_mapping_model_section(tmp_path, capsys):
+    config = tmp_path / "bad.yaml"
+    config.write_text("model: invalid\\n", encoding="utf-8")
+
+    assert main(["models", "--config", str(config)]) == 2
+    assert "Configuration section 'model' must be a mapping" in capsys.readouterr().err
+
+
+def test_models_command_explicit_checkpoint_skips_config_loading(tmp_path, monkeypatch):
+    from autocut import cli
+
+    checkpoint = tmp_path / "explicit.pt"
+    monkeypatch.setattr(
+        cli,
+        "_inspect_checkpoint",
+        lambda path: 0 if path == checkpoint else 99,
+    )
+    monkeypatch.setattr(
+        "autocut.config_loader.load_config",
+        lambda path: (_ for _ in ()).throw(AssertionError("config should not be loaded")),
+    )
+
+    assert main(["models", str(checkpoint), "--config", str(tmp_path / "unused.yaml")]) == 0
