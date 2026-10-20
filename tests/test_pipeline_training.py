@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autocut.config_compat import load_training_config
+from autocut.config_loader import load_config
 from autocut.dataset.manifest import load_manifest
 from autocut.pipeline import training as pipeline_training
 
@@ -40,7 +40,7 @@ experiment:
 """,
         encoding="utf-8",
     )
-    return load_training_config(config), manifest
+    return load_config(config), manifest
 
 
 def _manifest(path: Path, tmp_path: Path):
@@ -122,7 +122,7 @@ def test_cli_train_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     _manifest(manifest, tmp_path)
     config_path = tmp_path / "train.yaml"
     captured = {}
-    monkeypatch.setattr("autocut.config_compat.load_training_config", lambda path: settings)
+    monkeypatch.setattr("autocut.config_loader.load_config", lambda path: settings)
 
     def fake_run(path, loaded_settings):
         captured["manifest"] = path
