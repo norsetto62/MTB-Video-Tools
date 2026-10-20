@@ -18,9 +18,9 @@ def _fold(seed=7, train_n=12, val_n=6):
     rng = np.random.default_rng(seed)
     train_X = rng.normal(size=(train_n, 8, 54)).astype(np.float32)
     val_X = rng.normal(loc=5.0, size=(val_n, 8, 54)).astype(np.float32)
-    # Ensure all three classes appear in both splits.
-    train_y = np.resize(np.array([0.0, 1.0, 3.0]), train_n).astype(np.float32)
-    val_y = np.resize(np.array([0.0, 1.5, 2.5]), val_n).astype(np.float32)
+    # Ensure both binary classes appear in both splits.
+    train_y = np.resize(np.array([0.0, 1.0]), train_n).astype(np.float32)
+    val_y = np.resize(np.array([0.0, 1.0]), val_n).astype(np.float32)
     return train_X, train_y, val_X, val_y
 
 
@@ -38,9 +38,9 @@ def _config(**kwargs):
     return TrainingConfig(**defaults)
 
 
-def test_targets_to_classes_uses_exact_boundaries():
-    targets = np.array([0.0, 0.4999, 0.5, 1.9999, 2.0, 3.0])
-    np.testing.assert_array_equal(targets_to_classes(targets), [0, 0, 1, 1, 1, 2])
+def test_targets_to_classes_preserves_binary_labels():
+    targets = np.array([0.0, 1.0, 1.0, 0.0])
+    np.testing.assert_array_equal(targets_to_classes(targets), [0, 1, 1, 0])
 
 
 @pytest.mark.parametrize(
@@ -51,7 +51,7 @@ def test_targets_to_classes_uses_exact_boundaries():
         np.array([np.nan]),
         np.array([np.inf]),
         np.array([-0.01]),
-        np.array([3.01]),
+        np.array([1.5]),
         np.array(["bad"]),
     ],
 )
@@ -70,9 +70,8 @@ def test_config_rejects_invalid_hyperparameters():
         {"patience": -1},
         {"min_delta": -0.1},
         {"use_scaling": 1},
-        {"class_weights": (1.0, 2.0)},
-        {"class_weights": (1.0, 0.0, 2.0)},
-        {"num_classes": 2},
+        {"class_weights": (1.0, 0.0)},
+        {"class_weights": (1.0, 2.0, 3.0)},
         {"num_classes": 3.0},
     ):
         with pytest.raises(ValueError):
@@ -146,7 +145,7 @@ def test_class_weights_are_passed_to_cross_entropy(monkeypatch):
 
     monkeypatch.setattr(training.nn, "CrossEntropyLoss", recording_loss)
     train_X, train_y, val_X, val_y = _fold()
-    weights = (0.4, 1.2, 4.5)
+    weights = (0.4, 1.2)
     train_single_fold(
         train_X, train_y, val_X, val_y, _config(epochs=1, class_weights=weights)
     )
