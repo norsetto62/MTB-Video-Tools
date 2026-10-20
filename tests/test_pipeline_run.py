@@ -196,3 +196,38 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
     ]
     assert [item["annotation_order"] for item in result["inference"]] == [2, 3]
     assert result["candidate_count"] == 2
+
+
+def test_run_config_sections_normalizes_generic_config_and_domain_settings(tmp_path):
+    from autocut.audio.config import AudioConfig
+    from autocut.config_loader import load_config
+
+    checkpoint = tmp_path / "model.pt"
+    config_path = tmp_path / "run.yaml"
+    config_path.write_text(
+        f"paths:\n  output_dir: {tmp_path / 'output'}\n  cache_dir: {tmp_path / 'cache'}\n"
+        f"model:\n  checkpoint: {checkpoint}\n"
+        "selection:\n  min_clip: 5.0\naudio:\n  sync_mode: beat\n",
+        encoding="utf-8",
+    )
+
+    settings, candidates, audio = run._run_config_sections(load_config(config_path))
+
+    assert isinstance(settings, Config)
+    assert settings.paths.output_dir == tmp_path / "output"
+    assert settings.model.checkpoint == checkpoint
+    assert candidates.min_candidate_duration == 5.0
+    assert isinstance(audio, AudioConfig)
+    assert audio.sync_mode.value == "beat"
+
+
+def test_run_config_sections_rejects_invalid_video_width():
+    from autocut.config_loader import Config
+
+    config = Config({"video": {"processing_width": 0}})
+    try:
+        run._run_config_sections(config)
+    except ValueError as exc:
+        assert "video.processing_width must be a positive integer" in str(exc)
+    else:
+        raise AssertionError("invalid processing width should be rejected")
