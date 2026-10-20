@@ -96,12 +96,12 @@ def run_hpo(
         lr = float(params["lr"])
         weight_decay = float(params["weight_decay"])
         dropout = float(params["dropout"])
-        class_weights = [float(params["class_weight_0"]), 1.0, float(params["class_weight_2"])]
+        class_weights = [float(params["class_weight_0"]), float(params.get("class_weight_1", 1.0))]
         hidden_dim = int(params["hidden_dim"])
 
         # --- ADD THRESHOLD HYPERPARAMETER ---
         # Forces Optuna to evaluate configurations under different safety margins
-        c2_threshold = float(params["c2_threshold"])
+        good_threshold = float(params.get("good_threshold", 0.50))
 
         filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
 
@@ -111,7 +111,7 @@ def run_hpo(
             "training.dropout": dropout,
             "training.class_weights": tuple(class_weights),
             "training.hidden_dim": hidden_dim,
-            "training.c2_threshold": c2_threshold,
+            "training.good_threshold": good_threshold,
             "data.train_groups": filtered_train_groups,
             "data.validation_groups": tuple(proxy_groups),
         })
@@ -127,7 +127,7 @@ def run_hpo(
 
         # Aggregate confusion matrices across validation folds
         folds = lovo_results.get("folds", [])
-        total_cm = np.zeros((3, 3), dtype=np.float64)
+        total_cm = np.zeros((2, 2), dtype=np.float64)
 
         all_fold_class_f1s = []
         for f in folds:
@@ -139,55 +139,35 @@ def run_hpo(
             class_f1_dict = metrics.get("class_f1", {})
             if not class_f1_dict:
                 values = metrics.get("per_class_f1")
-                if isinstance(values, (list, tuple)) and len(values) >= 3:
-                    class_f1_dict = {str(i): values[i] for i in range(3)}
+                if isinstance(values, (list, tuple)) and len(values) >= 2:
+                    class_f1_dict = {str(i): values[i] for i in range(2)}
             if class_f1_dict:
-                arr = np.array([class_f1_dict.get("0", 0.0), class_f1_dict.get("1", 0.0), class_f1_dict.get("2", 0.0)])
-                all_fold_class_f1s.append(arr)
+                all_fold_class_f1s.append(np.array([
+                    class_f1_dict.get("0", 0.0),
+                    class_f1_dict.get("1", 0.0),
+                ]))
 
         if all_fold_class_f1s:
             mean_per_class_f1 = np.mean(all_fold_class_f1s, axis=0)
-            c0_f1, c1_f1, c2_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1]), float(mean_per_class_f1[2])
+            bad_f1, good_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1])
         else:
-            c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
+            bad_f1, good_f1 = 0.0, 0.0
 
-        # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
-        total_pred=np.sum(total_cm, axis=0, keepdims=True)
-        total_true=np.sum(total_cm, axis=1, keepdims=True)
-        empty_pred = (total_pred.squeeze() == 0)
-        empty_true = (total_true.squeeze() == 0)
-        safe_pred = np.where(total_pred == 0, 1.0, total_pred)
-        safe_true = np.where(total_true == 0, 1.0, total_true)
-        recall = np.diag(total_cm/safe_true, k=0).copy()
-        precision = np.diag(total_cm/safe_pred, k=0).copy()
-        recall[empty_true] = 1.0
-        precision[empty_pred] = 1.0
-        #f1 = 2.0 * recall * precision / (recall + precision)
-        f2 = 5.0 * recall * precision / (recall + 4.0 * precision)
-        f05 = 1.25 * recall * precision / (recall + 0.25 * precision)
 
-        # Multiplicative Scaling (harmonic mean of class_0 f2, class_1 f2 and class_2 f0.5)
-        den = f2[1] * f05[2] + f2[0] * f05[2] + f2[0] * f2[1]
-        if den == 0.0:
-            score = 0.0
-        else:
-            score = 3.0 * f2[0] * f2[1] * f05[2] / den
-        """
-        Since f05[2] is so importanto to us, we could use weights:
-
-        score = (1+a*a+b*b)*(c0_f2 * c1_f2 * c2_f05)/(a*a*c1_f2*c2_f05+b*b*c0_f2*c1_f2+c0_f2*c2_f05)
-
-        With a*a=1 and b*b=4 we would make c0_f05 more important:
-
-        score = 6.0 *(c0_f2 * c1_f2 * c2_f05)/(c1_f2*c2_f05+c0_f2*c2_f05+4.0*c0_f2*c1_f2)
-        """
+        # Optimize good-class F0.5 to emphasize precision while retaining
+        # the binary bad/good confusion matrix and fold-consistent predictions.
+        total_pred = np.sum(total_cm, axis=0)
+        tp = float(total_cm[1, 1])
+        fp = float(total_pred[1] - tp)
+        fn = float(np.sum(total_cm[1, :]) - tp)
+        denom = 1.25 * tp + 0.25 * fn + fp
+        score = (1.25 * tp / denom) if denom > 0 else 0.0
         # Set user attributes for Optuna tracking
         macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
         trial.set_user_attr("macro_f1", macro_f1)
-        trial.set_user_attr("class_0_f1", c0_f1)
-        trial.set_user_attr("class_1_f1", c1_f1)
-        trial.set_user_attr("class_2_f1", c2_f1)
-        trial.set_user_attr("class2_threshold", c2_threshold)
+        trial.set_user_attr("bad_f1", bad_f1)
+        trial.set_user_attr("good_f1", good_f1)
+        trial.set_user_attr("good_threshold", good_threshold)
         trial.set_user_attr("custom_rate_score", score)
 
         return score
@@ -211,9 +191,8 @@ def run_hpo(
         "best_params": study.best_params,
         "best_metrics": {
             "macro_f1": best_attrs.get("macro_f1", 0.0),
-            "class_0_f1": best_attrs.get("class_0_f1", 0.0),
-            "class_1_f1": best_attrs.get("class_1_f1", 0.0),
-            "class_2_f1": best_attrs.get("class_2_f1", 0.0),
+            "bad_f1": best_attrs.get("bad_f1", 0.0),
+            "good_f1": best_attrs.get("good_f1", 0.0),
         },
     }
 
@@ -224,11 +203,10 @@ def run_hpo(
     logger.info("Best Hyperparameters:")
     for k, v in study.best_params.items():
         logger.info("  - %s: %s", k, v)
-    logger.info("Best Metrics -> Macro F1: %.4f | C0 F1: %.4f | C1 F1: %.4f | C2 F1: %.4f",
+    logger.info("Best Metrics -> Macro F1: %.4f | Bad F1: %.4f | Good F1: %.4f",
                 output_payload["best_metrics"]["macro_f1"],
-                output_payload["best_metrics"]["class_0_f1"],
-                output_payload["best_metrics"]["class_1_f1"],
-                output_payload["best_metrics"]["class_2_f1"])
+                output_payload["best_metrics"]["bad_f1"],
+                output_payload["best_metrics"]["good_f1"])
     logger.info("=" * 60)
 
     # Save output mirror json to output/hpo/
@@ -264,10 +242,9 @@ def run_hpo(
         "training.dropout": resolved_params["dropout"],
         "training.class_weights": (
             resolved_params["class_weight_0"],
-            1.0,
-            resolved_params["class_weight_2"],
+            resolved_params.get("class_weight_1", 1.0),
         ),
-        "training.c2_threshold": resolved_params["c2_threshold"],
+        "training.good_threshold": resolved_params.get("good_threshold", 0.50),
         "training.hidden_dim": resolved_params["hidden_dim"],
     })
     final_training = _training_config(final_settings)
