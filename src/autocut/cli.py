@@ -182,11 +182,14 @@ def dispatch(args: argparse.Namespace) -> int:
         return 1 if report["status"] == "error" else 0
 
     if args.command == "run":
-        from .config_compat import load_run_config
+        from .config_loader import load_config
         from .pipeline.run import run_pipeline
 
-        settings = load_run_config(args.config)
-        _configure_logging(settings.common.log_level)
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not isinstance(logging_section, dict) and not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
@@ -194,7 +197,7 @@ def dispatch(args: argparse.Namespace) -> int:
             args.annotations,
             settings,
             output_path=args.output,
-            video_encoder=args.video_encoder or getattr(settings, "video_encoder", "h264_nvenc"),
+            video_encoder=args.video_encoder,
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
