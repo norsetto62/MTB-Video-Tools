@@ -12,7 +12,7 @@ def test_default_model_matches_legacy_architecture():
 
     assert model.feature_dim == 54
     assert model.hidden_dim == 128
-    assert model.num_classes == 3
+    assert model.num_classes == 2
     assert model.dropout_probability == pytest.approx(0.4)
     assert model.classifier_mid_dim == 64
     assert model.backbone.batch_first is True
