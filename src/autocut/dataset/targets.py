@@ -1,12 +1,10 @@
-"""Build binary training targets from MTB annotation durations.
+"""Build binary training targets by counting sampled MTB labels.
 
-For each window, overlapping MTB 3 intervals contribute to positive duration;
-MTB 0 and 1 intervals contribute together to negative duration; MTB 2 is
-ignored. A window is retained only when exactly one configured threshold is
-met. Uncovered, insufficient-evidence, and mixed-evidence windows are dropped.
-
-Window timestamps follow flow.py semantics and represent the interval covered
-by the selected feature rows.
+Each feature row represents one flow-sampling interval. MTB 3 samples count
+toward the positive threshold; MTB 0 and 1 samples count together toward the
+negative threshold; MTB 2 and uncovered samples count toward neither class.
+A window is retained only when exactly one configured sample-count threshold
+is met. Windows meeting both thresholds or neither are discarded.
 """
 
 import numpy as np
