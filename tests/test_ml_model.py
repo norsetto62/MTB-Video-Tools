@@ -24,7 +24,7 @@ def test_default_model_matches_legacy_architecture():
     assert model.classifier[1].out_features == 64
     assert model.classifier[2].__class__.__name__ == "ReLU"
     assert model.classifier[3].in_features == 64
-    assert model.classifier[3].out_features == 3
+    assert model.classifier[3].out_features == 2
 
 
 @pytest.mark.parametrize("batch_size", [1, 4])
@@ -34,7 +34,7 @@ def test_forward_returns_one_logit_vector_per_window(batch_size):
 
     logits = model(x)
 
-    assert logits.shape == (batch_size, 3)
+    assert logits.shape == (batch_size, 2)
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
 
