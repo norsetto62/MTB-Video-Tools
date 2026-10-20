@@ -10,33 +10,36 @@ from autocut.pipeline import lovo as pipeline_lovo
 
 
 def _settings(tmp_path):
-    from autocut.config_compat import CommonSettings, TrainingRunConfig
-    from autocut.ml.training import TrainingConfig
+    from autocut.config_loader import Config
 
-    return TrainingRunConfig(
-        common=CommonSettings(
-            data_dir=tmp_path / "data",
-            models_dir=tmp_path / "models",
-            output_dir=tmp_path / "output",
-            log_level="INFO",
-            min_clip=3.0,
-            window_duration=4.0,
-            window_stride=2.0,
-        ),
-        cache_dir=tmp_path / "cache",
-        manifest=tmp_path / "manifest.yaml",
-        sample_fps=2.0,
-        processing_width=480,
-        study_name='',
-        n_trials=0,
-        proxy_test_groups=tuple([]),
-        train_groups=("unused",),
-        validation_groups=("unused-val",),
-        training=TrainingConfig(epochs=2, batch_size=2, hidden_dim=4, classifier_mid_dim=4, dropout=0),
-        experiment_name="lovo-test",
-        checkpoint_dir=tmp_path / "models",
-        results_dir=tmp_path / "results",
-    )
+    return Config({
+        "paths": {
+            "cache_dir": str(tmp_path / "cache"),
+            "models_dir": str(tmp_path / "models"),
+        },
+        "data": {
+            "manifest": str(tmp_path / "manifest.yaml"),
+            "sampling_fps": 2.0,
+            "processing_width": 480,
+            "window_duration": 4.0,
+            "window_stride": 2.0,
+            "train_groups": ["unused"],
+            "validation_groups": ["unused-val"],
+        },
+        "training": {
+            "epochs": 2,
+            "batch_size": 2,
+            "hidden_dim": 4,
+            "classifier_mid_dim": 4,
+            "dropout": 0,
+        },
+        "experiment": {
+            "name": "lovo-test",
+            "checkpoint_dir": str(tmp_path / "models"),
+            "results_dir": str(tmp_path / "results"),
+        },
+        "logging": {"level": "INFO"},
+    })
 
 
 def test_metrics_uses_fixed_three_class_confusion_matrix():
