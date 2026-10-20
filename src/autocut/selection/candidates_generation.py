@@ -19,7 +19,7 @@ from ..ml.inference import InferenceResult
 class CandidateGenerationConfig:
     """Class-aware thresholds and temporal rules for candidate generation."""
 
-    class_score_weights: tuple[float, float, float] = (0.0, 1.0, 2.5)
+    class_score_weights: tuple[float, float] = (0.0, 1.0)
     junk_threshold: float = 0.20
     action_threshold: float = 0.60
     flow_threshold: float = 0.40
@@ -31,8 +31,8 @@ class CandidateGenerationConfig:
     p2_envelope_decay: float = 0.0
 
     def __post_init__(self) -> None:
-        if len(self.class_score_weights) != 3:
-            raise ValueError("class_score_weights must contain exactly three weights.")
+        if len(self.class_score_weights) != 2:
+            raise ValueError("class_score_weights must contain exactly two weights (bad, good).")
         if not all(math.isfinite(value) for value in self.class_score_weights):
             raise ValueError("class_score_weights must contain only finite values.")
         if any(value < 0 for value in self.class_score_weights):
@@ -91,8 +91,8 @@ def _validate_inference(result: InferenceResult) -> tuple[np.ndarray, np.ndarray
         timestamps = timestamps.reshape(0, 2)
     if timestamps.ndim != 2 or timestamps.shape[1:] != (2,):
         raise ValueError("inference.timestamps must have shape (N, 2).")
-    if probabilities.shape != (timestamps.shape[0], 3):
-        raise ValueError("inference.probabilities must have shape (N, 3).")
+    if probabilities.shape != (timestamps.shape[0], 2):
+        raise ValueError("inference.probabilities must have shape (N, 2) for bad/good classes.")
     if not np.isfinite(timestamps).all() or not np.isfinite(probabilities).all():
         raise ValueError("Inference timestamps and probabilities must be finite.")
     if np.any(timestamps[:, 1] <= timestamps[:, 0]):
@@ -147,16 +147,13 @@ def generate_candidates(
     *,
     config: CandidateGenerationConfig | None = None,
 ) -> list[CandidateClip]:
-    """Convert inference windows into chronologically ordered candidate clips.
+    """Convert binary bad/good probabilities into temporally coherent candidates.
 
-    Eligibility is class-aware: high action requires P2 >= action_threshold,
-    P0 < junk_threshold, and class 2 to remain the strongest class after the
-    optional P2 envelope. Flow requires P0 < junk_threshold, P1 >=
-    flow_threshold, and either class 1 to be the raw argmax or P1 > P2.
-
-    Accepted windows are padded, merged using the inclusive max-gap rule, and
-    clamped to the source interval. min_candidate_duration is applied only to
-    the final padded-and-merged clip boundaries.
+    Class 0 is bad and class 1 is good. A good probability above the higher
+    threshold receives the high-priority tier; probability above the lower
+    threshold receives the moderate-priority tier. These are confidence tiers,
+    not distinct learned action/flow classes. Temporal merging, padding,
+    clipping and minimum-duration rules remain unchanged.
     """
     if isinstance(clip_duration, bool) or not isinstance(clip_duration, (int, float)):
         raise ValueError("clip_duration must be a finite positive number.")
@@ -170,29 +167,17 @@ def generate_candidates(
     if len(timestamps) == 0:
         return []
 
-    p0, p1, p2 = probabilities.T
-    p2_envelope = _p2_envelope(p2, settings.p2_envelope_decay)
-    smoothed_class = np.argmax(np.column_stack((p0, p1, p2_envelope)), axis=1)
-    raw_class = np.argmax(probabilities, axis=1)
+    p_bad, p_good = probabilities.T
+    good_envelope = _p2_envelope(p_good, settings.p2_envelope_decay)
     scores = probabilities @ np.asarray(settings.class_score_weights, dtype=np.float64)
 
     accepted: list[_Span] = []
     accepted_tiers: dict[int, str] = {}
     for index, interval in enumerate(timestamps):
         start, end = float(interval[0]), float(interval[1])
-        action_class = bool(
-            p2_envelope[index] >= settings.action_threshold
-            and smoothed_class[index] == 2
-        )
-        flow_class = bool(
-            p1[index] >= settings.flow_threshold
-            and (raw_class[index] == 1 or p1[index] > p2[index])
-        )
-        if p0[index] >= settings.junk_threshold:
-            tier = None
-        elif action_class:
+        if p_good[index] >= settings.action_threshold:
             tier = "high_action"
-        elif flow_class:
+        elif p_good[index] >= settings.flow_threshold:
             tier = "moderate_interest"
         else:
             tier = None
@@ -204,10 +189,7 @@ def generate_candidates(
     if not accepted:
         return []
 
-    # First form semantic regions using max_gap. Padding is context extension,
-    # not a way to enlarge the configured gap tolerance.
     merged = _merge_spans(accepted, max_gap=settings.max_gap_to_merge)
-    # Padding may extend into a gap, but never across a different-tier region.
     padded: list[_Span] = []
     for index, span in enumerate(merged):
         previous_other = [
@@ -224,10 +206,7 @@ def generate_candidates(
             padded_start = max(padded_start, max(previous_other))
         if next_other:
             padded_end = min(padded_end, min(next_other))
-        padded.append(
-            _Span(padded_start, padded_end, list(span.window_indices), span.tier)
-        )
-    # Padding may join regions of the same tier, but must not erase a tier boundary.
+        padded.append(_Span(padded_start, padded_end, list(span.window_indices), span.tier))
     final_spans = _merge_spans(padded, max_gap=0.0)
     candidates: list[CandidateClip] = []
     for span in final_spans:
@@ -237,25 +216,24 @@ def generate_candidates(
             continue
         unique_indices = sorted(set(span.window_indices))
         contributing_scores = scores[unique_indices]
-        tier = span.tier
         candidates.append(CandidateClip(
             start=start,
             end=end,
             duration=end - start,
-            tier=tier,
+            tier=span.tier,
             mean_score=float(np.mean(contributing_scores)),
             max_score=float(np.max(contributing_scores)),
             window_evidence=tuple(
                 WindowEvidence(
-                    start=float(timestamps[index, 0]),
-                    end=float(timestamps[index, 1]),
-                    score=float(scores[index]),
-                    tier=accepted_tiers[index],
-                    p0=float(p0[index]),
-                    p1=float(p1[index]),
-                    p2=float(p2[index]),
+                    start=float(timestamps[i, 0]),
+                    end=float(timestamps[i, 1]),
+                    score=float(scores[i]),
+                    tier=accepted_tiers[i],
+                    p0=float(p_bad[i]),
+                    p1=float(p_good[i]),
+                    p2=0.0,
                 )
-                for index in unique_indices
+                for i in unique_indices
             ),
         ))
     return candidates
