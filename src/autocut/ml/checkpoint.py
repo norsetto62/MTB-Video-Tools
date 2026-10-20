@@ -21,9 +21,8 @@ from autocut.motion.features import FEATURE_NAMES
 
 CHECKPOINT_VERSION = "1.1"
 DEFAULT_CLASS_MAPPING = {
-    "0": "negative_or_non_riding",
-    "1": "ordinary_or_intermediate",
-    "2": "interesting",
+    "0": "bad",
+    "1": "good",
 }
 DEFAULT_DATA_CONFIG = {
     "flow_fps": 2.0,
@@ -123,6 +122,8 @@ def build_checkpoint(
             raise ValueError("best_metric must be a finite number or None.")
 
     names, mask = _validate_feature_metadata(model, feature_names, feature_mask)
+    if model.num_classes != 2 and class_mapping is None:
+        raise ValueError("Non-binary models require an explicit class_mapping.")
     mapping = dict(DEFAULT_CLASS_MAPPING if class_mapping is None else class_mapping)
     if not mapping or not all(
         isinstance(key, str) and isinstance(value, str) and value
@@ -279,12 +280,13 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
     elif names is not None and len(names) != feature_dim:
         raise ValueError("Checkpoint feature_names length does not match feature_dim.")
 
+    if config["num_classes"] != 2:
+        raise ValueError("Checkpoint must use the binary two-class model contract.")
+
     mapping = payload.get("class_mapping")
     if mapping is not None:
-        if not isinstance(mapping, dict) or set(mapping) != {
-            str(index) for index in range(config["num_classes"])
-        }:
-            raise ValueError("Checkpoint class_mapping does not match num_classes.")
+        if not isinstance(mapping, dict) or set(mapping) != {"0", "1"} or mapping != DEFAULT_CLASS_MAPPING:
+            raise ValueError("Checkpoint class_mapping must identify class 0 as bad and class 1 as good.")
 
     scaler_state = payload.get("scaler_state")
     if scaler_state is not None:
