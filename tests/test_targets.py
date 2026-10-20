@@ -18,13 +18,13 @@ def _annotations(*segments: tuple[float, float, int]) -> list[Annotation]:
     ]
 
 
-def _build_one(annotations: list[Annotation], *, positive: float = 2.0, negative: float = 2.0):
+def _build_one(annotations: list[Annotation], *, positive: int = 4, negative: int = 4):
     windows = _make_windows([(0.0, 4.0)])
     X, y = build_targets(
         windows,
         annotations,
-        positive_threshold_seconds=positive,
-        negative_threshold_seconds=negative,
+        positive_threshold_samples=positive,
+        negative_threshold_samples=negative,
     )
     return windows, X, y
 
@@ -60,7 +60,7 @@ def test_window_meeting_both_thresholds_is_ambiguous_and_discarded():
 
 
 def test_threshold_boundary_is_inclusive():
-    windows, X, y = _build_one(_annotations((0, 2, 3), (2, 4, 2)), positive=2.0)
+    windows, X, y = _build_one(_annotations((0, 2, 3), (2, 4, 2)), positive=4)
 
     np.testing.assert_array_equal(X, windows.X)
     np.testing.assert_array_equal(y, np.array([1.0], dtype=np.float32))
@@ -77,14 +77,14 @@ def test_mtb2_only_window_is_discarded():
     ("positive", "negative"),
     [(0, 2), (-1, 2), (float("inf"), 2), (2, 0), (2, float("nan"))],
 )
-def test_build_targets_rejects_invalid_thresholds(positive: float, negative: float):
+def test_build_targets_rejects_invalid_thresholds(positive: int, negative: int):
     windows = _make_windows([(0.0, 4.0)])
     with pytest.raises(ValueError):
         build_targets(
             windows,
             [],
-            positive_threshold_seconds=positive,
-            negative_threshold_seconds=negative,
+            positive_threshold_samples=positive,
+            negative_threshold_samples=negative,
         )
 
 
