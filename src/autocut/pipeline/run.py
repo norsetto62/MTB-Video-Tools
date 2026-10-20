@@ -482,8 +482,6 @@ def run_pipeline(
             windows,
             batch_size=settings.model.inference_batch_size,
         )
-        probabilities = inference.probabilities  # shape: [N, 3]
-
         if isinstance(settings.model.checkpoint, (str, Path)):
             payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
         elif isinstance(settings.model.checkpoint, Mapping):
