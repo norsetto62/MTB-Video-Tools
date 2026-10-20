@@ -41,7 +41,7 @@ def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
     from types import SimpleNamespace
 
     manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\\n", encoding="utf-8")
+    manifest.write_text("videos: []\n", encoding="utf-8")
     settings = SimpleNamespace(
         common=SimpleNamespace(log_level="INFO", models_dir=tmp_path / "models"),
         manifest=manifest,
@@ -126,7 +126,7 @@ def test_models_command_loads_checkpoint_from_generic_config(tmp_path, monkeypat
     config = tmp_path / "minimal.yaml"
     checkpoint = tmp_path / "trained" / "model.pt"
     config.write_text(
-        f"model:\\n  checkpoint: {checkpoint.as_posix()}\\n",
+        f"model:\n  checkpoint: {checkpoint.as_posix()}\n",
         encoding="utf-8",
     )
     captured = {}
@@ -141,7 +141,7 @@ def test_models_command_loads_checkpoint_from_generic_config(tmp_path, monkeypat
 
 def test_models_command_rejects_non_mapping_model_section(tmp_path, capsys):
     config = tmp_path / "bad.yaml"
-    config.write_text("model: invalid\\n", encoding="utf-8")
+    config.write_text("model: invalid\n", encoding="utf-8")
 
     assert main(["models", "--config", str(config)]) == 2
     assert "Configuration section 'model' must be a mapping" in capsys.readouterr().err
