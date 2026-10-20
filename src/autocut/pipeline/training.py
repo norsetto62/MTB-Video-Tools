@@ -80,16 +80,16 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
 
 
-def _target_thresholds(settings: Mapping[str, Any]) -> tuple[float, float]:
-    """Read experimental target thresholds, expressed as seconds per window."""
+def _target_thresholds(settings: Mapping[str, Any]) -> tuple[int, int]:
+    """Read experimental target thresholds in samples, not seconds."""
     experimental = _section(settings, "experimental")
-    positive = _positive_float(
-        experimental.get("positive_threshold_seconds", 2.0),
-        name="experimental.positive_threshold_seconds",
+    positive = _positive_int(
+        experimental.get("positive_threshold_samples", 4),
+        name="experimental.positive_threshold_samples",
     )
-    negative = _positive_float(
-        experimental.get("negative_threshold_seconds", 2.0),
-        name="experimental.negative_threshold_seconds",
+    negative = _positive_int(
+        experimental.get("negative_threshold_samples", 4),
+        name="experimental.negative_threshold_samples",
     )
     return positive, negative
 
@@ -179,8 +179,8 @@ def _load_record_windows(
     X, y = build_targets(
         windows,
         annotations,
-        positive_threshold_seconds=positive_threshold,
-        negative_threshold_seconds=negative_threshold,
+        positive_threshold_samples=positive_threshold,
+        negative_threshold_samples=negative_threshold,
     )
     # build_targets drops uncovered windows, so the original window timestamp
     # array no longer aligns row-for-row with X. The validator checks only
@@ -290,8 +290,8 @@ def run_training(
         "window": window_duration,
         "stride": window_stride,
         "target_generation": {
-            "positive_threshold_seconds": _target_thresholds(settings)[0],
-            "negative_threshold_seconds": _target_thresholds(settings)[1],
+            "positive_threshold_samples": _target_thresholds(settings)[0],
+            "negative_threshold_samples": _target_thresholds(settings)[1],
             "positive_score": 3,
             "negative_scores": [0, 1],
             "ignored_scores": [2],
