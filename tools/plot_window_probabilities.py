@@ -39,11 +39,11 @@ def annotation_color(score: int) -> str:
 
 
 def validate_plot_data(timestamps: np.ndarray, probabilities: np.ndarray) -> None:
-    """Validate the arrays needed for a three-class probability plot."""
+    """Validate arrays for the binary P(bad)/P(good) probability plot."""
     if timestamps.ndim != 2 or timestamps.shape[1] != 2:
         raise ValueError("timestamps must have shape (N, 2).")
-    if probabilities.shape != (len(timestamps), 3):
-        raise ValueError("probabilities must have shape (N, 3), for p_0, p_1 and p_2.")
+    if probabilities.shape != (len(timestamps), 2):
+        raise ValueError("probabilities must have shape (N, 2), for P(bad) and P(good).")
     if len(timestamps) == 0:
         raise ValueError("No windows were generated for this video.")
     if not np.isfinite(timestamps).all() or not np.isfinite(probabilities).all():
@@ -118,12 +118,13 @@ def plot_probabilities(
 
     # 2. High-contrast line colors and explicit zorder so lines sit cleanly on top
     # (Using distinct, saturated colors that pop against pastel background bands)
-    line_colors = ["#1f77b4", "#d62728", "#2ca02c"]  # Blue, Red, Green
-    for class_id in range(3):
+    line_colors = ["#d62728", "#2ca02c"]  # Red = bad, Green = good
+    probability_labels = ["P(bad)", "P(good)"]
+    for class_id, label in enumerate(probability_labels):
         ax.plot(
             centres,
             probabilities[:, class_id],
-            label=f"p_{class_id}",
+            label=label,
             color=line_colors[class_id],
             linewidth=2.0,
             zorder=2,
@@ -167,7 +168,7 @@ def plot_probabilities(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot p_0, p_1 and p_2 for each video window, with human MTB "
+            "Plot P(bad) and P(good) for each video window, with human MTB "
             "annotation intervals shown as a coloured strip."
         )
     )
