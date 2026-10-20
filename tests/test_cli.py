@@ -90,7 +90,7 @@ def test_cli_run_dispatch_loads_generic_config_and_calls_pipeline(tmp_path, monk
     annotations = tmp_path / "annotations.txt"
     annotations.write_text("placeholder", encoding="utf-8")
     config = tmp_path / "autocut.yaml"
-    config.write_text("logging:\\n  level: INFO\\n", encoding="utf-8")
+    config.write_text("logging:\n  level: INFO\n", encoding="utf-8")
     captured = {}
 
     def fake_run_pipeline(path, loaded_settings, *, output_path=None, video_encoder=None):
