@@ -1,4 +1,4 @@
-"""Training utilities for the three-class AutoCut MTB interest model.
+"""Training utilities for the binary AutoCut MTB interest model.
 
 Dataset discovery and LOVO fold construction deliberately live outside this
 module. This module accepts one already-separated train/validation fold.
@@ -34,13 +34,13 @@ class TrainingConfig:
     hidden_dim: int = 128
     classifier_mid_dim: int = 64
     dropout: float = 0.4
-    num_classes: int = 3
+    num_classes: int = 2
     use_scaling: bool = True
     patience: int = 10
     min_delta: float = 1e-4
     weight_decay: float = 1e-2
     seed: int = 42
-    class_weights: tuple[float, float, float] = (0.2, 1.0, 6.5)
+    class_weights: tuple[float, float] = (1.0, 1.0)
     c2_threshold: float = 0.5
 
 
@@ -53,8 +53,8 @@ class TrainingConfig:
             raise ValueError("patience must be a non-negative integer.")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise ValueError("seed must be an integer.")
-        if isinstance(self.num_classes, bool) or not isinstance(self.num_classes, int) or self.num_classes != 3:
-            raise ValueError("num_classes must be the integer 3 for the established classifier contract.")
+        if isinstance(self.num_classes, bool) or not isinstance(self.num_classes, int) or self.num_classes != 2:
+            raise ValueError("num_classes must be the integer 2 for binary targets.")
         for name, minimum, inclusive in (
             ("lr", 0.0, False),
             ("weight_decay", 0.0, True),
@@ -74,8 +74,8 @@ class TrainingConfig:
             raise ValueError("dropout must be a number in the range [0, 1).")
         if not isinstance(self.use_scaling, bool):
             raise ValueError("use_scaling must be a bool.")
-        if not isinstance(self.class_weights, (tuple, list)) or len(self.class_weights) != 3:
-            raise ValueError("class_weights must contain exactly three positive values.")
+        if not isinstance(self.class_weights, (tuple, list)) or len(self.class_weights) != 2:
+            raise ValueError("class_weights must contain exactly two positive values (bad, good).")
         weights = tuple(self.class_weights)
         for weight in weights:
             if (
@@ -84,7 +84,7 @@ class TrainingConfig:
                 or not math.isfinite(float(weight))
                 or float(weight) <= 0.0
             ):
-                raise ValueError("class_weights must contain exactly three positive finite values.")
+                raise ValueError("class_weights must contain exactly two positive finite values.")
         object.__setattr__(self, "class_weights", tuple(float(w) for w in weights))
         object.__setattr__(self, "lr", float(self.lr))
         object.__setattr__(self, "weight_decay", float(self.weight_decay))
@@ -94,11 +94,7 @@ class TrainingConfig:
 
 
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
-    """Map continuous AutoCut targets to classes 0, 1, and 2.
-
-    Values below 0.5 map to class 0; [0.5, 2.0] maps to class 1;
-    values greater than 2.0 map to class 2.
-    """
+    """Validate and preserve binary targets: 0=bad, 1=good."""
     try:
         values = np.asarray(targets, dtype=np.float64)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -107,12 +103,9 @@ def targets_to_classes(targets: np.ndarray) -> np.ndarray:
         raise ValueError("targets must be a non-empty one-dimensional array.")
     if not np.isfinite(values).all():
         raise ValueError("targets must contain only finite values.")
-    if np.any((values < 0.0) | (values > 3.0)):
-        raise ValueError("targets must lie within the continuous range [0, 3].")
-    classes = np.ones(values.shape, dtype=np.int64)
-    classes[values < 0.5] = 0
-    classes[values > 2.0] = 2
-    return classes
+    if not np.isin(values, [0.0, 1.0]).all():
+        raise ValueError("binary targets must contain only 0 (bad) or 1 (good).")
+    return values.astype(np.int64)
 
 
 def _validate_windows(windows: np.ndarray, *, name: str, feature_dim: int = 54) -> np.ndarray:
