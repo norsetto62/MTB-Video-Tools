@@ -232,7 +232,7 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
         "selection": {
-            "min_clip": 3.0, "max_clip_duration": 0.0, "class_score_weights": [0.0, 1.0, 2.5],
+            "min_clip": 3.0, "max_clip_duration": 0.0, "class_score_weights": [0.0, 1.0],
             "junk_threshold": 0.20, "action_threshold": 0.60, "flow_threshold": 0.40,
             "min_candidate_duration": 3.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0,
             "p2_envelope_decay": 0.0,
@@ -491,30 +491,9 @@ def run_pipeline(
         else:
             raise TypeError("checkpoint must be a path or a checkpoint mapping.")
 
-        c2_threshold = float(payload.get("c2_threshold", 0.50))
-
-        #c2_threshold filtering
-        # Copy so we don't mutate in place unexpectedly
-        probabilities = probabilities.copy()
-        c2_probs = probabilities[:, 2]
-
-        # If Class 2 probability is below the threshold, suppress it
-        # (e.g., redistribute or shift weight so it doesn't win argmax/envelope)
-        below_threshold = c2_probs < c2_threshold
-
-        # For windows where p2 fails the threshold, force p2 to 0 
-        # (or reallocate its mass so classes 0/1 take over)
-        probabilities[below_threshold, 2] = 0.0
-
-        # Renormalize rows so probabilities still sum to 1.0
-        row_sums = probabilities.sum(axis=1, keepdims=True)
-        probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
-
-        # Wrap back into InferenceResult and pass to candidates
-        cleaned_inference = InferenceResult(
-            timestamps=inference.timestamps,
-            probabilities=probabilities,
-        )
+        # Binary inference is passed through unchanged; decision thresholds belong
+        # exclusively to candidate generation, which preserves raw model evidence.
+        cleaned_inference = inference
         candidates = generate_candidates(
             cleaned_inference,
             clip_duration=end - start,
