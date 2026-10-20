@@ -52,11 +52,11 @@ def test_window_below_both_thresholds_is_discarded():
     assert y.dtype == np.float32
 
 
-def test_window_meeting_both_thresholds_is_ambiguous_and_discarded():
+def test_positive_threshold_takes_precedence_when_both_thresholds_are_met():
     windows, X, y = _build_one(_annotations((0, 2, 3), (2, 4, 1)))
 
-    assert X.shape == (0, 8, 54)
-    assert y.shape == (0,)
+    np.testing.assert_array_equal(X, windows.X)
+    np.testing.assert_array_equal(y, np.array([1.0], dtype=np.float32))
 
 
 def test_threshold_boundary_is_inclusive():
