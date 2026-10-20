@@ -208,3 +208,18 @@ def test_restore_model_rejects_incompatible_weights():
 
     with pytest.raises(ValueError, match="incompatible"):
         restore_model(payload)
+
+
+
+def test_legacy_three_class_checkpoint_is_rejected():
+    legacy_model = MTBClassifier(num_classes=3)
+    legacy_payload = build_checkpoint(
+        legacy_model,
+        class_mapping={
+            "0": "negative_or_non_riding",
+            "1": "ordinary_or_intermediate",
+            "2": "interesting",
+        },
+    )
+    with pytest.raises(ValueError, match="binary two-class"):
+        validate_checkpoint(legacy_payload)
