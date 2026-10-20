@@ -73,7 +73,7 @@ def test_minimum_duration_applies_after_padding_and_merging():
 
 
 def test_optional_good_probability_envelope_preserves_short_dropout():
-    result = _inference([[0, 2], [2, 4]], [[0.1, 0.8], [0.1, 0.45]])
+    result = _inference([[0, 2], [2, 4]], [[0.2, 0.8], [0.55, 0.45]])
     config = _config(
         action_threshold=0.6,
         flow_threshold=0.4,
