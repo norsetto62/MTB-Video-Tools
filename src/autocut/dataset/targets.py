@@ -84,66 +84,67 @@ def validate_targets(
     return errors
 
 
-def _validate_threshold(value: float, *, name: str) -> float:
-    """Validate a positive duration threshold in seconds."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be a finite positive number of seconds.")
-    result = float(value)
-    if not np.isfinite(result) or result <= 0:
-        raise ValueError(f"{name} must be a finite positive number of seconds.")
-    return result
+def _validate_threshold(value: int, *, name: str) -> int:
+    """Validate a positive sample-count threshold."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer sample count.")
+    return value
 
 
 def build_targets(
     windows: FeatureWindows,
     annotations: list[Annotation],
     *,
-    positive_threshold_seconds: float = 2.0,
-    negative_threshold_seconds: float = 2.0,
+    positive_threshold_samples: int = 4,
+    negative_threshold_samples: int = 4,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build binary targets from annotation durations within each window.
+    """Build binary labels from per-sample annotation classes.
 
-    MTB 3 duration counts toward the positive threshold. MTB 0 and 1
-    durations count together toward the negative threshold. MTB 2 is ignored.
-    A window is retained only when exactly one threshold is met; windows
-    meeting both thresholds or neither threshold are discarded.
+    For each feature row, its represented sample interval is determined by
+    dividing the window duration evenly by the number of rows. The annotation
+    covering the sample midpoint supplies that sample's MTB label.
 
-    Threshold comparisons are inclusive. Returned labels are 1.0 for positive
-    and 0.0 for negative windows.
+    MTB 3 contributes to the positive count. MTB 0 and 1 contribute together
+    to the negative count. MTB 2 is ignored. A window is retained only when
+    exactly one threshold is met; neither-threshold and mixed-threshold
+    windows are discarded. Threshold comparisons are inclusive.
     """
-    positive_threshold_seconds = _validate_threshold(
-        positive_threshold_seconds, name="positive_threshold_seconds"
+    positive_threshold_samples = _validate_threshold(
+        positive_threshold_samples, name="positive_threshold_samples"
     )
-    negative_threshold_seconds = _validate_threshold(
-        negative_threshold_seconds, name="negative_threshold_seconds"
+    negative_threshold_samples = _validate_threshold(
+        negative_threshold_samples, name="negative_threshold_samples"
     )
 
     X_training: list[np.ndarray] = []
     y: list[float] = []
     timestamps = windows.timestamps
+    samples_per_window = windows.X.shape[1]
 
     for window_number in range(windows.X.shape[0]):
-        positive_duration = 0.0
-        negative_duration = 0.0
+        window_start, window_end = timestamps[window_number]
+        sample_duration = (window_end - window_start) / samples_per_window
+        positive_count = 0
+        negative_count = 0
 
-        for annotation in annotations:
-            overlap = _annotation_overlap(
-                timestamps[window_number],
-                annotation,
+        for sample_number in range(samples_per_window):
+            midpoint = window_start + (sample_number + 0.5) * sample_duration
+            sample_score = next(
+                (
+                    annotation.score
+                    for annotation in annotations
+                    if annotation.start <= midpoint < annotation.end
+                ),
+                None,
             )
-            if overlap <= 0:
-                continue
+            if sample_score == 3:
+                positive_count += 1
+            elif sample_score in (0, 1):
+                negative_count += 1
+            # Uncovered samples and MTB 2 samples count toward neither class.
 
-            if annotation.score == 3:
-                positive_duration += overlap
-            elif annotation.score in (0, 1):
-                negative_duration += overlap
-            # MTB 2 is intentionally excluded from both counts.
-
-        is_positive = positive_duration >= positive_threshold_seconds
-        is_negative = negative_duration >= negative_threshold_seconds
-
-        # Discard ambiguous windows and windows with insufficient evidence.
+        is_positive = positive_count >= positive_threshold_samples
+        is_negative = negative_count >= negative_threshold_samples
         if is_positive == is_negative:
             continue
 
