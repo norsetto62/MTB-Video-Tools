@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-import math
 import json
+import math
 import logging
 from pathlib import Path
 import time
