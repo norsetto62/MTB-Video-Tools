@@ -22,25 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
-    """Return fixed-three-class metrics, including absent classes as zero F1."""
+    """Return binary bad/good metrics; class 1 (good) is the positive class."""
     confusion = [
-        [int(np.sum((actual == truth) & (predicted == guess))) for guess in range(3)]
-        for truth in range(3)
+        [int(np.sum((actual == truth) & (predicted == guess))) for guess in range(2)]
+        for truth in range(2)
     ]
     class_f1 = []
-    for class_id in range(3):
+    for class_id in range(2):
         tp = confusion[class_id][class_id]
-        fp = sum(confusion[row][class_id] for row in range(3) if row != class_id)
-        fn = sum(confusion[class_id][col] for col in range(3) if col != class_id)
+        fp = sum(confusion[row][class_id] for row in range(2) if row != class_id)
+        fn = sum(confusion[class_id][col] for col in range(2) if col != class_id)
         denom = 2 * tp + fp + fn
         class_f1.append(float(2 * tp / denom) if denom else 0.0)
     return {
         "windows": int(len(actual)),
         "accuracy": float(np.mean(actual == predicted)),
-        # For single-label multiclass classification, micro-F1 equals accuracy.
         "micro_f1": float(np.mean(actual == predicted)),
         "macro_f1": float(np.mean(class_f1)),
-        "class_f1": {str(i): class_f1[i] for i in range(3)},
+        "class_f1": {"0": class_f1[0], "1": class_f1[1]},
         "confusion_matrix": confusion,
     }
 
@@ -85,31 +84,21 @@ def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
     windows: np.ndarray,
-    c2_threshold: float = 0.50,
+    good_threshold: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return binary predictions and unmodified (bad, good) probabilities."""
+    if isinstance(good_threshold, bool) or not isinstance(good_threshold, (int, float)) or not np.isfinite(good_threshold) or not 0.0 <= good_threshold <= 1.0:
+        raise ValueError("good_threshold must be between 0 and 1.")
     transformed = scaler.transform(windows)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
-    probability_batches: list[np.ndarray] = []
+    batches: list[np.ndarray] = []
     model.eval()
     with torch.inference_mode():
         for start in range(0, len(tensor), 256):
-            batch = tensor[start : start + 256]
-            probability_batches.append(
-                torch.softmax(model(batch), dim=1).cpu().numpy()
-            )
-    probabilities = np.concatenate(probability_batches, axis=0)
-
-    # --- CUSTOM HIGH-PRECISION SELECTION LOGIC ---
-    # Extract probability specifically for Class 2
-    c2_probs = probabilities[:, 2]
-
-    # Argmax strictly among Class 0 and Class 1 (columns 0 and 1)
-    fallback_preds = probabilities[:, :2].argmax(axis=1)
-
-    # If Class 2 probability meets/exceeds threshold, pick 2; else use fallback
-    predictions = np.where(c2_probs >= c2_threshold, 2, fallback_preds).astype(np.int64)
-
-    return predictions.astype(np.int64), probabilities
+            batches.append(torch.softmax(model(tensor[start:start + 256]), dim=1).cpu().numpy())
+    probabilities = np.concatenate(batches, axis=0)
+    predictions = (probabilities[:, 1] >= float(good_threshold)).astype(np.int64)
+    return predictions, probabilities
 
 
 def _resolve_group_splits(
@@ -303,8 +292,8 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        c2_threshold = getattr(training_config, "c2_threshold", 0.50)
-        predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
+        good_threshold = getattr(training_config, "good_threshold", 0.50)
+        predicted, probabilities = _predict(model, scaler, test_X, good_threshold=good_threshold)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
         pooled_predicted.append(predicted)
@@ -336,7 +325,7 @@ def run_lovo(
                     "window_index": test_window_records[index][1],
                     "actual_class": int(actual[index]),
                     "predicted_class": int(predicted[index]),
-                    "probabilities": {str(i): float(probabilities[index, i]) for i in range(3)},
+                    "probabilities": {str(i): float(probabilities[index, i]) for i in range(2)},
                 }
                 for index in range(len(actual))
             ],
