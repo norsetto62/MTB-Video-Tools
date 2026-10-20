@@ -3,67 +3,67 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autocut.config_loader import TrainingRunConfig, TrainingConfig, CommonSettings
+from autocut.config_loader import Config
 from autocut.pipeline import hpo
-from autocut.ml.training import TrainingConfig
+
 
 def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
-    # 1. Construct real dataclass instances matching your exact schemas
-    mock_common = CommonSettings(
-        data_dir=tmp_path / "data",
-        models_dir=tmp_path / "models",
-        output_dir=tmp_path / "output",
-        log_level="INFO",
-        min_clip=1.0,
-        window_duration=5.0,
-        window_stride=1.0,
-    )
-    
-    mock_training = TrainingConfig(
-        seed=42,
-        lr=1e-4,
-        weight_decay=1e-3,
-        dropout=0.3,
-        class_weights=(0.5, 1.0, 5.0),
-        hidden_dim=64,
-        epochs=1,
-        batch_size=2,
-    )
-    
-    settings = TrainingRunConfig(
-        common=mock_common,
-        cache_dir=tmp_path / "cache",
-        manifest=tmp_path / "manifest.yaml",
-        sample_fps=1.0,
-        processing_width=224,
-        study_name="test_autocut_study",
-        n_trials=2,
-        proxy_test_groups=("group_A",),
-        train_groups=("group_A", "group_B", "group_C"),
-        validation_groups=("group_B",),
-        training=mock_training,
-        experiment_name="test_exp",
-        checkpoint_dir=tmp_path / "checkpoints",
-        results_dir=tmp_path / "results",
-        hpo_search_space={
-            "lr": {"low": 1e-5, "high": 1e-3, "log": True},
-            "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True},
-            "dropout": {"low": 0.2, "high": 0.6},
-            "class_weight_0": {"low": 0.1, "high": 0.6},
-            "class_weight_2": {"low": 2.0, "high": 10.0},
-            "hidden_dim": {"choices": [32, 64, 128]},
-            "c2_threshold": {"low": 0.5, "high": 0.95, "step":0.05},
+    settings = Config({
+        "paths": {
+            "cache_dir": str(tmp_path / "cache"),
+            "models_dir": str(tmp_path / "models"),
         },
-    )
+        "data": {
+            "manifest": str(tmp_path / "manifest.yaml"),
+            "sampling_fps": 1.0,
+            "processing_width": 224,
+            "window_duration": 5.0,
+            "window_stride": 1.0,
+            "train_groups": ["group_A", "group_B", "group_C"],
+            "validation_groups": ["group_B"],
+        },
+        "training": {
+            "seed": 42,
+            "lr": 1e-4,
+            "weight_decay": 1e-3,
+            "dropout": 0.3,
+            "class_weights": [0.5, 1.0, 5.0],
+            "hidden_dim": 64,
+            "epochs": 1,
+            "batch_size": 2,
+        },
+        "experiment": {
+            "name": "test_exp",
+            "checkpoint_dir": str(tmp_path / "checkpoints"),
+            "results_dir": str(tmp_path / "results"),
+        },
+        "hpo": {
+            "study_name": "test_autocut_study",
+            "n_trials": 2,
+            "proxy_test_groups": ["group_A"],
+            "search_space": {
+                "lr": {"low": 1e-5, "high": 1e-3, "log": True},
+                "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True},
+                "dropout": {"low": 0.2, "high": 0.6},
+                "class_weight_0": {"low": 0.1, "high": 0.6},
+                "class_weight_2": {"low": 2.0, "high": 10.0},
+                "hidden_dim": {"choices": [32, 64, 128]},
+                "c2_threshold": {"low": 0.5, "high": 0.95, "step": 0.05},
+            },
+        },
+        "logging": {"level": "INFO"},
+    })
 
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text("dummy manifest content", encoding="utf-8")
 
     # 2. Mock run_lovo to return a valid result structure expected by the objective
     lovo_call_count = {"count": 0}
+    lovo_calls = []
 
-    def fake_run_lovo(manifest_path, settings):
+    def fake_run_lovo(manifest_path, settings, **kwargs):
         lovo_call_count["count"] += 1
+        lovo_calls.append({"settings": settings, **kwargs})
         return {
             "aggregation": {
                 "macro_group_mean": {"macro_f1": 0.75}
@@ -101,6 +101,13 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
     # 5. Assertions
     # 2 trial runs + 1 final master refit = 3 total calls to run_lovo
     assert lovo_call_count["count"] == 3
+    for call in lovo_calls[:2]:
+        assert call["test_groups"] == ("group_A",)
+        assert call["train_groups"] == ("group_B", "group_C")
+        assert call["settings"].data.train_groups == ("group_B", "group_C")
+    # The final production run remains a full-manifest LOVO refit/evaluation.
+    assert "test_groups" not in lovo_calls[2]
+    assert "train_groups" not in lovo_calls[2]
 
     # Check that the JSON export file was created successfully under output/hpo/
     expected_json_path = tmp_path / "output" / "hpo" / "test_autocut_study_best_params.json"

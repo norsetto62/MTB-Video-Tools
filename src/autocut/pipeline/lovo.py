@@ -5,18 +5,18 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-from ..config_loader import TrainingRunConfig
+from .training import _combine_records, _experiment_slug, _data_values, _path, _section, _training_config
 from ..dataset.manifest import get_unique_groups, load_manifest
 from ..ml.model import MTBClassifier
 from ..ml.scaling import FeatureScaler
 from ..ml.training import targets_to_classes, train_fixed_epochs, train_single_fold
-from .training import _combine_records, _experiment_slug
 
 logger = logging.getLogger(__name__)
 
@@ -112,33 +112,103 @@ def _predict(
     return predictions.astype(np.int64), probabilities
 
 
-def run_lovo(
-    manifest_path: str | Path,
-    settings: TrainingRunConfig,
-) -> dict[str, Any]:
-    """Run deterministic nested leave-one-group-out CV and persist fold artifacts.
-
-    The outer held-out group is excluded from inner epoch selection, scaler
-    fitting, and final refit. Epoch count is selected via a consensus multi-group
-    inner validation strategy from the outer-training groups, then the model and
-    scaler are refit on every outer-training group for exactly that many epochs.
-    """
-    records = load_manifest(manifest_path, verify_files=True)
-    groups = get_unique_groups(records)
-    if len(groups) < 3:
-        raise ValueError(
-            f"LOVO requires at least 3 distinct manifest groups (found {len(groups)}): "
-            "one outer test group, one inner validation group, and at least one inner training group."
+def _resolve_group_splits(
+    all_groups: tuple[str, ...],
+    *,
+    test_groups: tuple[str, ...] | None = None,
+    train_groups: tuple[str, ...] | None = None,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Resolve evaluation folds and training pools, optionally isolating proxy groups."""
+    if test_groups is None:
+        if train_groups is not None:
+            raise ValueError("train_groups can only be supplied when test_groups are specified.")
+        if len(all_groups) < 3:
+            raise ValueError(
+                f"LOVO requires at least 3 distinct manifest groups (found {len(all_groups)}): "
+                "one outer test group, one inner validation group, and at least one inner training group."
+            )
+        return tuple(
+            (test_group, tuple(group for group in all_groups if group != test_group))
+            for test_group in all_groups
         )
 
-    slug = _experiment_slug(settings.experiment_name)
-    fold_root = settings.results_dir / f"{slug}_lovo"
-    checkpoint_root = settings.checkpoint_dir / f"{slug}_lovo"
+    if not test_groups:
+        raise ValueError("test_groups must contain at least one proxy test group.")
+    if len(set(test_groups)) != len(test_groups):
+        raise ValueError("test_groups must not contain duplicates.")
+    unknown_test = set(test_groups) - set(all_groups)
+    if unknown_test:
+        raise ValueError("Unknown test group(s): " + ", ".join(sorted(unknown_test)))
+
+    if train_groups is None:
+        resolved_train = tuple(group for group in all_groups if group not in test_groups)
+    else:
+        if not train_groups:
+            raise ValueError("train_groups must contain at least one training group.")
+        if len(set(train_groups)) != len(train_groups):
+            raise ValueError("train_groups must not contain duplicates.")
+        unknown_train = set(train_groups) - set(all_groups)
+        if unknown_train:
+            raise ValueError("Unknown training group(s): " + ", ".join(sorted(unknown_train)))
+        overlap = set(train_groups) & set(test_groups)
+        if overlap:
+            raise ValueError(
+                "Proxy test groups must be excluded from training; overlap: "
+                + ", ".join(sorted(overlap))
+            )
+        resolved_train = tuple(group for group in all_groups if group in set(train_groups))
+
+    if len(resolved_train) < 2:
+        raise ValueError(
+            "Proxy HPO evaluation requires at least two training groups so inner "
+            "epoch selection has both training and validation groups."
+        )
+    return tuple((test_group, resolved_train) for test_group in test_groups)
+
+
+def run_lovo(
+    manifest_path: str | Path,
+    settings: Mapping[str, Any],
+    *,
+    test_groups: tuple[str, ...] | None = None,
+    train_groups: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Run nested group CV, optionally evaluating proxy groups only.
+
+    When test_groups are supplied, train_groups is the exclusive training pool:
+    proxy test groups are excluded from all fitting and inner epoch selection.
+    """
+    if not isinstance(settings, Mapping):
+        raise ValueError("LOVO settings must be a configuration mapping.")
+    experiment = _section(settings, "experiment")
+    experiment_name = experiment.get("name", "baseline")
+    if not isinstance(experiment_name, str) or not experiment_name.strip():
+        raise ValueError("experiment.name must be a non-empty string.")
+    results_dir = _path(experiment.get("results_dir", "output/experiments"), name="experiment.results_dir")
+    checkpoint_dir = _path(experiment.get("checkpoint_dir", "models/experiments"), name="experiment.checkpoint_dir")
+    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    training_config = _training_config(settings)
+    records = load_manifest(manifest_path, verify_files=True)
+    all_groups = get_unique_groups(records)
+    group_splits = _resolve_group_splits(
+        all_groups, test_groups=test_groups, train_groups=train_groups
+    )
+    groups = tuple(test_group for test_group, _ in group_splits)
+    selected_groups = set(groups)
+    for _, training_pool in group_splits:
+        selected_groups.update(training_pool)
+    # Do not even prepare records outside the selected proxy/test and training
+    # groups; this keeps proxy trials cheaper as well as preventing leakage.
+    records = tuple(record for record in records if record.group_id in selected_groups)
+
+    slug = _experiment_slug(experiment_name)
+    fold_root = results_dir / f"{slug}_lovo"
+    checkpoint_root = checkpoint_dir / f"{slug}_lovo"
     data_config = {
-        "flow_fps": settings.sample_fps,
-        "processing_width": settings.processing_width,
-        "window": settings.common.window_duration,
-        "stride": settings.common.window_stride,
+        "flow_fps": sample_fps,
+        "processing_width": processing_width,
+        "window": window_duration,
+        "stride": window_stride,
     }
     
     # Each record's windows/targets are independent of the fold. Prepare them
@@ -153,8 +223,7 @@ def run_lovo(
     pooled_actual: list[np.ndarray] = []
     pooled_predicted: list[np.ndarray] = []
     
-    for fold_index, test_group in enumerate(groups):
-        outer_train_groups = tuple(group for group in groups if group != test_group)
+    for fold_index, (test_group, outer_train_groups) in enumerate(group_splits):
         outer_train_records = tuple(r for r in records if r.group_id in outer_train_groups)
         test_records = tuple(r for r in records if r.group_id == test_group)
 
@@ -174,7 +243,7 @@ def run_lovo(
             inner_X, inner_y = _combine_prepared_records(inner_train_recs, prepared_records)
             inner_val_X, inner_val_y = _combine_prepared_records(inner_val_recs, prepared_records)
             
-            selection_config = replace(settings.training, seed=settings.training.seed + fold_index)
+            selection_config = replace(training_config, seed=training_config.seed + fold_index)
             _, _, selection = train_single_fold(
                 inner_X,
                 inner_y,
@@ -214,15 +283,15 @@ def run_lovo(
         ]
         fold_checkpoint = checkpoint_root / f"fold_{fold_index + 1:02d}_{_experiment_slug(test_group)}.pt"
         fold_metadata = {
-            "experiment_name": settings.experiment_name,
-            "evaluation": "nested_leave_one_group_out",
+            "experiment_name": experiment_name,
+            "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
             "outer_test_group": test_group,
             "outer_training_groups": list(outer_train_groups),
             "inner_validation_group": inner_validation_group,
             "inner_training_groups": list(inner_train_groups),
             "manifest": str(Path(manifest_path).expanduser().resolve()),
         }
-        final_config = replace(settings.training, seed=settings.training.seed + fold_index)
+        final_config = replace(training_config, seed=training_config.seed + fold_index)
         model, scaler, refit_summary = _fit_fixed_epochs(
             outer_X,
             outer_y,
@@ -234,7 +303,7 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        c2_threshold = getattr(settings.training, "c2_threshold", 0.50)
+        c2_threshold = getattr(training_config, "c2_threshold", 0.50)
         predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
@@ -292,12 +361,13 @@ def run_lovo(
     all_predicted = np.concatenate(pooled_predicted)
     pooled_metrics = _metrics(all_actual, all_predicted)
     result: dict[str, Any] = {
-        "experiment_name": settings.experiment_name,
-        "evaluation": "nested_leave_one_group_out",
+        "experiment_name": experiment_name,
+        "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "groups": list(groups),
+        "training_groups": list(group_splits[0][1]) if test_groups is not None else None,
         "fold_count": len(folds),
-        "training_config": asdict(settings.training),
+        "training_config": asdict(training_config),
         "data_config": data_config,
         "aggregation": {
             "micro": pooled_metrics,

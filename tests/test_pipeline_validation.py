@@ -4,39 +4,31 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
+from autocut.config_loader import Config
 from autocut.pipeline import validation as pipeline_validation
-from autocut.config_loader import TrainingRunConfig
 from autocut.ml.scaling import FeatureScaler
 
 
 def _settings(tmp_path: Path):
-    from autocut.config_loader import CommonSettings
-    from autocut.ml.training import TrainingConfig
-
-    return TrainingRunConfig(
-        common=CommonSettings(
-            data_dir=tmp_path / "data",
-            models_dir=tmp_path / "models",
-            output_dir=tmp_path / "output",
-            log_level="INFO",
-            min_clip=3.0,
-            window_duration=4.0,
-            window_stride=2.0,
-        ),
-        cache_dir=tmp_path / "cache",
-        manifest=tmp_path / "manifest.yaml",
-        sample_fps=2.0,
-        processing_width=480,
-        study_name='',
-        n_trials=0,
-        proxy_test_groups=tuple([]),
-        train_groups=("train",),
-        validation_groups=("val",),
-        training=TrainingConfig(),
-        experiment_name="test",
-        checkpoint_dir=tmp_path / "models",
-        results_dir=tmp_path / "results",
-    )
+    return Config({
+        "paths": {"cache_dir": str(tmp_path / "cache"), "models_dir": str(tmp_path / "models")},
+        "data": {
+            "manifest": str(tmp_path / "manifest.yaml"),
+            "sampling_fps": 2.0,
+            "processing_width": 480,
+            "window_duration": 4.0,
+            "window_stride": 2.0,
+            "train_groups": ["train"],
+            "validation_groups": ["val"],
+        },
+        "training": {},
+        "experiment": {
+            "name": "test",
+            "checkpoint_dir": str(tmp_path / "models"),
+            "results_dir": str(tmp_path / "results"),
+        },
+        "logging": {"level": "INFO"},
+    })
 
 
 def test_run_validation_predicts_windows_and_writes_json(tmp_path, monkeypatch):

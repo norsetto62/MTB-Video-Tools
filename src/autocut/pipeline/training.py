@@ -12,19 +12,91 @@ import logging
 import re
 import time
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 
 from ..annotations import load_training_annotations
-from ..config_loader import TrainingRunConfig
+from ..config_loader import Config
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows
-from ..ml.training import train_single_fold
+from ..ml.training import TrainingConfig, train_single_fold
 
 logger = logging.getLogger(__name__)
+
+
+def _section(settings: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    value = settings.get(name, {})
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Configuration section {name!r} must be a mapping.")
+    return value
+
+
+def _positive_float(value: Any, *, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite positive number.")
+    result = float(value)
+    if not np.isfinite(result) or result <= 0:
+        raise ValueError(f"{name} must be a finite positive number.")
+    return result
+
+
+def _positive_int(value: Any, *, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _path(value: Any, *, name: str) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError(f"{name} must be a non-empty path string.")
+    return Path(value).expanduser()
+
+
+def _groups(value: Any, *, name: str) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)) or not value:
+        raise ValueError(f"{name} must be a non-empty list of group IDs.")
+    groups: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{name} must contain non-empty string group IDs.")
+        group = item.strip()
+        if group in groups:
+            raise ValueError(f"{name} contains duplicate group ID {group!r}.")
+        groups.append(group)
+    return tuple(groups)
+
+
+def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
+    """Build the domain-specific trainer config from generic immutable values."""
+    training = _section(settings, "training")
+    try:
+        values = training.to_dict() if isinstance(training, Config) else dict(training)
+        return TrainingConfig(**values)
+    except TypeError as exc:
+        raise ValueError(f"Invalid training configuration: {exc}") from exc
+
+
+def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
+    data = _section(settings, "data")
+    manifest = _path(
+        data.get("manifest", "data/manifest/annotations_manifest.yaml"),
+        name="data.manifest",
+    )
+    sample_fps = _positive_float(data.get("sampling_fps", 2.0), name="data.sampling_fps")
+    processing_width = _positive_int(
+        data.get("processing_width", 480), name="data.processing_width"
+    )
+    window_duration = _positive_float(
+        data.get("window_duration", 4.0), name="data.window_duration"
+    )
+    window_stride = _positive_float(
+        data.get("window_stride", 2.0), name="data.window_stride"
+    )
+    return manifest, sample_fps, processing_width, window_duration, window_stride
 
 
 def _experiment_slug(name: str) -> str:
@@ -37,10 +109,13 @@ def _experiment_slug(name: str) -> str:
 
 def _load_record_windows(
     record: DatasetRecord,
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Extract annotated training windows for one manifest record."""
     record_started = time.perf_counter()
+    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    paths = _section(settings, "paths")
+    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
     logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
     video_path, annotations = load_training_annotations(record.annotation_path)
     if video_path.resolve() != record.video_path.resolve():
@@ -70,21 +145,21 @@ def _load_record_windows(
     clip = Clip(video_name=record.id, start=0.0, end=min(clip_end, info.duration))
     logger.info(
         "Record %s: extracting motion features (%.1fs clip at %.2f fps; cache %s)",
-        record.id, clip.duration, settings.sample_fps,
-        "enabled" if settings.cache_dir is not None else "disabled",
+        record.id, clip.duration, sample_fps,
+        "enabled" if cache_dir is not None else "disabled",
     )
     sequence = build_feature_sequence(
         record.video_path,
         clip,
-        sample_fps=settings.sample_fps,
-        processing_width=settings.processing_width,
-        cache_dir=settings.cache_dir,
+        sample_fps=sample_fps,
+        processing_width=processing_width,
+        cache_dir=cache_dir,
     )
     logger.info("Record %s: extracted %d feature rows; building windows", record.id, len(sequence.features))
     windows = build_windows(
         sequence,
-        window=settings.common.window_duration,
-        stride=settings.common.window_stride,
+        window=window_duration,
+        stride=window_stride,
     )
     X, y = build_targets(windows, annotations)
     # build_targets drops uncovered windows, so the original window timestamp
@@ -109,7 +184,7 @@ def _load_record_windows(
 
 def _combine_records(
     records: tuple[DatasetRecord, ...],
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build and concatenate all labeled windows for selected records."""
     features: list[np.ndarray] = []
@@ -130,14 +205,37 @@ def _combine_records(
 
 def run_training(
     manifest_path: str | Path,
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Train from the configured disjoint group split and persist artifacts."""
+    if not isinstance(settings, Mapping):
+        raise ValueError("Training settings must be a configuration mapping.")
+    data = _section(settings, "data")
+    experiment = _section(settings, "experiment")
+    train_groups = set(_groups(data.get("train_groups"), name="data.train_groups"))
+    validation_groups = set(
+        _groups(data.get("validation_groups"), name="data.validation_groups")
+    )
+    overlap = train_groups & validation_groups
+    if overlap:
+        raise ValueError(
+            "Training and validation groups must be disjoint; overlap: "
+            + ", ".join(sorted(overlap))
+        )
+    training_config = _training_config(settings)
+    experiment_name = experiment.get("name", "baseline")
+    if not isinstance(experiment_name, str) or not experiment_name.strip():
+        raise ValueError("experiment.name must be a non-empty string.")
+    checkpoint_dir = _path(
+        experiment.get("checkpoint_dir", "models/experiments"),
+        name="experiment.checkpoint_dir",
+    )
+    results_dir = _path(
+        experiment.get("results_dir", "output/experiments"),
+        name="experiment.results_dir",
+    )
+    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
     records = load_manifest(manifest_path, verify_files=True)
-    train_groups = set(settings.train_groups)
-    validation_groups = set(settings.validation_groups)
-    if train_groups & validation_groups:
-        raise ValueError("Training and validation groups must be disjoint.")
     known_groups = {record.group_id for record in records}
     unknown = (train_groups | validation_groups) - known_groups
     if unknown:
@@ -154,7 +252,7 @@ def run_training(
 
     logger.info(
         "Training experiment %r with %d training videos and %d validation videos.",
-        settings.experiment_name, len(train_records), len(val_records),
+        experiment_name, len(train_records), len(val_records),
     )
     logger.info("Preparing training split: 0/%d videos", len(train_records))
     train_X, train_y = _combine_records(train_records, settings)
@@ -163,26 +261,26 @@ def run_training(
     val_X, val_y = _combine_records(val_records, settings)
     logger.info("Validation data ready: %d labelled windows from %d videos", len(val_X), len(val_records))
 
-    slug = _experiment_slug(settings.experiment_name)
-    checkpoint_path = settings.checkpoint_dir / f"{slug}_best.pt"
-    results_path = settings.results_dir / f"{slug}_train.json"
+    slug = _experiment_slug(experiment_name)
+    checkpoint_path = checkpoint_dir / f"{slug}_best.pt"
+    results_path = results_dir / f"{slug}_train.json"
     data_config = {
-        "flow_fps": settings.sample_fps,
-        "processing_width": settings.processing_width,
-        "window": settings.common.window_duration,
-        "stride": settings.common.window_stride,
+        "flow_fps": sample_fps,
+        "processing_width": processing_width,
+        "window": window_duration,
+        "stride": window_stride,
     }
     _, _, summary = train_single_fold(
         train_X,
         train_y,
         val_X,
         val_y,
-        settings.training,
+        training_config,
         checkpoint_path=checkpoint_path,
         data_config=data_config,
     )
     result: dict[str, Any] = {
-        "experiment_name": settings.experiment_name,
+        "experiment_name": experiment_name,
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "train_groups": sorted(train_groups),
         "validation_groups": sorted(validation_groups),
@@ -190,7 +288,7 @@ def run_training(
         "validation_records": [record.id for record in val_records],
         "train_windows": int(len(train_X)),
         "validation_windows": int(len(val_X)),
-        "training_config": asdict(settings.training),
+        "training_config": asdict(training_config),
         "data_config": data_config,
         "checkpoint": str(checkpoint_path),
         "summary": summary,

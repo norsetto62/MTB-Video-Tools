@@ -11,10 +11,9 @@ from torch_lr_finder import LRFinder
 # 1. Import your actual model and project utilities
 from autocut.ml.model import MTBClassifier
 from autocut.dataset.manifest import load_manifest
-from autocut.pipeline.training import _combine_records
-from autocut.config_loader import load_training_config
+from autocut.config_loader import load_config
+from autocut.pipeline.training import _combine_records, _training_config
 from autocut.ml.scaling import FeatureScaler
-from autocut.pipeline.training import _combine_records
 from autocut.ml.training import _validate_windows, targets_to_classes
 from autocut.cli import build_parser
 
@@ -27,11 +26,16 @@ def main(argv: Sequence[str] | None = None):
     args = parser.parse_args(arguments)
     
     # Load settings and manifest using your project flow
-    settings = load_training_config(args.config)
-    manifest = args.manifest or settings.manifest
-    
+    settings = load_config(args.config)
+    data = settings.get("data", {})
+    if not hasattr(data, "get"):
+        raise ValueError("Configuration section 'data' must be a mapping.")
+    manifest = args.manifest or data.get(
+        "manifest", "data/manifest/annotations_manifest.yaml"
+    )
+
     records = load_manifest(manifest, verify_files=True)
-    train_groups = set(settings.train_groups)
+    train_groups = set(data.get("train_groups", ()))
     train_records = tuple(record for record in records if record.group_id in train_groups)
     
     if not train_records:
@@ -45,7 +49,7 @@ def main(argv: Sequence[str] | None = None):
     train_y_raw = targets_to_classes(raw_targets)
 
     # 2. Apply your project's exact FeatureScaler and target formatting
-    fit_config = settings.training
+    fit_config = _training_config(settings)
     scaler = FeatureScaler(enabled=fit_config.use_scaling)
     transformed_train = scaler.fit_transform(train_X)
     

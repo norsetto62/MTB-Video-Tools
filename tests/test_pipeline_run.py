@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from autocut.config_loader import Config
 from autocut.data_models import VideoInfo
 from autocut.pipeline import run
 from autocut.selection.timeline import Timeline
@@ -9,6 +10,33 @@ from autocut.ml.model import MTBClassifier
 from autocut.ml.checkpoint import CHECKPOINT_VERSION
 
 import torch
+
+def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
+    return Config({
+        "paths": {
+            "output_dir": output_dir,
+            "cache_dir": cache_dir,
+        },
+        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
+        "features": {"window_duration": 4.0, "window_stride": 2.0},
+        "model": {"checkpoint": checkpoint, "inference_batch_size": 16},
+        "selection": {
+            "min_clip": 3.0,
+            "max_clip_duration": 0.0,
+            "class_score_weights": [0.0, 1.0, 2.5],
+            "junk_threshold": 0.20,
+            "action_threshold": 0.60,
+            "flow_threshold": 0.40,
+            "max_gap_to_merge": 3.0,
+            "padding_seconds": padding_seconds,
+            "p2_envelope_decay": 0.0,
+        },
+        "audio": {
+            "sync_mode": "off",
+            "max_synced_clip_duration": 0.0,
+            "fade_duration": 2.0,
+        },
+    })
 
 def test_merge_ranges_merges_touching_and_overlapping_intervals():
     clips = [
@@ -32,26 +60,7 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
     checkpoint.write_bytes(b"checkpoint placeholder")
     output_dir = tmp_path / "output"
 
-    settings = SimpleNamespace(
-        checkpoint=checkpoint,
-        common=SimpleNamespace(
-            min_clip=3.0,
-            window_duration=4.0,
-            window_stride=2.0,
-            output_dir=output_dir,
-        ),
-        sample_fps=2.0,
-        processing_width=480,
-        inference_batch_size=16,
-        max_clip_duration=0.0,
-        candidates=CandidateGenerationConfig(),
-        audio=SimpleNamespace(
-            sync_mode=SimpleNamespace(value="off"),
-            max_synced_clip_duration=0.0,
-            fade_duration=2.0,
-        ),
-        cache_dir=tmp_path / "cache",
-    )
+    settings = _run_settings(checkpoint, output_dir, tmp_path / "cache")
     monkeypatch.setattr(
         run, "load_annotations",
         lambda *args, **kwargs: (
@@ -140,25 +149,8 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
     }
     torch.save(dummy_payload, checkpoint)
     output_dir = tmp_path / "output"
-    settings = SimpleNamespace(
-        checkpoint=checkpoint,
-        common=SimpleNamespace(
-            min_clip=3.0,
-            window_duration=4.0,
-            window_stride=2.0,
-            output_dir=output_dir,
-        ),
-        sample_fps=2.0,
-        processing_width=480,
-        inference_batch_size=16,
-        max_clip_duration=0.0,
-        candidates=CandidateGenerationConfig(padding_seconds=0.0),
-        audio=SimpleNamespace(
-            sync_mode=SimpleNamespace(value="off"),
-            max_synced_clip_duration=0.0,
-            fade_duration=2.0,
-        ),
-        cache_dir=tmp_path / "cache",
+    settings = _run_settings(
+        checkpoint, output_dir, tmp_path / "cache", padding_seconds=0.0
     )
     monkeypatch.setattr(
         run, "get_video_info",
@@ -204,3 +196,38 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
     ]
     assert [item["annotation_order"] for item in result["inference"]] == [2, 3]
     assert result["candidate_count"] == 2
+
+
+def test_run_config_sections_normalizes_generic_config_and_domain_settings(tmp_path):
+    from autocut.audio.config import AudioConfig
+    from autocut.config_loader import load_config
+
+    checkpoint = tmp_path / "model.pt"
+    config_path = tmp_path / "run.yaml"
+    config_path.write_text(
+        f"paths:\n  output_dir: {tmp_path / 'output'}\n  cache_dir: {tmp_path / 'cache'}\n"
+        f"model:\n  checkpoint: {checkpoint}\n"
+        "selection:\n  min_clip: 5.0\naudio:\n  sync_mode: beat\n",
+        encoding="utf-8",
+    )
+
+    settings, candidates, audio = run._run_config_sections(load_config(config_path))
+
+    assert isinstance(settings, Config)
+    assert settings.paths.output_dir == tmp_path / "output"
+    assert settings.model.checkpoint == checkpoint
+    assert candidates.min_candidate_duration == 5.0
+    assert isinstance(audio, AudioConfig)
+    assert audio.sync_mode.value == "beat"
+
+
+def test_run_config_sections_rejects_invalid_video_width():
+    from autocut.config_loader import Config
+
+    config = Config({"video": {"processing_width": 0}})
+    try:
+        run._run_config_sections(config)
+    except ValueError as exc:
+        assert "video.processing_width must be a positive integer" in str(exc)
+    else:
+        raise AssertionError("invalid processing width should be rejected")

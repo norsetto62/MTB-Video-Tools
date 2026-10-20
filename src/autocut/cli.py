@@ -147,21 +147,35 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "models":
         checkpoint = args.checkpoint
         if checkpoint is None:
-            from .config_loader import load_run_config
+            from collections.abc import Mapping
 
-            settings = load_run_config(args.config)
-            checkpoint = settings.checkpoint
+            from .config_loader import load_config
+
+            config = load_config(args.config)
+            model = config.get("model", {})
+            if not isinstance(model, Mapping):
+                raise ValueError("Configuration section 'model' must be a mapping.")
+            configured_checkpoint = model.get("checkpoint", "models/best_model.pt")
+            if (
+                not isinstance(configured_checkpoint, (str, Path))
+                or not str(configured_checkpoint).strip()
+            ):
+                raise ValueError("model.checkpoint must be a non-empty path string.")
+            checkpoint = Path(configured_checkpoint).expanduser()
         return _inspect_checkpoint(checkpoint)
 
     if args.command == "audit":
-        from .config_loader import load_run_config
+        from .config_loader import load_config
         from .dataset.audit import audit_source, print_audit_report
 
         if not args.source.is_file():
             print(f"Input file not found: {args.source}", file=sys.stderr)
             return 2
-        settings = load_run_config(args.config)
-        _configure_logging(settings.common.log_level)
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
         report = audit_source(
             args.source,
             settings,
@@ -171,11 +185,14 @@ def dispatch(args: argparse.Namespace) -> int:
         return 1 if report["status"] == "error" else 0
 
     if args.command == "run":
-        from .config_loader import load_run_config
+        from .config_loader import load_config
         from .pipeline.run import run_pipeline
 
-        settings = load_run_config(args.config)
-        _configure_logging(settings.common.log_level)
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not isinstance(logging_section, dict) and not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
@@ -183,27 +200,50 @@ def dispatch(args: argparse.Namespace) -> int:
             args.annotations,
             settings,
             output_path=args.output,
-            video_encoder=args.video_encoder or getattr(settings, "video_encoder", "h264_nvenc"),
+            video_encoder=args.video_encoder,
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command in {"train", "validate", "lovo", "hpo"}:
+    if args.command == "train":
+        from .config_loader import load_config
+        from .pipeline.training import run_training
 
-        from .config_loader import load_training_config
-
-        settings = load_training_config(args.config)
-        _configure_logging(settings.common.log_level)
-        manifest = args.manifest or settings.manifest
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        if args.command == "train":
-            from .pipeline.training import run_training
+        result = run_training(manifest, settings)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
 
-            result = run_training(manifest, settings)
-            print(json.dumps(result, indent=2, default=str))
-            return 0
+    if args.command in {"validate", "lovo", "hpo"}:
+        from .config_loader import load_config
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
         if args.command == "hpo":
             from .pipeline.hpo import run_hpo
 
@@ -227,6 +267,7 @@ def dispatch(args: argparse.Namespace) -> int:
         from .pipeline.lovo import run_lovo
         from .pipeline.training import _combine_records
         from .ml.training import train_fixed_epochs
+        from .pipeline.training import _training_config
         import numpy as np
 
         result = run_lovo(manifest, settings)
@@ -237,8 +278,8 @@ def dispatch(args: argparse.Namespace) -> int:
             fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
             for fold in result["folds"]
         ]
-        # Fallback to settings.training.epochs if epochs aren't explicitly tracked per fold
-        mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else settings.training.epochs
+        # Fallback to configured training epochs if folds omit them
+        mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else _training_config(settings).epochs
 
         print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
 
@@ -247,10 +288,12 @@ def dispatch(args: argparse.Namespace) -> int:
         all_windows, all_targets = _combine_records(records, settings)
 
         # Define your production checkpoint destination
-        base_exp_name = getattr(settings, "experiment_name", "baseline")
+        experiment = settings.get("experiment", {})
+        base_exp_name = experiment.get("name", "baseline")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_exp_name = f"{base_exp_name}_{timestamp}"
-        models_dir = Path(settings.common.models_dir) / "experiments"
+        paths = settings.get("paths", {})
+        models_dir = Path(paths.get("models_dir", "models")).expanduser() / "experiments"
         models_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
 
@@ -258,11 +301,11 @@ def dispatch(args: argparse.Namespace) -> int:
         model, scaler, train_summary = train_fixed_epochs(
             train_windows=all_windows,
             train_targets=all_targets,
-            config=settings.training,
+            config=_training_config(settings),
             epochs=mean_epochs,
             checkpoint_path=checkpoint_path,
             data_config=result.get("data_config"),
-            metadata={"experiment_name": settings.experiment_name},
+            metadata={"experiment_name": base_exp_name},
         )
 
         print(f"Master production model successfully saved to {checkpoint_path}")

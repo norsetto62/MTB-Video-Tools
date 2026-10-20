@@ -16,8 +16,41 @@ import yaml
 
 from .manifest import load_manifest
 from ..annotations import load_annotations, load_training_annotations
-from ..config_loader import RunConfig
 from ..video.probe import get_video_info
+
+
+def _audit_config_values(settings: Mapping[str, Any]) -> tuple[Path, float, float, float]:
+    """Read and validate only the generic configuration values used by auditing."""
+    if not isinstance(settings, Mapping):
+        raise ValueError("Audit settings must be a configuration mapping.")
+
+    def section(name: str) -> Mapping[str, Any]:
+        value = settings.get(name, {})
+        if not isinstance(value, Mapping):
+            raise ValueError(f"Configuration section {name!r} must be a mapping.")
+        return value
+
+    paths = section("paths")
+    features = section("features")
+    selection = section("selection")
+
+    cache_value = paths.get("cache_dir", "data/cache")
+    if not isinstance(cache_value, (str, Path)) or not str(cache_value).strip():
+        raise ValueError("paths.cache_dir must be a non-empty path string.")
+    cache_dir = Path(cache_value).expanduser()
+
+    def positive_number(value: Any, name: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a positive finite number.")
+        result = float(value)
+        if not math.isfinite(result) or result <= 0:
+            raise ValueError(f"{name} must be a positive finite number.")
+        return result
+
+    window = positive_number(features.get("window_duration", 4.0), "features.window_duration")
+    stride = positive_number(features.get("window_stride", 2.0), "features.window_stride")
+    min_clip = positive_number(selection.get("min_clip", 3.0), "selection.min_clip")
+    return cache_dir, window, stride, min_clip
 
 
 def _resolve_path(value: object, *, relative_to: Path) -> Path:
@@ -170,11 +203,12 @@ def _estimated_windows(duration: float, window: float, stride: float) -> int:
 
 def audit_manifest(
     source: str | Path,
-    settings: RunConfig,
+    settings: Mapping[str, Any],
     *,
     training_config: str | Path = "config/train.yaml",
 ) -> dict[str, Any]:
     """Audit all source videos and training annotations listed in a YAML manifest."""
+    cache_dir, window_duration, window_stride, _min_clip = _audit_config_values(settings)
     manifest_path = Path(source).expanduser().resolve()
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Dataset manifest not found: {manifest_path}")
@@ -190,11 +224,11 @@ def audit_manifest(
         "feature_cache": {
             "status": "not_checked",
             "reason": "Feature-cache compatibility is not yet implemented in this audit layer.",
-            "cache_dir": str(settings.cache_dir),
+            "cache_dir": str(cache_dir),
         },
         "window_estimates": {
-            "window_duration_seconds": settings.common.window_duration,
-            "stride_seconds": settings.common.window_stride,
+            "window_duration_seconds": window_duration,
+            "stride_seconds": window_stride,
             "total_windows": 0,
             "annotated_windows_estimate": 0,
         },
@@ -289,12 +323,12 @@ def audit_manifest(
                         f"raw probe duration {duration:.6f}s)."
                     )
                 windows = _estimated_windows(
-                    duration, settings.common.window_duration, settings.common.window_stride
+                    duration, window_duration, window_stride
                 )
                 labeled = 0
                 for window_index in range(windows):
-                    start = window_index * settings.common.window_stride
-                    end = start + settings.common.window_duration
+                    start = window_index * window_stride
+                    end = start + window_duration
                     if any(min(end, a.end) > max(start, a.start) for a in annotations):
                         labeled += 1
                 entry["window_estimate"] = {
@@ -335,8 +369,9 @@ def audit_manifest(
     return report
 
 
-def audit_production_annotations(source: str | Path, settings: RunConfig) -> dict[str, Any]:
+def audit_production_annotations(source: str | Path, settings: Mapping[str, Any]) -> dict[str, Any]:
     """Audit a production annotation TXT and probe its referenced media."""
+    _cache_dir, _window_duration, _window_stride, min_clip = _audit_config_values(settings)
     path = Path(source).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Annotation file not found: {path}")
@@ -349,7 +384,7 @@ def audit_production_annotations(source: str | Path, settings: RunConfig) -> dic
         "errors": [],
         "warnings": [],
     }
-    clips, audio = load_annotations(path, min_clip=settings.common.min_clip)
+    clips, audio = load_annotations(path, min_clip=min_clip)
     durations: dict[str, float] = {}
     for clip in clips:
         video_path = Path(clip.video_name)
@@ -396,7 +431,7 @@ def audit_production_annotations(source: str | Path, settings: RunConfig) -> dic
 
 def audit_source(
     source: str | Path,
-    settings: RunConfig,
+    settings: Mapping[str, Any],
     *,
     training_config: str | Path = "config/train.yaml",
 ) -> dict[str, Any]:
