@@ -131,8 +131,8 @@ def _merge_spans(spans: Sequence[_Span], *, max_gap: float) -> list[_Span]:
     return merged
 
 
-def _p2_envelope(values: np.ndarray, decay: float) -> np.ndarray:
-    """Follow P2 rises immediately and let falls decay asymmetrically."""
+def _good_probability_envelope(values: np.ndarray, decay: float) -> np.ndarray:
+    """Follow P(good) rises immediately and let falls decay asymmetrically."""
     if decay <= 0.0 or len(values) == 0:
         return values.copy()
     envelope = values.copy()
@@ -168,7 +168,7 @@ def generate_candidates(
         return []
 
     p_bad, p_good = probabilities.T
-    good_envelope = _p2_envelope(p_good, settings.p2_envelope_decay)
+    good_envelope = _good_probability_envelope(p_good, settings.p2_envelope_decay)
     scores = probabilities @ np.asarray(settings.class_score_weights, dtype=np.float64)
 
     accepted: list[_Span] = []
