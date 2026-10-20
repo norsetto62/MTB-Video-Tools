@@ -165,14 +165,17 @@ def dispatch(args: argparse.Namespace) -> int:
         return _inspect_checkpoint(checkpoint)
 
     if args.command == "audit":
-        from .config_compat import load_run_config
+        from .config_loader import load_config
         from .dataset.audit import audit_source, print_audit_report
 
         if not args.source.is_file():
             print(f"Input file not found: {args.source}", file=sys.stderr)
             return 2
-        settings = load_run_config(args.config)
-        _configure_logging(settings.common.log_level)
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
         report = audit_source(
             args.source,
             settings,
