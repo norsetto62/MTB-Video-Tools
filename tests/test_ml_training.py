@@ -1,4 +1,4 @@
-"""Focused tests for the modular three-class ML trainer."""
+"""Focused tests for the modular binary ML trainer."""
 
 import copy
 
@@ -256,7 +256,7 @@ def test_checkpoint_contains_restored_model_scaler_and_training_metadata(tmp_pat
     assert payload["best_metric"] == pytest.approx(summary["best_val_loss"])
     assert payload["metadata"]["best_val_f1"] == pytest.approx(summary["best_val_f1"])
     assert payload["metadata"]["fold_video_id"] == "validation-ride"
-    assert payload["training_config"]["class_weights"] == (0.2, 1.0, 6.5)
+    assert payload["training_config"]["class_weights"] == (1.0, 1.0)
     assert restored.feature_dim == model.feature_dim
     assert restored.hidden_dim == model.hidden_dim
     np.testing.assert_array_equal(restored_scaler.mean_, scaler.mean_)
