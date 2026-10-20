@@ -147,10 +147,21 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "models":
         checkpoint = args.checkpoint
         if checkpoint is None:
-            from .config_compat import load_run_config
+            from collections.abc import Mapping
 
-            settings = load_run_config(args.config)
-            checkpoint = settings.checkpoint
+            from .config_loader import load_config
+
+            config = load_config(args.config)
+            model = config.get("model", {})
+            if not isinstance(model, Mapping):
+                raise ValueError("Configuration section 'model' must be a mapping.")
+            configured_checkpoint = model.get("checkpoint", "models/best_model.pt")
+            if (
+                not isinstance(configured_checkpoint, (str, Path))
+                or not str(configured_checkpoint).strip()
+            ):
+                raise ValueError("model.checkpoint must be a non-empty path string.")
+            checkpoint = Path(configured_checkpoint).expanduser()
         return _inspect_checkpoint(checkpoint)
 
     if args.command == "audit":
