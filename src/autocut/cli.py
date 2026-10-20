@@ -205,7 +205,29 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command in {"train", "validate", "lovo", "hpo"}:
+    if args.command == "train":
+        from .config_loader import load_config
+        from .pipeline.training import run_training
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        result = run_training(manifest, settings)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if args.command in {"validate", "lovo", "hpo"}:
 
         from .config_compat import load_training_config
 
@@ -215,12 +237,6 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        if args.command == "train":
-            from .pipeline.training import run_training
-
-            result = run_training(manifest, settings)
-            print(json.dumps(result, indent=2, default=str))
-            return 0
         if args.command == "hpo":
             from .pipeline.hpo import run_hpo
 
