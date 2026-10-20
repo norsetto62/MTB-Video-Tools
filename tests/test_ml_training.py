@@ -39,8 +39,8 @@ def _config(**kwargs):
 
 
 def test_targets_to_classes_uses_exact_boundaries():
-    targets = np.array([0.0, 0.4999, 0.5, 2.4999, 2.5, 3.0])
-    np.testing.assert_array_equal(targets_to_classes(targets), [0, 0, 1, 1, 2, 2])
+    targets = np.array([0.0, 0.4999, 0.5, 1.9999, 2.0, 3.0])
+    np.testing.assert_array_equal(targets_to_classes(targets), [0, 0, 1, 1, 1, 2])
 
 
 @pytest.mark.parametrize(

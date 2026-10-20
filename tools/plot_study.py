@@ -1,19 +1,52 @@
+
+import argparse
+from pathlib import Path
+
 import optuna
 
-# Point to your database and study name
-storage_url = r"sqlite:///C:\VideoTools\MTB-Video-Tools\data\db\hpo_study.db"
-study_name = "study_12"  # Update with your Study #12 name
 
-study = optuna.load_study(study_name=study_name, storage=storage_url)
+def main():
+    parser = argparse.ArgumentParser(
+        description="Plot Optuna study results."
+    )
+    parser.add_argument(
+        "study_name",
+        help="Name of the Optuna study to plot, e.g. study_1",
+    )
+    parser.add_argument(
+        "--database",
+        default="data/db/hpo_study.db",
+        help="Path to the Optuna SQLite database",
+    )
+    args = parser.parse_args()
 
-# 1. Optimization History (shows the sawtooth climbing over trials)
-fig_history = optuna.visualization.plot_optimization_history(study)
-fig_history.show()
+    db_path = Path(args.database).resolve()
+    if not db_path.is_file():
+        raise FileNotFoundError(f"Optuna database not found: {db_path}")
 
-# 2. Slice Plot (shows how parameters like hidden_dim and c2_threshold impact the score)
-fig_slice = optuna.visualization.plot_slice(study)
-fig_slice.show()
+    storage_url = f"sqlite:///{db_path.as_posix()}"
 
-# 3. Parameter Importances (shows which hyperparameter drove the score the most)
-fig_importances = optuna.visualization.plot_param_importances(study)
-fig_importances.show()
+    study = optuna.load_study(
+        study_name=args.study_name,
+        storage=storage_url,
+    )
+
+    print(f"Study: {study.study_name}")
+    print(f"Trials: {len(study.trials)}")
+    if study.best_trial is not None:
+        print(f"Best value: {study.best_value:.6f}")
+        print(f"Best parameters: {study.best_params}")
+    else:
+        print("No completed trials yet.")
+
+    optuna.visualization.plot_optimization_history(study).show()
+    optuna.visualization.plot_slice(study).show()
+
+    try:
+        optuna.visualization.plot_param_importances(study).show()
+    except (ValueError, RuntimeError) as exc:
+        print(f"Could not plot parameter importances: {exc}")
+
+
+if __name__ == "__main__":
+    main()
