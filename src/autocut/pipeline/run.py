@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import math
 import json
 import logging
 from pathlib import Path
 import time
 from typing import Iterable, Mapping
+
+from ..config_loader import Config
+from ..audio.config import AudioConfig
+from ..selection.candidates_generation import CandidateGenerationConfig
 
 import cv2
 import numpy as np
@@ -52,7 +57,7 @@ def _extract_windows(
     settings: object,
 ) -> FeatureWindows | None:
     """Load cached motion features or extract, cache, and window them."""
-    cache_dir = settings.cache_dir / "features"
+    cache_dir = settings.paths.cache_dir / "features"
     cache_clip = Clip(
         video_name=str(video_path),
         start=float(start),
@@ -63,8 +68,8 @@ def _extract_windows(
         video_path,
         cache_dir,
         cache_clip,
-        sample_fps=settings.sample_fps,
-        processing_width=settings.processing_width,
+        sample_fps=settings.video.sampling_fps,
+        processing_width=settings.video.processing_width,
     )
 
     if sequence is not None:
@@ -89,23 +94,23 @@ def _extract_windows(
         started = time.monotonic()
         last_progress = started
         frames_processed = 0
-        estimated_frames = max(1, int(round((end - start) * settings.sample_fps)))
+        estimated_frames = max(1, int(round((end - start) * settings.video.sampling_fps)))
 
         logger.info(
             "Analysing %s range [%.1f, %.1f]s (%.1fs at %.2f sampled FPS).",
-            video_path, start, end, end - start, settings.sample_fps,
+            video_path, start, end, end - start, settings.video.sampling_fps,
         )
 
         with VideoReader(
             video_path,
             start=start,
             duration=end - start,
-            sample_fps=settings.sample_fps,
+            sample_fps=settings.video.sampling_fps,
         ) as reader:
             for _frame_index, timestamp, frame in reader:
                 frames_processed += 1
                 height, width = frame.shape[:2]
-                target_width = min(width, settings.processing_width)
+                target_width = min(width, settings.video.processing_width)
                 if target_width != width:
                     target_height = max(2, int(round(height * target_width / width)))
                     frame = cv2.resize(
@@ -162,21 +167,21 @@ def _extract_windows(
             video_path,
             cache_dir,
             cache_clip,
-            sample_fps=settings.sample_fps,
-            processing_width=settings.processing_width,
+            sample_fps=settings.video.sampling_fps,
+            processing_width=settings.video.processing_width,
         )
         logger.info("Feature cache SAVED: %s", cache_path)
 
     try:
         return build_windows(
             sequence,
-            window=settings.common.window_duration,
-            stride=settings.common.window_stride,
+            window=settings.features.window_duration,
+            stride=settings.features.window_stride,
         )
     except ValueError as exc:
         # A short processing range is not fatal: mandatory clips are still
         # retained by the timeline stage.
-        if len(sequence.timestamps) * (1.0 / settings.sample_fps) < settings.common.window_duration:
+        if len(sequence.timestamps) * (1.0 / settings.video.sampling_fps) < settings.features.window_duration:
             logger.info(
                 "Skipping candidate inference for short range %s [%.3f, %.3f): %s",
                 video_path, start, end, exc,
@@ -210,26 +215,121 @@ def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
     )
 
 
-def _config_summary(settings: object) -> dict:
+def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationConfig, AudioConfig]:
+    """Validate run-specific settings and construct only domain-specific configs."""
+    if not isinstance(config, Config):
+        raise TypeError("run_pipeline expects a generic Config loaded by load_config().")
+
+    raw = config.to_dict()
+    allowed_sections = {"paths", "video", "features", "model", "selection", "audio", "logging"}
+    unknown_sections = set(raw) - allowed_sections
+    if unknown_sections:
+        raise ValueError(f"Unknown top-level configuration section(s): {', '.join(sorted(unknown_sections))}.")
+
+    defaults = {
+        "paths": {"data_dir": "data", "models_dir": "models", "output_dir": "output", "cache_dir": "data/cache"},
+        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
+        "features": {"window_duration": 4.0, "window_stride": 2.0},
+        "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
+        "selection": {
+            "min_clip": 3.0, "max_clip_duration": 0.0, "class_score_weights": [0.0, 1.0, 2.5],
+            "junk_threshold": 0.20, "action_threshold": 0.60, "flow_threshold": 0.40,
+            "min_candidate_duration": 3.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0,
+            "p2_envelope_decay": 0.0,
+        },
+        "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0},
+        "logging": {"level": "INFO"},
+    }
+    allowed_keys = {
+        "paths": {"data_dir", "models_dir", "output_dir", "cache_dir"},
+        "video": {"sampling_fps", "processing_width", "encoder"},
+        "features": {"window_duration", "window_stride"},
+        "model": {"checkpoint", "inference_batch_size"},
+        "selection": set(defaults["selection"]),
+        "audio": {"sync_mode", "max_synced_clip_duration", "fade_duration"},
+        "logging": {"level"},
+    }
+    for name, values in defaults.items():
+        section = raw.setdefault(name, {})
+        if not isinstance(section, Mapping):
+            raise ValueError(f"Configuration section {name!r} must be a mapping.")
+        unknown = set(section) - allowed_keys[name]
+        if unknown:
+            raise ValueError(f"Unknown field(s) in {name!r}: {', '.join(sorted(unknown))}.")
+        for key, value in values.items():
+            section.setdefault(key, value)
+
+    def path_value(section: str, key: str) -> str:
+        value = raw[section][key]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{section}.{key} must be a non-empty path string.")
+        return str(Path(value).expanduser())
+
+    def number(section: str, key: str, *, minimum: float, exclusive: bool = False) -> float:
+        value = raw[section][key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{section}.{key} must be a finite number.")
+        result = float(value)
+        if not math.isfinite(result) or result < minimum or (exclusive and result == minimum):
+            relation = "greater than" if exclusive else "at least"
+            raise ValueError(f"{section}.{key} must be finite and {relation} {minimum}.")
+        return result
+
+    for key in allowed_keys["paths"]:
+        raw["paths"][key] = path_value("paths", key)
+    raw["model"]["checkpoint"] = path_value("model", "checkpoint")
+    for section, key in (
+        ("video", "sampling_fps"), ("features", "window_duration"),
+        ("features", "window_stride"), ("selection", "min_clip"),
+    ):
+        raw[section][key] = number(section, key, minimum=0.0, exclusive=True)
+    raw["selection"]["max_clip_duration"] = number(
+        "selection", "max_clip_duration", minimum=0.0
+    )
+
+    width = raw["video"]["processing_width"]
+    if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
+        raise ValueError("video.processing_width must be a positive integer.")
+    batch_size = raw["model"]["inference_batch_size"]
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError("model.inference_batch_size must be a positive integer.")
+    if raw["video"]["encoder"] not in {"h264_nvenc", "libx264"}:
+        raise ValueError("video.encoder must be h264_nvenc or libx264.")
+    level = raw["logging"]["level"]
+    if not isinstance(level, str) or level.upper() not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}:
+        raise ValueError("logging.level must be a standard Python logging level.")
+
+    candidate_values = dict(raw["selection"])
+    # min_clip is the sole final candidate-duration filter.
+    candidate_values["min_candidate_duration"] = raw["selection"]["min_clip"]
+    candidate_config = CandidateGenerationConfig(**candidate_values)
+    audio_config = AudioConfig(**raw["audio"])
+    return Config(raw), candidate_config, audio_config
+
+
+def _config_summary(
+    settings: Config,
+    candidate_config: CandidateGenerationConfig,
+    audio_config: AudioConfig,
+) -> dict:
     """Build a stable, JSON-safe subset of the effective run configuration."""
     return {
-        "sample_fps": settings.sample_fps,
-        "processing_width": settings.processing_width,
-        "video_encoder": getattr(settings, "video_encoder", "h264_nvenc"),
-        "window_duration": settings.common.window_duration,
-        "window_stride": settings.common.window_stride,
-        "checkpoint": str(settings.checkpoint),
-        "inference_batch_size": settings.inference_batch_size,
-        "min_clip": settings.common.min_clip,
-        "max_clip_duration": settings.max_clip_duration,
-        "candidate_generation": asdict(settings.candidates),
+        "sample_fps": settings.video.sampling_fps,
+        "processing_width": settings.video.processing_width,
+        "video_encoder": settings.video.encoder,
+        "window_duration": settings.features.window_duration,
+        "window_stride": settings.features.window_stride,
+        "checkpoint": str(settings.model.checkpoint),
+        "inference_batch_size": settings.model.inference_batch_size,
+        "min_clip": settings.selection.min_clip,
+        "max_clip_duration": settings.selection.max_clip_duration,
+        "candidate_generation": asdict(candidate_config),
         "audio": {
-            "sync_mode": settings.audio.sync_mode.value,
-            "max_synced_clip_duration": settings.audio.max_synced_clip_duration,
-            "fade_duration": settings.audio.fade_duration,
+            "sync_mode": audio_config.sync_mode.value,
+            "max_synced_clip_duration": audio_config.max_synced_clip_duration,
+            "fade_duration": audio_config.fade_duration,
         },
     }
-
 
 def run_pipeline(
     annotation_path: str | Path,
@@ -244,25 +344,26 @@ def run_pipeline(
     intervals are separately protected during selection and are never trimmed
     or synchronized. The returned dictionary is also written as a result JSON.
     """
+    settings, candidate_config, audio_config = _run_config_sections(settings)
     annotation = Path(annotation_path)
     if not annotation.is_file():
         raise FileNotFoundError(f"Annotation file not found: {annotation}")
-    if not settings.checkpoint.is_file():
-        raise FileNotFoundError(f"Model checkpoint not found: {settings.checkpoint}")
+    if not settings.model.checkpoint.is_file():
+        raise FileNotFoundError(f"Model checkpoint not found: {settings.model.checkpoint}")
 
     destination = (
         Path(output_path)
         if output_path is not None
-        else settings.common.output_dir / f"{annotation.stem}_autocut.mp4"
+        else settings.paths.output_dir / f"{annotation.stem}_autocut.mp4"
     )
     logger.info("AutoCut run starting.")
     logger.info("Annotation manifest: %s", annotation.resolve())
-    logger.info("Model checkpoint: %s", settings.checkpoint.resolve())
+    logger.info("Model checkpoint: %s", settings.model.checkpoint.resolve())
     logger.info("Planned output: %s", destination.resolve())
 
     clips, music_directive = load_annotations(
         annotation,
-        min_clip=settings.common.min_clip,
+        min_clip=settings.selection.min_clip,
     )
     if not clips:
         raise ValueError(
@@ -305,7 +406,7 @@ def run_pipeline(
         try:
             audio_analysis = analyze_audio(
                 music_directive.path,
-                cache_dir=settings.cache_dir / "audio",
+                cache_dir=settings.paths.cache_dir / "audio",
             )
         except Exception as exc:
             logger.warning(
@@ -369,16 +470,16 @@ def run_pipeline(
             annotation_order,
         )
         inference = infer_windows(
-            settings.checkpoint,
+            settings.model.checkpoint,
             windows,
-            batch_size=settings.inference_batch_size,
+            batch_size=settings.model.inference_batch_size,
         )
         probabilities = inference.probabilities  # shape: [N, 3]
 
-        if isinstance(settings.checkpoint, (str, Path)):
-            payload = load_checkpoint(settings.checkpoint, map_location="cpu")
-        elif isinstance(settings.checkpoint, Mapping):
-            payload = validate_checkpoint(dict(settings.checkpoint))
+        if isinstance(settings.model.checkpoint, (str, Path)):
+            payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
+        elif isinstance(settings.model.checkpoint, Mapping):
+            payload = validate_checkpoint(dict(settings.model.checkpoint))
         else:
             raise TypeError("checkpoint must be a path or a checkpoint mapping.")
 
@@ -409,7 +510,7 @@ def run_pipeline(
         candidates = generate_candidates(
             cleaned_inference,
             clip_duration=end - start,
-            config=settings.candidates,
+            config=candidate_config,
         )
         logger.info(
             "Annotation #%d result: %d inference window(s), %d candidate clip(s).",
@@ -453,8 +554,8 @@ def run_pipeline(
     selection = select_candidates(
         all_candidates,
         mandatory,
-        min_clip_duration=settings.common.min_clip,
-        max_clip_duration=settings.max_clip_duration,
+        min_clip_duration=settings.selection.min_clip,
+        max_clip_duration=settings.selection.max_clip_duration,
         max_total_duration=audio_analysis.duration if audio_analysis is not None else None,
     )
     timeline = assemble_timeline(selection, mandatory)
@@ -476,8 +577,8 @@ def run_pipeline(
         timeline = prepare_audio_timeline(
             timeline,
             music_directive.path,
-            config=settings.audio,
-            cache_dir=settings.cache_dir / "audio",
+            config=audio_config,
+            cache_dir=settings.paths.cache_dir / "audio",
             analysis=audio_analysis,
         )
 
@@ -493,7 +594,7 @@ def run_pipeline(
             timeline,
             music_directive.path,
             destination,
-            config=settings.audio,
+            config=audio_config,
             mix_original_audio=music_directive.mix,
             video_encoder=(video_encoder or getattr(settings, "video_encoder", "h264_nvenc")),
         )
@@ -503,8 +604,8 @@ def run_pipeline(
         "schema_version": 1,
         "status": "completed",
         "annotation_manifest": str(annotation.resolve()),
-        "checkpoint": str(settings.checkpoint.resolve()),
-        "configuration": _config_summary(settings),
+        "checkpoint": str(settings.model.checkpoint.resolve()),
+        "configuration": _config_summary(settings, candidate_config, audio_config),
         "sources": [
             {
                 "path": name,
@@ -530,8 +631,8 @@ def run_pipeline(
         "audio": {
             "music_path": music_directive.path if music_directive else None,
             "mix_with_original": music_directive.mix if music_directive else False,
-            "sync_mode": settings.audio.sync_mode.value if music_directive else "off",
-            "fade_duration": settings.audio.fade_duration if music_directive else 0.0,
+            "sync_mode": audio_config.sync_mode.value if music_directive else "off",
+            "fade_duration": audio_config.fade_duration if music_directive else 0.0,
         },
         "output": {
             "path": str(render_result.output_path.resolve()),
