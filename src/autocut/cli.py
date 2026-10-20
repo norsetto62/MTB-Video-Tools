@@ -228,12 +228,19 @@ def dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command in {"validate", "lovo", "hpo"}:
+        from .config_loader import load_config
 
-        from .config_compat import load_training_config
-
-        settings = load_training_config(args.config)
-        _configure_logging(settings.common.log_level)
-        manifest = args.manifest or settings.manifest
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
@@ -260,6 +267,7 @@ def dispatch(args: argparse.Namespace) -> int:
         from .pipeline.lovo import run_lovo
         from .pipeline.training import _combine_records
         from .ml.training import train_fixed_epochs
+        from .pipeline.training import _training_config
         import numpy as np
 
         result = run_lovo(manifest, settings)
@@ -270,8 +278,8 @@ def dispatch(args: argparse.Namespace) -> int:
             fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
             for fold in result["folds"]
         ]
-        # Fallback to settings.training.epochs if epochs aren't explicitly tracked per fold
-        mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else settings.training.epochs
+        # Fallback to configured training epochs if folds omit them
+        mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else _training_config(settings).epochs
 
         print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
 
@@ -280,10 +288,12 @@ def dispatch(args: argparse.Namespace) -> int:
         all_windows, all_targets = _combine_records(records, settings)
 
         # Define your production checkpoint destination
-        base_exp_name = getattr(settings, "experiment_name", "baseline")
+        experiment = settings.get("experiment", {})
+        base_exp_name = experiment.get("name", "baseline")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         unique_exp_name = f"{base_exp_name}_{timestamp}"
-        models_dir = Path(settings.common.models_dir) / "experiments"
+        paths = settings.get("paths", {})
+        models_dir = Path(paths.get("models_dir", "models")).expanduser() / "experiments"
         models_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
 
@@ -291,11 +301,11 @@ def dispatch(args: argparse.Namespace) -> int:
         model, scaler, train_summary = train_fixed_epochs(
             train_windows=all_windows,
             train_targets=all_targets,
-            config=settings.training,
+            config=_training_config(settings),
             epochs=mean_epochs,
             checkpoint_path=checkpoint_path,
             data_config=result.get("data_config"),
-            metadata={"experiment_name": settings.experiment_name},
+            metadata={"experiment_name": base_exp_name},
         )
 
         print(f"Master production model successfully saved to {checkpoint_path}")
