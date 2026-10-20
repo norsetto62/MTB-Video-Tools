@@ -3,8 +3,9 @@
 Each feature row represents one flow-sampling interval. MTB 3 samples count
 toward the positive threshold; MTB 0 and 1 samples count together toward the
 negative threshold; MTB 2 and uncovered samples count toward neither class.
-A window is retained only when exactly one configured sample-count threshold
-is met. Windows meeting both thresholds or neither are discarded.
+Positive takes precedence: if the positive threshold is met, label the window
+positive; otherwise label it negative if the negative threshold is met. Reject
+only windows meeting neither threshold.
 """
 
 import numpy as np
@@ -141,13 +142,15 @@ def build_targets(
                 negative_count += 1
             # Uncovered samples and MTB 2 samples count toward neither class.
 
-        is_positive = positive_count >= positive_threshold_samples
-        is_negative = negative_count >= negative_threshold_samples
-        if is_positive == is_negative:
+        if positive_count >= positive_threshold_samples:
+            label = 1.0
+        elif negative_count >= negative_threshold_samples:
+            label = 0.0
+        else:
             continue
 
         X_training.append(windows.X[window_number])
-        y.append(1.0 if is_positive else 0.0)
+        y.append(label)
 
     if not X_training:
         return (
