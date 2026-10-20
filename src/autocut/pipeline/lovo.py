@@ -12,7 +12,6 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..config_loader import Config
 from .training import _combine_records, _experiment_slug, _data_values, _path, _section, _training_config
 from ..dataset.manifest import get_unique_groups, load_manifest
 from ..ml.model import MTBClassifier
