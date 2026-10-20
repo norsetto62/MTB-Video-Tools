@@ -44,7 +44,7 @@ def test_negative_window_counts_mtb0_and_mtb1_together():
 
 
 def test_window_below_both_thresholds_is_discarded():
-    windows, X, y = _build_one(_annotations((0, 1, 3), (1, 2, 0), (2, 4, 2)))
+    windows, X, y = _build_one(_annotations((0, 0.5, 3), (0.5, 1, 0), (1, 4, 2)))
 
     assert X.shape == (0, 8, 54)
     assert y.shape == (0,)
@@ -75,9 +75,9 @@ def test_mtb2_only_window_is_discarded():
 
 @pytest.mark.parametrize(
     ("positive", "negative"),
-    [(0, 2), (-1, 2), (float("inf"), 2), (2, 0), (2, float("nan"))],
+    [(0, 4), (-1, 4), (5.0, 4), (4, 0), (4, True)],
 )
-def test_build_targets_rejects_invalid_thresholds(positive: int, negative: int):
+def test_build_targets_rejects_invalid_thresholds(positive: object, negative: object):
     windows = _make_windows([(0.0, 4.0)])
     with pytest.raises(ValueError):
         build_targets(
