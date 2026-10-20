@@ -175,9 +175,9 @@ def generate_candidates(
     accepted_tiers: dict[int, str] = {}
     for index, interval in enumerate(timestamps):
         start, end = float(interval[0]), float(interval[1])
-        if p_good[index] >= settings.action_threshold:
+        if good_envelope[index] >= settings.action_threshold:
             tier = "high_action"
-        elif p_good[index] >= settings.flow_threshold:
+        elif good_envelope[index] >= settings.flow_threshold:
             tier = "moderate_interest"
         else:
             tier = None
