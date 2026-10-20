@@ -11,7 +11,7 @@ from torch_lr_finder import LRFinder
 # 1. Import your actual model and project utilities
 from autocut.ml.model import MTBClassifier
 from autocut.dataset.manifest import load_manifest
-from autocut.config_compat import load_config
+from autocut.config_loader import load_config
 from autocut.pipeline.training import _combine_records, _training_config
 from autocut.ml.scaling import FeatureScaler
 from autocut.ml.training import _validate_windows, targets_to_classes
