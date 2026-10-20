@@ -1,17 +1,12 @@
-r""""
-Each training window receives an interest target obtained from the
-manual annotations covering that window.
+"""Build binary training targets from MTB annotation durations.
 
-Windows which are not covered by an annotation are NOT used.
+For each window, overlapping MTB 3 intervals contribute to positive duration;
+MTB 0 and 1 intervals contribute together to negative duration; MTB 2 is
+ignored. A window is retained only when exactly one configured threshold is
+met. Uncovered, insufficient-evidence, and mixed-evidence windows are dropped.
 
-The flow timestamps follow flow.py semantics: each timestamp is the 
-END of the frame-to-frame interval used to calculate that row's 
-optical-flow features. The generator therefore derives the
-sampling interval from the flow timestamps and maps N selected rows
-to the represented interval of N sampling periods.
-
-If a window overlaps more than one annotation, its target is the
-duration-weighted mean of the annotation scores.
+Window timestamps follow flow.py semantics and represent the interval covered
+by the selected feature rows.
 """
 
 import numpy as np
