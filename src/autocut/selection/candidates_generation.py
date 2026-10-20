@@ -17,7 +17,7 @@ from ..ml.inference import InferenceResult
 
 @dataclass(frozen=True)
 class CandidateGenerationConfig:
-    """Class-aware thresholds and temporal rules for candidate generation."""
+    """Binary confidence thresholds and temporal rules for candidate generation."""
 
     class_score_weights: tuple[float, float] = (0.0, 1.0)
     junk_threshold: float = 0.20
@@ -26,8 +26,8 @@ class CandidateGenerationConfig:
     min_candidate_duration: float = 3.0
     max_gap_to_merge: float = 3.0
     padding_seconds: float = 2.0
-    # 0 disables smoothing. Otherwise a falling P2 envelope decays by this
-    # factor per inference window, while rises are followed immediately.
+    # Legacy setting name retained for config compatibility. The envelope is
+    # applied to P(good), not a third-class probability.
     p2_envelope_decay: float = 0.0
 
     def __post_init__(self) -> None:
