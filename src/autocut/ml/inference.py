@@ -27,7 +27,7 @@ class InferenceResult:
     Attributes:
         timestamps: Window start/end times in seconds, shape (N, 2).
         probabilities: Class probabilities in class-ID order (0=bad, 1=good),
-            shape (N, 3). Each row sums to approximately one.
+            shape (N, 2). Each row sums to approximately one.
     """
 
     timestamps: np.ndarray
