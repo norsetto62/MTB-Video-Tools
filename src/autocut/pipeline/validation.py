@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from ..annotations import load_training_annotations
-from ..config_compat import TrainingRunConfig
+from .training import _data_values, _path, _section
 from ..data_models import Clip
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def _predict_record(
     record: DatasetRecord,
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
     *,
     model: torch.nn.Module,
     scaler: FeatureScaler,
@@ -44,10 +44,13 @@ def _predict_record(
     info = get_video_info(record.video_path)
     clip = Clip(video_name=record.id, start=0.0, end=info.duration)
     data_config = checkpoint.get("data_config") or {}
-    flow_fps = float(data_config.get("flow_fps", settings.sample_fps))
-    processing_width = int(data_config.get("processing_width", settings.processing_width))
-    window = float(data_config.get("window", settings.common.window_duration))
-    stride = float(data_config.get("stride", settings.common.window_stride))
+    _manifest, configured_fps, configured_width, configured_window, configured_stride = _data_values(settings)
+    flow_fps = float(data_config.get("flow_fps", configured_fps))
+    processing_width = int(data_config.get("processing_width", configured_width))
+    window = float(data_config.get("window", configured_window))
+    stride = float(data_config.get("stride", configured_stride))
+    paths = _section(settings, "paths")
+    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
 
     logger.info(
         "Record %s: extracting features at %.3f fps, width %d",
@@ -58,7 +61,7 @@ def _predict_record(
         clip,
         sample_fps=flow_fps,
         processing_width=processing_width,
-        cache_dir=settings.cache_dir,
+        cache_dir=cache_dir,
     )
     windows = build_windows(sequence, window=window, stride=stride)
     X = windows.X
@@ -125,7 +128,7 @@ def _predict_record(
 
 def run_validation(
     manifest_path: str | Path,
-    settings: TrainingRunConfig,
+    settings: Mapping[str, Any],
     *,
     checkpoint_path: str | Path,
     group_id: str,
@@ -154,7 +157,11 @@ def run_validation(
 
     model = restore_model(checkpoint, device="cpu")
     records = load_manifest(manifest_path, verify_files=True)
-    if group_id.strip() in set(settings.train_groups):
+    data = _section(settings, "data")
+    train_groups = data.get("train_groups", ())
+    if not isinstance(train_groups, (tuple, list)):
+        raise ValueError("data.train_groups must be a list of group IDs.")
+    if group_id.strip() in set(train_groups):
         raise ValueError(
             f"Refusing to evaluate training group {group_id.strip()!r}; "
             "choose a group excluded from data.train_groups."
@@ -187,10 +194,15 @@ def run_validation(
         "class_mapping": checkpoint.get("class_mapping") or {},
     }
 
+    experiment = _section(settings, "experiment")
+    results_dir = _path(
+        experiment.get("results_dir", "output/experiments"),
+        name="experiment.results_dir",
+    )
     destination = (
         Path(output_path).expanduser()
         if output_path is not None
-        else settings.results_dir / f"{checkpoint_file.stem}_{group_id.strip()}_predictions.json"
+        else results_dir / f"{checkpoint_file.stem}_{group_id.strip()}_predictions.json"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
