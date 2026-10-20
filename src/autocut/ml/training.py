@@ -95,8 +95,8 @@ class TrainingConfig:
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
     """Map continuous AutoCut targets to classes 0, 1, and 2.
 
-    Values below 0.5 map to class 0; [0.5, 2.5) maps to class 1;
-    values greater than or equal to 2.5 map to class 2.
+    Values below 0.5 map to class 0; [0.5, 2.0) maps to class 1;
+    values greater than or equal to 2.0 map to class 2.
     """
     try:
         values = np.asarray(targets, dtype=np.float64)
@@ -110,7 +110,7 @@ def targets_to_classes(targets: np.ndarray) -> np.ndarray:
         raise ValueError("targets must lie within the continuous range [0, 3].")
     classes = np.ones(values.shape, dtype=np.int64)
     classes[values < 0.5] = 0
-    classes[values >= 2.5] = 2
+    classes[values >= 2.0] = 2
     return classes
 
 
