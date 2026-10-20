@@ -1,15 +1,12 @@
 import json
 import logging
 from pathlib import Path
-import copy
 from dataclasses import replace
 import numpy as np
 import optuna
-import yaml
 from datetime import datetime
 
 from ..config_compat import TrainingRunConfig
-from .lovo import run_lovo  
 from ..dataset.manifest import load_manifest
 from .lovo import run_lovo
 from .training import _combine_records
@@ -106,8 +103,8 @@ def run_hpo(
         trial_settings = replace(
             settings,
             training=updated_training,
-            train_groups=filtered_train_groups,
-            validation_groups=proxy_groups, # Pass proxy groups as tuple/list expected by our config schema
+            train_groups=tuple(filtered_train_groups),
+            validation_groups=tuple(proxy_groups),
         )
 
         # Explicitly restrict evaluation to proxy folds and the configured non-proxy

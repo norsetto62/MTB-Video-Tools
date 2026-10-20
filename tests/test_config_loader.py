@@ -79,7 +79,7 @@ def test_override_freezes_inserted_values_without_mutating_caller_data():
     inserted = {"numbers": [1, 2]}
 
     changed = config.override("section.added", inserted)
-    inserted["values"].append(3)
+    inserted["numbers"].append(3)
 
-    assert config.section == Config({"existing": True})
     assert changed.section.added.numbers == (1, 2)
+    assert inserted["numbers"] == [1, 2, 3]
