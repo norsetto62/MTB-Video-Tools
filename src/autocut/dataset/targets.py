@@ -90,53 +90,79 @@ def validate_targets(
     return errors
 
 
+def _validate_threshold(value: float, *, name: str) -> float:
+    """Validate a positive duration threshold in seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite positive number of seconds.")
+    result = float(value)
+    if not np.isfinite(result) or result <= 0:
+        raise ValueError(f"{name} must be a finite positive number of seconds.")
+    return result
+
+
 def build_targets(
     windows: FeatureWindows,
     annotations: list[Annotation],
+    *,
+    positive_threshold_seconds: float = 2.0,
+    negative_threshold_seconds: float = 2.0,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Build binary targets from annotation durations within each window.
+
+    MTB 3 duration counts toward the positive threshold. MTB 0 and 1
+    durations count together toward the negative threshold. MTB 2 is ignored.
+    A window is retained only when exactly one threshold is met; windows
+    meeting both thresholds or neither threshold are discarded.
+
+    Threshold comparisons are inclusive. Returned labels are 1.0 for positive
+    and 0.0 for negative windows.
+    """
+    positive_threshold_seconds = _validate_threshold(
+        positive_threshold_seconds, name="positive_threshold_seconds"
+    )
+    negative_threshold_seconds = _validate_threshold(
+        negative_threshold_seconds, name="negative_threshold_seconds"
+    )
 
     X_training: list[np.ndarray] = []
     y: list[float] = []
     timestamps = windows.timestamps
 
     for window_number in range(windows.X.shape[0]):
-        covered_duration = 0.0
-        weighted_score = 0.0
+        positive_duration = 0.0
+        negative_duration = 0.0
 
         for annotation in annotations:
-
-            overlap =_annotation_overlap(
+            overlap = _annotation_overlap(
                 timestamps[window_number],
                 annotation,
             )
-
             if overlap <= 0:
                 continue
 
-            covered_duration += overlap
-            weighted_score += (
-                overlap * annotation.score
-            )
+            if annotation.score == 3:
+                positive_duration += overlap
+            elif annotation.score in (0, 1):
+                negative_duration += overlap
+            # MTB 2 is intentionally excluded from both counts.
 
-        if covered_duration > 0:
-            X_training.append(windows.X[window_number])
-            y.append(
-                weighted_score
-                / covered_duration
-            )
+        is_positive = positive_duration >= positive_threshold_seconds
+        is_negative = negative_duration >= negative_threshold_seconds
+
+        # Discard ambiguous windows and windows with insufficient evidence.
+        if is_positive == is_negative:
+            continue
+
+        X_training.append(windows.X[window_number])
+        y.append(1.0 if is_positive else 0.0)
 
     if not X_training:
         return (
             np.empty((0, windows.X.shape[1], windows.X.shape[2]), dtype=np.float32),
             np.empty(0, dtype=np.float32),
         )
-    
+
     return (
-        np.stack(X_training).astype(
-            np.float32,
-            copy=False,
-        ), np.asarray(
-            y,
-            dtype=np.float32,
-        )
+        np.stack(X_training).astype(np.float32, copy=False),
+        np.asarray(y, dtype=np.float32),
     )
