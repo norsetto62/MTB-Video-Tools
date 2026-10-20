@@ -54,7 +54,7 @@ def _extract_windows(
     video_path: Path,
     start: float,
     end: float,
-    settings: object,
+    settings: Config,
 ) -> FeatureWindows | None:
     """Load cached motion features or extract, cache, and window them."""
     cache_dir = settings.paths.cache_dir / "features"
@@ -259,11 +259,11 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         for key, value in values.items():
             section.setdefault(key, value)
 
-    def path_value(section: str, key: str) -> str:
+    def path_value(section: str, key: str) -> Path:
         value = raw[section][key]
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, (str, Path)) or not str(value).strip():
             raise ValueError(f"{section}.{key} must be a non-empty path string.")
-        return str(Path(value).expanduser())
+        return Path(value).expanduser()
 
     def number(section: str, key: str, *, minimum: float, exclusive: bool = False) -> float:
         value = raw[section][key]
@@ -299,7 +299,13 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
     if not isinstance(level, str) or level.upper() not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}:
         raise ValueError("logging.level must be a standard Python logging level.")
 
-    candidate_values = dict(raw["selection"])
+    candidate_fields = {
+        "class_score_weights", "junk_threshold", "action_threshold", "flow_threshold",
+        "min_candidate_duration", "max_gap_to_merge", "padding_seconds", "p2_envelope_decay",
+    }
+    candidate_values = {
+        key: value for key, value in raw["selection"].items() if key in candidate_fields
+    }
     # min_clip is the sole final candidate-duration filter.
     candidate_values["min_candidate_duration"] = raw["selection"]["min_clip"]
     candidate_config = CandidateGenerationConfig(**candidate_values)
@@ -587,7 +593,7 @@ def run_pipeline(
     if music_directive is None:
         render_result = render_timeline(
             timeline, destination,
-            video_encoder=video_encoder or getattr(settings, "video_encoder", "h264_nvenc"),
+            video_encoder=video_encoder or settings.video.encoder,
         )
     else:
         render_result = render_with_music(
@@ -596,7 +602,7 @@ def run_pipeline(
             destination,
             config=audio_config,
             mix_original_audio=music_directive.mix,
-            video_encoder=(video_encoder or getattr(settings, "video_encoder", "h264_nvenc")),
+            video_encoder=(video_encoder or settings.video.encoder),
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")
