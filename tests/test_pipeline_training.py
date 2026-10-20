@@ -70,7 +70,7 @@ def test_run_training_combines_groups_and_writes_checkpoint_and_json(tmp_path, m
         captured.setdefault("record_ids", []).append([r.id for r in records])
         count = 9 if records[0].group_id == "train" else 6
         X = np.zeros((count, 8, 54), dtype=np.float32)
-        y = np.resize(np.array([0.0, 1.0, 3.0], dtype=np.float32), count)
+        y = np.resize(np.array([0.0, 1.0], dtype=np.float32), count)
         return X, y
 
     def fake_train(train_X, train_y, val_X, val_y, config, **kwargs):
