@@ -22,27 +22,18 @@ logger = logging.getLogger(__name__)
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
-    """Return binary bad/good metrics; class 1 (good) is the positive class."""
-    confusion = [
-        [int(np.sum((actual == truth) & (predicted == guess))) for guess in range(2)]
-        for truth in range(2)
-    ]
-    class_f1 = []
-    for class_id in range(2):
-        tp = confusion[class_id][class_id]
-        fp = sum(confusion[row][class_id] for row in range(2) if row != class_id)
-        fn = sum(confusion[class_id][col] for col in range(2) if col != class_id)
-        denom = 2 * tp + fp + fn
-        class_f1.append(float(2 * tp / denom) if denom else 0.0)
+    """Report PU selection statistics without treating unlabeled windows as negative."""
+    positive = actual == 2
+    unlabeled = actual != 2
+    predicted_positive = predicted == 2
     return {
         "windows": int(len(actual)),
-        "accuracy": float(np.mean(actual == predicted)),
-        "micro_f1": float(np.mean(actual == predicted)),
-        "macro_f1": float(np.mean(class_f1)),
-        "class_f1": {"0": class_f1[0], "1": class_f1[1]},
-        "confusion_matrix": confusion,
+        "positive_windows": int(np.sum(positive)),
+        "unlabeled_windows": int(np.sum(unlabeled)),
+        "positive_recall_on_P": float(np.mean(predicted_positive[positive])) if np.any(positive) else None,
+        "selected_fraction_of_U": float(np.mean(predicted_positive[unlabeled])) if np.any(unlabeled) else None,
+        "predicted_positive_fraction": float(np.mean(predicted_positive)) if len(actual) else 0.0,
     }
-
 
 def _fit_fixed_epochs(
     windows: np.ndarray,
@@ -292,7 +283,7 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        good_threshold = getattr(training_config, "good_threshold", 0.50)
+        good_threshold = training_config.c2_threshold
         predicted, probabilities = _predict(model, scaler, test_X, good_threshold=good_threshold)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
@@ -325,7 +316,7 @@ def run_lovo(
                     "window_index": test_window_records[index][1],
                     "actual_class": int(actual[index]),
                     "predicted_class": int(predicted[index]),
-                    "probabilities": {str(i): float(probabilities[index, i]) for i in range(2)},
+                    "probabilities": {str(i): float(probabilities[index, i]) for i in range(3)},
                 }
                 for index in range(len(actual))
             ],
@@ -336,8 +327,9 @@ def run_lovo(
 
         log_msg = (
             f"LOVO fold {fold_index + 1} complete: group={test_group} "
-            f"windows={metrics['windows']} accuracy={metrics['accuracy']:.4f} "
-            f"macro_f1={metrics['macro_f1']:.4f}"
+            f"windows={metrics['windows']} "
+            f"P_recall={metrics['positive_recall_on_P']} "
+            f"U_selected={metrics['selected_fraction_of_U']}"
         )
 
         # Let the logger do its job if INFO is enabled
@@ -361,11 +353,10 @@ def run_lovo(
         "aggregation": {
             "micro": pooled_metrics,
             "macro_group_mean": {
-                "accuracy": float(np.mean([f["metrics"]["accuracy"] for f in folds])),
-                "micro_f1": float(np.mean([f["metrics"]["micro_f1"] for f in folds])),
-                "macro_f1": float(np.mean([f["metrics"]["macro_f1"] for f in folds])),
+                "positive_recall_on_P": float(np.mean([f["metrics"]["positive_recall_on_P"] for f in folds if f["metrics"]["positive_recall_on_P"] is not None])),
+                "selected_fraction_of_U": float(np.mean([f["metrics"]["selected_fraction_of_U"] for f in folds if f["metrics"]["selected_fraction_of_U"] is not None])),
             },
-            "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group scores.",
+            "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group PU selection statistics; U is not treated as negative.",
         },
         "folds": folds,
     }
