@@ -60,7 +60,7 @@ def run_hpo(
         study_name=study_name,
         storage=storage_db,
         load_if_exists=True,
-        direction="maximize",
+        directions=["maximize", "minimize"],
         sampler=optuna.samplers.TPESampler(seed=training_config.seed),
     )
 
@@ -104,7 +104,7 @@ def run_hpo(
         return params
 
     # Define objective function closure
-    def objective(trial: optuna.Trial) -> float:
+    def objective(trial: optuna.Trial) -> tuple[float, float]:
         params = suggest_parameters(trial)
         lr = float(params["lr"])
         weight_decay = float(params["weight_decay"])
@@ -145,13 +145,11 @@ def run_hpo(
                    if f.get("metrics", {}).get("selected_fraction_of_U") is not None]
         recall = float(np.mean(recalls)) if recalls else 0.0
         u_selection = float(np.mean(u_rates)) if u_rates else 1.0
-        score = recall * (1.0 - u_selection)
         trial.set_user_attr("positive_recall_on_P", recall)
         trial.set_user_attr("selected_fraction_of_U", u_selection)
         trial.set_user_attr("positive_prior", positive_prior)
         trial.set_user_attr("positive_threshold", positive_threshold)
-        trial.set_user_attr("pu_selection_score", score)
-        return score
+        return recall, u_selection
 
     # Run Optuna optimization loop
 
@@ -168,45 +166,96 @@ def run_hpo(
     else:
         logger.info("n_trials is set to 0. Skipping optimization.")
 
-    # Compile results payload
-    best_attrs = study.best_trial.user_attrs
+    # Multi-objective studies have a Pareto frontier, not a single best_trial.
+    pareto_trials = sorted(
+        study.best_trials,
+        key=lambda trial: (
+            trial.user_attrs.get("selected_fraction_of_U", 1.0),
+            -trial.user_attrs.get("positive_recall_on_P", 0.0),
+            trial.number,
+        ),
+    )
+    if not pareto_trials:
+        raise RuntimeError("HPO produced no completed Pareto-efficient trials.")
+
+    # Production refit needs one explicit choice. Select the Pareto trial with
+    # highest P recall; break ties by lower U selection. This is a post-study
+    # deployment policy, not a combined optimization objective.
+    production_trial = min(
+        pareto_trials,
+        key=lambda trial: (
+            -trial.user_attrs.get("positive_recall_on_P", 0.0),
+            trial.user_attrs.get("selected_fraction_of_U", 1.0),
+            trial.number,
+        ),
+    )
+    production_attrs = production_trial.user_attrs
+    pareto_payload = [
+        {
+            "trial_number": trial.number,
+            "objectives": {
+                "positive_recall_on_P": trial.values[0],
+                "selected_fraction_of_U": trial.values[1],
+            },
+            "params": trial.params,
+            "metrics": {
+                "positive_recall_on_P": trial.user_attrs.get("positive_recall_on_P", 0.0),
+                "selected_fraction_of_U": trial.user_attrs.get("selected_fraction_of_U", 1.0),
+                "positive_prior": trial.user_attrs.get("positive_prior", training_config.positive_prior),
+                "positive_threshold": trial.user_attrs.get("positive_threshold", base_threshold),
+            },
+        }
+        for trial in pareto_trials
+    ]
     output_payload = {
         "study_name": study_name,
-        "best_value": study.best_value,
-        "best_params": study.best_params,
-        "best_metrics": {
-            "positive_recall_on_P": best_attrs.get("positive_recall_on_P", 0.0),
-            "selected_fraction_of_U": best_attrs.get("selected_fraction_of_U", 1.0),
-            "positive_prior": best_attrs.get("positive_prior", training_config.positive_prior),
-            "positive_threshold": best_attrs.get("positive_threshold", 0.50),
+        "objectives": [
+            {"name": "positive_recall_on_P", "direction": "maximize"},
+            {"name": "selected_fraction_of_U", "direction": "minimize"},
+        ],
+        "pareto_front": pareto_payload,
+        "production_selection_policy": "highest P recall on Pareto front; ties broken by lower U selection",
+        "production_trial_number": production_trial.number,
+        "production_params": production_trial.params,
+        "production_metrics": {
+            "positive_recall_on_P": production_attrs.get("positive_recall_on_P", 0.0),
+            "selected_fraction_of_U": production_attrs.get("selected_fraction_of_U", 1.0),
+            "positive_prior": production_attrs.get("positive_prior", training_config.positive_prior),
+            "positive_threshold": production_attrs.get("positive_threshold", base_threshold),
         },
     }
 
-    # Mirror output to screen
+    # Mirror results to screen, including the non-dominated trade-off set.
     logger.info("=" * 60)
-    logger.info("HPO OPTIMIZATION COMPLETE")
-    logger.info("Best PU selection score: %.4f", study.best_value)
-    logger.info("Best Hyperparameters:")
-    for k, v in study.best_params.items():
-        logger.info("  - %s: %s", k, v)
-    logger.info("Best PU metrics -> P recall: %.4f | U selected: %.4f",
-                output_payload["best_metrics"]["positive_recall_on_P"],
-                output_payload["best_metrics"]["selected_fraction_of_U"])
+    logger.info("MULTI-OBJECTIVE HPO COMPLETE")
+    logger.info("Pareto-efficient trials: %d", len(pareto_trials))
+    for item in pareto_payload:
+        metrics = item["metrics"]
+        logger.info(
+            "Trial %d -> P recall: %.4f | U selected: %.4f",
+            item["trial_number"],
+            metrics["positive_recall_on_P"],
+            metrics["selected_fraction_of_U"],
+        )
+    logger.info(
+        "Production trial %d selected by highest P recall (tie-break: lower U selection).",
+        production_trial.number,
+    )
     logger.info("=" * 60)
 
     # Save output mirror json to output/hpo/
     output_dir = Path("output/hpo")
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / f"{study_name}_best_params.json"
+    json_path = output_dir / f"{study_name}_pareto_results.json"
     
     with open(json_path, "w") as f:
         json.dump(output_payload, f, indent=4)
         
     logger.info("Successfully exported winning configuration JSON to %s", json_path)
 
-    # Execute Final Production Master Refit using winning parameters
+    # Execute Final Production Master Refit using the explicit Pareto-front selection policy
     log_msg = (
-            f"Starting Final Production Master Refit with best parameters..."
+            f"Starting Final Production Master Refit with selected Pareto trial {production_trial.number}..."
     )
 
     # Let the logger do its job if INFO is enabled
@@ -216,7 +265,7 @@ def run_hpo(
     if logger.getEffectiveLevel() >= logging.WARNING:
             print(log_msg)
 
-    resolved_params = dict(study.best_params)
+    resolved_params = dict(production_trial.params)
     for name, spec in search_space.items():
         if "fixed" in spec:
             resolved_params[name] = spec["fixed"]
