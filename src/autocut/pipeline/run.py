@@ -491,14 +491,14 @@ def run_pipeline(
 
         probabilities = inference.probabilities  # shape: [N, 3]
         training_config = payload.get("training_config") or {}
-        c2_threshold = float(training_config.get("c2_threshold", payload.get("c2_threshold", 0.50)))
-        if not math.isfinite(c2_threshold) or not 0.0 <= c2_threshold <= 1.0:
-            raise ValueError("Checkpoint c2_threshold must be finite and between 0 and 1.")
+        positive_threshold = float(training_config.get("positive_threshold", payload.get("positive_threshold", 0.50)))
+        if not math.isfinite(positive_threshold) or not 0.0 <= positive_threshold <= 1.0:
+            raise ValueError("Checkpoint positive_threshold must be finite and between 0 and 1.")
 
         # Suppress class-2 probability below the configured selection threshold,
         # then renormalize before class-aware candidate generation.
         probabilities = probabilities.copy()
-        probabilities[probabilities[:, 2] < c2_threshold, 2] = 0.0
+        probabilities[probabilities[:, 2] < positive_threshold, 2] = 0.0
         row_sums = probabilities.sum(axis=1, keepdims=True)
         probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
         cleaned_inference = InferenceResult(

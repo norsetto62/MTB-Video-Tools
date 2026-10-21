@@ -81,7 +81,7 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
         values.pop("good_threshold", None)
         # These belonged to the former multi-output head, not the P/U objective.
         values.pop("num_classes", None)
-        values.pop("c2_threshold", None)
+        values.pop("positive_threshold", None)
         values.pop("positive_threshold", None)
         values.pop("unlabeled_aux_weight", None)
         return TrainingConfig(**values)

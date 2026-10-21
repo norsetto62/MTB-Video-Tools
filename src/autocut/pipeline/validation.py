@@ -97,7 +97,7 @@ def _predict_record(
     p_probabilities = np.concatenate(probabilities)
     training_config = checkpoint.get("training_config") or {}
     threshold = training_config.get(
-        "positive_threshold", training_config.get("c2_threshold", 0.5)
+        "positive_threshold", training_config.get("positive_threshold", 0.5)
     )
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
         raise ValueError("Checkpoint positive threshold must be finite and between 0 and 1.")
