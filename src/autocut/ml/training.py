@@ -43,6 +43,7 @@ class TrainingConfig:
     seed: int = 42
     positive_prior: float = 0.1
     c2_threshold: float = 0.5
+    unlabeled_aux_weight: float = 0.25
 
     def __post_init__(self) -> None:
         for name in ("epochs", "batch_size", "hidden_dim", "classifier_mid_dim"):
@@ -79,6 +80,9 @@ class TrainingConfig:
         if isinstance(self.c2_threshold, bool) or not isinstance(self.c2_threshold, (int, float)) or not math.isfinite(float(self.c2_threshold)) or not 0.0 <= float(self.c2_threshold) <= 1.0:
             raise ValueError("c2_threshold must be finite and between 0 and 1.")
         object.__setattr__(self, "c2_threshold", float(self.c2_threshold))
+        if isinstance(self.unlabeled_aux_weight, bool) or not isinstance(self.unlabeled_aux_weight, (int, float)) or not math.isfinite(float(self.unlabeled_aux_weight)) or float(self.unlabeled_aux_weight) < 0.0:
+            raise ValueError("unlabeled_aux_weight must be finite and non-negative.")
+        object.__setattr__(self, "unlabeled_aux_weight", float(self.unlabeled_aux_weight))
 
 
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
@@ -133,6 +137,25 @@ def _validate_targets_presence(classes: np.ndarray, *, name: str) -> None:
         raise ValueError(f"{name} must contain at least one pure score-3 positive (P) window.")
     if not np.any(classes != 2):
         raise ValueError(f"{name} must contain at least one unlabeled (U) window with score 0, 1, or 2.")
+
+
+def _training_loss(
+    logits: torch.Tensor,
+    classes: torch.Tensor,
+    config: TrainingConfig,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Combine nnPU risk with conditional score-0-vs-score-1/2 learning on U.
+
+    The auxiliary loss only normalizes over outputs 0 and 1. It teaches their
+    distinction within U without penalizing output 2 on unlabeled examples.
+    """
+    pu_loss = _pu_risk(logits, classes, config.positive_prior)
+    unlabeled = classes != 2
+    conditional_u_loss = torch.nn.functional.cross_entropy(
+        logits[unlabeled, :2], classes[unlabeled]
+    )
+    total = pu_loss + config.unlabeled_aux_weight * conditional_u_loss
+    return total, pu_loss, conditional_u_loss
 
 
 def _batch_indices(
@@ -231,6 +254,8 @@ def _fit(
         for epoch in range(1, epochs + 1):
             model.train()
             loss_total = 0.0
+            pu_loss_total = 0.0
+            conditional_u_loss_total = 0.0
             for _ in range(steps):
                 p_idx, u_idx = _batch_indices(
                     positive_indices, unlabeled_indices, batch_size=config.batch_size,
@@ -238,16 +263,29 @@ def _fit(
                 )
                 batch_idx = torch.cat((p_idx, u_idx))
                 optimizer.zero_grad(set_to_none=True)
-                loss = _pu_risk(model(train_tensor[batch_idx]), train_label_tensor[batch_idx], config.positive_prior)
+                logits = model(train_tensor[batch_idx])
+                loss, pu_loss, conditional_u_loss = _training_loss(
+                    logits, train_label_tensor[batch_idx], config
+                )
                 if not torch.isfinite(loss).item():
                     raise RuntimeError(f"Non-finite PU training risk at epoch {epoch}.")
                 loss.backward()
                 optimizer.step()
                 loss_total += float(loss.item())
+                pu_loss_total += float(pu_loss.item())
+                conditional_u_loss_total += float(conditional_u_loss.item())
             train_loss = loss_total / steps
+            train_pu_risk = pu_loss_total / steps
+            train_u_conditional_loss = conditional_u_loss_total / steps
             if val_tensor is not None:
                 val_loss = _evaluate(model, val_tensor, val_label_tensor, config)
-                history.append({"epoch": epoch, "train_pu_risk": train_loss, "val_pu_risk": val_loss})
+                history.append({
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "train_pu_risk": train_pu_risk,
+                    "train_u_conditional_loss": train_u_conditional_loss,
+                    "val_pu_risk": val_loss,
+                })
                 if not math.isfinite(val_loss):
                     raise RuntimeError(f"Non-finite validation PU risk at epoch {epoch}.")
                 if best_state is None or val_loss < best_loss - config.min_delta:
@@ -260,7 +298,12 @@ def _fit(
                     if early_stopping and epochs_without_improvement >= max(1, config.patience):
                         break
             else:
-                history.append({"epoch": epoch, "train_pu_risk": train_loss})
+                history.append({
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "train_pu_risk": train_pu_risk,
+                    "train_u_conditional_loss": train_u_conditional_loss,
+                })
         if val_tensor is not None:
             if best_state is None:
                 raise RuntimeError("Training completed without a valid best model state.")
@@ -278,6 +321,7 @@ def _fit(
         "stopped_early": early_stopping and len(history) < epochs,
         "class_counts": class_counts,
         "positive_prior": config.positive_prior,
+        "unlabeled_aux_weight": config.unlabeled_aux_weight,
         "positive_windows": class_counts["2"],
         "unlabeled_windows": class_counts["0"] + class_counts["1"],
         "fold_video_id": fold_video_id,
