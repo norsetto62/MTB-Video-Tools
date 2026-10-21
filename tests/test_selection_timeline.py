@@ -5,7 +5,7 @@ from autocut.selection.timeline import assemble_timeline
 from autocut.selection.candidates_generation import CandidateClip
 
 def candidate(video, order, start, end, score=1.0, annotation_order=None):
-    return SelectionCandidate(video, order, CandidateClip(start, end, end-start, "moderate_interest", score, score), annotation_order)
+    return SelectionCandidate(video, order, CandidateClip(start, end, end-start, score, score), annotation_order)
 
 def test_timeline_restores_source_order_and_chronology():
     later = candidate("video1.mp4", 0, 20, 24, 2.0)
