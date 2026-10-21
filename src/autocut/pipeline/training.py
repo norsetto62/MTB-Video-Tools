@@ -84,7 +84,7 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
 
 
-(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
+def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
     data = _section(settings, "data")
     manifest = _path(
         data.get("manifest", "data/manifest/annotations_manifest.yaml"),
@@ -278,6 +278,13 @@ def run_training(
             "unlabeled_set": "pure score-0/1/2 windows",
             "mixed_windows": "discard",
             "label_rule": "all overlapping annotations must agree",
+        },
+        "pu_training": {
+            "objective": "non-negative PU risk",
+            "positive_prior": training_config.positive_prior,
+            "positive_score": 3,
+            "unlabeled_scores": [0, 1, 2],
+            "classifier_outputs": 3,
         },
     }
     _, _, summary = train_single_fold(
