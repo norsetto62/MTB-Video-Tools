@@ -79,6 +79,10 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
         # means and must not rebalance or reinterpret the unlabeled set.
         values.pop("class_weights", None)
         values.pop("good_threshold", None)
+        # These belonged to the former multi-output head, not the P/U objective.
+        values.pop("num_classes", None)
+        values.pop("c2_threshold", None)
+        values.pop("unlabeled_aux_weight", None)
         return TrainingConfig(**values)
     except TypeError as exc:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
