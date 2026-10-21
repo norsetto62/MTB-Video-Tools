@@ -24,6 +24,11 @@ DEFAULT_CLASS_MAPPING = {
     "0": "bad",
     "1": "good",
 }
+DEFAULT_THREE_CLASS_MAPPING = {
+    "0": "score_0",
+    "1": "score_1_or_2",
+    "2": "score_3_positive",
+}
 DEFAULT_DATA_CONFIG = {
     "flow_fps": 2.0,
     "window": 4.0,
@@ -122,9 +127,15 @@ def build_checkpoint(
             raise ValueError("best_metric must be a finite number or None.")
 
     names, mask = _validate_feature_metadata(model, feature_names, feature_mask)
-    if model.num_classes != 2 and class_mapping is None:
-        raise ValueError("Non-binary models require an explicit class_mapping.")
-    mapping = dict(DEFAULT_CLASS_MAPPING if class_mapping is None else class_mapping)
+    if class_mapping is None:
+        if model.num_classes == 2:
+            mapping = dict(DEFAULT_CLASS_MAPPING)
+        elif model.num_classes == 3:
+            mapping = dict(DEFAULT_THREE_CLASS_MAPPING)
+        else:
+            raise ValueError("Models with more than three outputs require an explicit class_mapping.")
+    else:
+        mapping = dict(class_mapping)
     if not mapping or not all(
         isinstance(key, str) and isinstance(value, str) and value
         for key, value in mapping.items()
@@ -280,13 +291,19 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
     elif names is not None and len(names) != feature_dim:
         raise ValueError("Checkpoint feature_names length does not match feature_dim.")
 
-    if config["num_classes"] != 2:
-        raise ValueError("Checkpoint must use the binary two-class model contract.")
+    num_classes = config["num_classes"]
+    if num_classes not in (2, 3):
+        raise ValueError("Checkpoint must use the two-class or three-output model contract.")
 
     mapping = payload.get("class_mapping")
     if mapping is not None:
-        if not isinstance(mapping, dict) or set(mapping) != {"0", "1"} or mapping != DEFAULT_CLASS_MAPPING:
-            raise ValueError("Checkpoint class_mapping must identify class 0 as bad and class 1 as good.")
+        expected_keys = {str(index) for index in range(num_classes)}
+        if (
+            not isinstance(mapping, dict)
+            or set(mapping) != expected_keys
+            or any(not isinstance(value, str) or not value for value in mapping.values())
+        ):
+            raise ValueError("Checkpoint class_mapping must cover every output class with a non-empty label.")
 
     scaler_state = payload.get("scaler_state")
     if scaler_state is not None:
