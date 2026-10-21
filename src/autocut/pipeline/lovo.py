@@ -189,6 +189,13 @@ def run_lovo(
         "processing_width": processing_width,
         "window": window_duration,
         "stride": window_stride,
+        "pu_training": {
+            "objective": "non-negative PU risk",
+            "positive_prior": training_config.positive_prior,
+            "positive_score": 3,
+            "unlabeled_scores": [0, 1, 2],
+            "classifier_outputs": 3,
+        },
     }
     
     # Each record's windows/targets are independent of the fold. Prepare them
@@ -341,6 +348,14 @@ def run_lovo(
     all_actual = np.concatenate(pooled_actual)
     all_predicted = np.concatenate(pooled_predicted)
     pooled_metrics = _metrics(all_actual, all_predicted)
+    positive_recall_values = [
+        f["metrics"]["positive_recall_on_P"] for f in folds
+        if f["metrics"]["positive_recall_on_P"] is not None
+    ]
+    u_selection_values = [
+        f["metrics"]["selected_fraction_of_U"] for f in folds
+        if f["metrics"]["selected_fraction_of_U"] is not None
+    ]
     result: dict[str, Any] = {
         "experiment_name": experiment_name,
         "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
@@ -353,8 +368,8 @@ def run_lovo(
         "aggregation": {
             "micro": pooled_metrics,
             "macro_group_mean": {
-                "positive_recall_on_P": float(np.mean([f["metrics"]["positive_recall_on_P"] for f in folds if f["metrics"]["positive_recall_on_P"] is not None])),
-                "selected_fraction_of_U": float(np.mean([f["metrics"]["selected_fraction_of_U"] for f in folds if f["metrics"]["selected_fraction_of_U"] is not None])),
+                "positive_recall_on_P": float(np.mean(positive_recall_values)) if positive_recall_values else None,
+                "selected_fraction_of_U": float(np.mean(u_selection_values)) if u_selection_values else None,
             },
             "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group PU selection statistics; U is not treated as negative.",
         },
