@@ -108,7 +108,10 @@ def run_hpo(
         dropout = float(params["dropout"])
         hidden_dim = int(params["hidden_dim"])
         positive_prior = float(params.get("positive_prior", training_config.positive_prior))
-        c2_threshold = float(params.get("c2_threshold", training_config.c2_threshold))
+        base_threshold = float(_section(settings, "training").get(
+            "positive_threshold", _section(settings, "training").get("c2_threshold", 0.50)
+        ))
+        positive_threshold = float(params.get("positive_threshold", params.get("c2_threshold", base_threshold)))
 
         filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
 
@@ -118,7 +121,7 @@ def run_hpo(
             "training.dropout": dropout,
             "training.hidden_dim": hidden_dim,
             "training.positive_prior": positive_prior,
-            "training.c2_threshold": c2_threshold,
+            "training.positive_threshold": positive_threshold,
             "data.train_groups": filtered_train_groups,
             "data.validation_groups": tuple(proxy_groups),
         })
@@ -146,7 +149,7 @@ def run_hpo(
         trial.set_user_attr("positive_recall_on_P", recall)
         trial.set_user_attr("selected_fraction_of_U", u_selection)
         trial.set_user_attr("positive_prior", positive_prior)
-        trial.set_user_attr("c2_threshold", c2_threshold)
+        trial.set_user_attr("positive_threshold", positive_threshold)
         trial.set_user_attr("pu_selection_score", score)
         return score
 
@@ -171,7 +174,7 @@ def run_hpo(
             "positive_recall_on_P": best_attrs.get("positive_recall_on_P", 0.0),
             "selected_fraction_of_U": best_attrs.get("selected_fraction_of_U", 1.0),
             "positive_prior": best_attrs.get("positive_prior", training_config.positive_prior),
-            "c2_threshold": best_attrs.get("c2_threshold", training_config.c2_threshold),
+            "positive_threshold": best_attrs.get("positive_threshold", 0.50),
         },
     }
 
@@ -219,7 +222,9 @@ def run_hpo(
         "training.weight_decay": resolved_params["weight_decay"],
         "training.dropout": resolved_params["dropout"],
         "training.positive_prior": resolved_params.get("positive_prior", training_config.positive_prior),
-        "training.c2_threshold": resolved_params.get("c2_threshold", training_config.c2_threshold),
+        "training.positive_threshold": resolved_params.get(
+            "positive_threshold", resolved_params.get("c2_threshold", base_threshold)
+        ),
         "training.hidden_dim": resolved_params["hidden_dim"],
     })
     final_training = _training_config(final_settings)
