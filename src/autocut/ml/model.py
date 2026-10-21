@@ -14,9 +14,8 @@ from torch import nn
 class MTBClassifier(nn.Module):
     """Bidirectional LSTM classifier for MTB-interest windows.
 
-    Defaults reproduce the architecture used by the legacy production
-    trainer: a bidirectional LSTM, temporal mean pooling, and a small MLP
-    classifier head.
+    Defaults preserve the established three-output AutoCut classifier:
+    a bidirectional LSTM, temporal mean pooling, and a small MLP classifier head.
 
     Args:
         feature_dim: Number of input features per time step.
