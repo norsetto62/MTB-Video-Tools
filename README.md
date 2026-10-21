@@ -86,7 +86,7 @@ Training uses positive-unlabeled (PU) learning:
 - **U (unlabeled):** pure score-0, score-1, and score-2 windows. These are not treated as confirmed negatives.
 - **Conflicting windows:** discarded.
 
-The existing three-output classifier is retained. Annotation score 0 maps to output 0, scores 1 and 2 map to output 1, and score 3 maps to output 2. The non-negative PU objective learns to distinguish confirmed score-3 positives from the unlabeled set without using weighted sampling or pretending that U is a negative class. Configure `training.positive_prior` for the assumed positive prevalence used by the PU risk; the code default is 0.1 and should be checked against the dataset.
+The existing three-output classifier is retained. Annotation score 0 maps to output 0, scores 1 and 2 map to output 1, and score 3 maps to output 2. The non-negative PU objective learns to distinguish confirmed score-3 positives from the unlabeled set without weighted sampling or pretending that U is a negative class. A small conditional auxiliary loss distinguishes output 0 from output 1 within U without penalizing output 2 on U samples. Configure `training.positive_prior` for the assumed positive prevalence used by the PU risk; the code default is 0.1 and should be checked against the dataset.
 
 The purpose of the model is therefore to prioritize clearly interesting moments without flooding training with presumed negatives.
 
