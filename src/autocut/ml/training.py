@@ -1,10 +1,10 @@
 """Three-output PU training for the AutoCut MTB interest model.
 
 Pure annotation score 3 is the positive set P. Pure scores 0, 1, and 2 form
-the unlabeled set U. The three-output classifier from main is retained:
-scores 0 and 1 map to output 0 and 1, score 2 maps to output 1, and score 3
-maps to output 2. PU risk treats output 2 as positive and outputs 0/1 jointly
-as the unlabeled side; it never treats U as confirmed negatives.
+the unlabeled set U. The existing three-output classifier is retained:
+score 0 maps to output 0, scores 1 and 2 map to output 1, and score 3 maps
+to output 2. PU risk treats output 2 as positive and outputs 0/1 jointly as
+the unlabeled side; it never treats U as confirmed negatives.
 """
 from __future__ import annotations
 
@@ -140,7 +140,6 @@ def _batch_indices(
     unlabeled_indices: torch.Tensor,
     *,
     batch_size: int,
-    steps: int,
     generator: torch.Generator,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Draw class-conditional batches uniformly within P and U."""
@@ -235,7 +234,7 @@ def _fit(
             for _ in range(steps):
                 p_idx, u_idx = _batch_indices(
                     positive_indices, unlabeled_indices, batch_size=config.batch_size,
-                    steps=steps, generator=generator,
+                    generator=generator,
                 )
                 batch_idx = torch.cat((p_idx, u_idx))
                 optimizer.zero_grad(set_to_none=True)
