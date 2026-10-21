@@ -361,6 +361,11 @@ def audit_manifest(
         report["videos"].append(entry)
 
     _read_split_config(Path(training_config).expanduser(), report, manifest_groups)
+    report["window_estimates"].update({
+        "total_windows": total_windows,
+        "pure_windows_estimate": total_pure_windows,
+        "conflicting_windows_estimate": total_conflicting_windows,
+    })
     report["summary"] = {
         "manifest_entries": len(items),
         "unique_ids": len(seen_ids),
