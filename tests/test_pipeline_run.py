@@ -137,6 +137,7 @@ def test_pipeline_preserves_annotation_order_through_binary_pu_candidate_generat
     # is stubbed here so this integration test focuses on real P/U candidate
     # generation, source-time offsets, and annotation-order preservation.
     monkeypatch.setattr(run, "load_checkpoint", lambda *args, **kwargs: {})
+    monkeypatch.setattr(run, "validate_checkpoint", lambda payload: payload)
     inference_calls = iter([
         InferenceResult(
             timestamps=np.asarray([[0.0, 4.0], [4.0, 8.0]]),
