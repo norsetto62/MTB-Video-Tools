@@ -30,7 +30,7 @@ class MTBClassifier(nn.Module):
         self,
         feature_dim: int = 54,
         hidden_dim: int = 128,
-        num_classes: int = 2,
+        num_classes: int = 3,
         dropout: float = 0.4,
         classifier_mid_dim: int = 64,
     ) -> None:
