@@ -84,8 +84,8 @@ class TrainingConfig:
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
     """Map pure annotation scores 0..3 to the existing three output classes.
 
-    Scores 0 and 1 map to output 0; score 2 maps to output 1; score 3 maps
-    to output 2 (the confirmed positive set P).
+    Score 0 maps to output 0; scores 1 and 2 map to output 1; score 3 maps
+    to output 2 (the confirmed positive set P), matching main's three-class mapping.
     """
     try:
         values = np.asarray(targets, dtype=np.float64)
@@ -95,8 +95,8 @@ def targets_to_classes(targets: np.ndarray) -> np.ndarray:
         raise ValueError("targets must be a non-empty one-dimensional array.")
     if not np.isfinite(values).all() or not np.isin(values, [0.0, 1.0, 2.0, 3.0]).all():
         raise ValueError("targets must contain only finite pure scores 0, 1, 2, or 3.")
-    classes = np.zeros(values.shape, dtype=np.int64)
-    classes[values == 2.0] = 1
+    classes = np.ones(values.shape, dtype=np.int64)
+    classes[values == 0.0] = 0
     classes[values == 3.0] = 2
     return classes
 
