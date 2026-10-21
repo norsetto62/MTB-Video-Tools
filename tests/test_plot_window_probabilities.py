@@ -34,9 +34,9 @@ def test_annotation_color_rejects_unknown_scores(score):
         annotation_color(score)
 
 
-def test_validate_plot_data_accepts_binary_probabilities():
+def test_validate_plot_data_accepts_p_probabilities():
     timestamps = np.asarray([[0.0, 4.0], [2.0, 6.0]])
-    probabilities = np.asarray([[0.8, 0.2], [0.1, 0.9]])
+    probabilities = np.asarray([0.8, 0.9])
     validate_plot_data(timestamps, probabilities)
 
 
@@ -49,6 +49,6 @@ def test_validate_plot_data_rejects_wrong_probability_shape():
 
 def test_validate_plot_data_rejects_invalid_probabilities():
     timestamps = np.asarray([[0.0, 4.0]])
-    probabilities = np.asarray([[1.2, -0.2]])
+    probabilities = np.asarray([1.2])
     with pytest.raises(ValueError, match="between 0 and 1"):
         validate_plot_data(timestamps, probabilities)
