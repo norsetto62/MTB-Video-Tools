@@ -65,6 +65,16 @@ def run_hpo(
         raise ValueError(
             "HPO search space is empty. Configure hpo.search_space in the training YAML."
         )
+    obsolete = sorted(
+        name for name in search_space
+        if name.startswith("class_weight_") or name == "good_threshold"
+    )
+    if obsolete:
+        raise ValueError(
+            "PU HPO does not use supervised class weights or binary good_threshold; "
+            "replace these search-space entries with positive_prior and c2_threshold. "
+            "Obsolete entries: " + ", ".join(obsolete)
+        )
 
     def suggest_parameters(trial: optuna.Trial) -> dict[str, object]:
         """Build Optuna suggestions from the validated YAML distributions."""
