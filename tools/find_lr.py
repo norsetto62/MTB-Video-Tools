@@ -20,14 +20,12 @@ from autocut.cli import build_parser
 class PULoss(nn.Module):
     """nnPU criterion; target class 2 is P, classes 0/1 are U."""
 
-    def __init__(self, positive_prior: float, aux_weight: float) -> None:
+    def __init__(self, config) -> None:
         super().__init__()
-        self.positive_prior = positive_prior
-        self.aux_weight = aux_weight
+        self.config = config
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        config = type("PUConfig", (), {"positive_prior": self.positive_prior, "unlabeled_aux_weight": self.aux_weight})()
-        total, _, _ = _training_loss(logits, targets, config)
+        total, _, _ = _training_loss(logits, targets, self.config)
         return total
 
 
@@ -78,7 +76,7 @@ def main(argv: Sequence[str] | None = None):
         dropout=fit_config.dropout,
     ).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-7, weight_decay=fit_config.weight_decay)
-    criterion = PULoss(fit_config.positive_prior, fit_config.unlabeled_aux_weight)
+    criterion = PULoss(fit_config)
 
     finder = LRFinder(model, optimizer, criterion, device=str(device))
     finder.range_test(loader, end_lr=10, num_iter=100, step_mode="exp")
