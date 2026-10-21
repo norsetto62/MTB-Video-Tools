@@ -294,7 +294,7 @@ def run_lovo(
         actual = targets_to_classes(test_y)
         training_settings = _section(settings, "training")
         positive_threshold = float(training_settings.get(
-            "positive_threshold", training_settings.get("positive_threshold", 0.50)
+            "positive_threshold", training_settings.get("c2_threshold", 0.50)
         ))
         predicted, probabilities = _predict(
             model, scaler, test_X, positive_threshold=positive_threshold

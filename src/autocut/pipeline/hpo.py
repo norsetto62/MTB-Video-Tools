@@ -41,7 +41,7 @@ def run_hpo(
         raise ValueError("hpo.study_name must be a non-empty string.")
     training_config = _training_config(settings)
     base_threshold = float(_section(settings, "training").get(
-        "positive_threshold", _section(settings, "training").get("positive_threshold", 0.50)
+        "positive_threshold", _section(settings, "training").get("c2_threshold", 0.50)
     ))
     train_groups = tuple(data.get("train_groups", ()))
     search_space = hpo.get("search_space", {})
@@ -75,7 +75,7 @@ def run_hpo(
     if obsolete:
         raise ValueError(
             "PU HPO does not use supervised class weights or binary good_threshold; "
-            "replace these search-space entries with positive_prior and positive_threshold. "
+            "replace these search-space entries with positive_prior and c2_threshold. "
             "Obsolete entries: " + ", ".join(obsolete)
         )
 
@@ -111,7 +111,7 @@ def run_hpo(
         dropout = float(params["dropout"])
         hidden_dim = int(params["hidden_dim"])
         positive_prior = float(params.get("positive_prior", training_config.positive_prior))
-        positive_threshold = float(params.get("positive_threshold", params.get("positive_threshold", base_threshold)))
+        positive_threshold = float(params.get("positive_threshold", params.get("c2_threshold", base_threshold)))
 
         filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
 
@@ -223,7 +223,7 @@ def run_hpo(
         "training.dropout": resolved_params["dropout"],
         "training.positive_prior": resolved_params.get("positive_prior", training_config.positive_prior),
         "training.positive_threshold": resolved_params.get(
-            "positive_threshold", resolved_params.get("positive_threshold", base_threshold)
+            "positive_threshold", resolved_params.get("c2_threshold", base_threshold)
         ),
         "training.hidden_dim": resolved_params["hidden_dim"],
     })
