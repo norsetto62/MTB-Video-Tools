@@ -77,7 +77,7 @@ def _predict(
     windows: np.ndarray,
     good_threshold: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return binary predictions and unmodified (bad, good) probabilities."""
+    """Return three-output probabilities and class-2 PU-positive selections."""
     if isinstance(good_threshold, bool) or not isinstance(good_threshold, (int, float)) or not np.isfinite(good_threshold) or not 0.0 <= good_threshold <= 1.0:
         raise ValueError("good_threshold must be between 0 and 1.")
     transformed = scaler.transform(windows)
@@ -88,9 +88,9 @@ def _predict(
         for start in range(0, len(tensor), 256):
             batches.append(torch.softmax(model(tensor[start:start + 256]), dim=1).cpu().numpy())
     probabilities = np.concatenate(batches, axis=0)
-    predictions = (probabilities[:, 1] >= float(good_threshold)).astype(np.int64)
+    fallback = probabilities[:, :2].argmax(axis=1)
+    predictions = np.where(probabilities[:, 2] >= float(good_threshold), 2, fallback).astype(np.int64)
     return predictions, probabilities
-
 
 def _resolve_group_splits(
     all_groups: tuple[str, ...],
