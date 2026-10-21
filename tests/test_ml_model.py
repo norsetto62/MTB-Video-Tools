@@ -1,4 +1,4 @@
-"""Tests for the legacy-compatible ML classifier."""
+"""Tests for the single-logit P/U ML model."""
 
 import pytest
 
@@ -12,7 +12,7 @@ def test_default_model_matches_legacy_architecture():
 
     assert model.feature_dim == 54
     assert model.hidden_dim == 128
-    assert model.num_classes == 2
+    assert model.num_classes == 1
     assert model.dropout_probability == pytest.approx(0.4)
     assert model.classifier_mid_dim == 64
     assert model.backbone.batch_first is True
@@ -24,17 +24,17 @@ def test_default_model_matches_legacy_architecture():
     assert model.classifier[1].out_features == 64
     assert model.classifier[2].__class__.__name__ == "ReLU"
     assert model.classifier[3].in_features == 64
-    assert model.classifier[3].out_features == 2
+    assert model.classifier[3].out_features == 1
 
 
 @pytest.mark.parametrize("batch_size", [1, 4])
-def test_forward_returns_one_logit_vector_per_window(batch_size):
+def test_forward_returns_one_pu_logit_per_window(batch_size):
     model = MTBClassifier()
     x = torch.randn(batch_size, 8, 54)
 
     logits = model(x)
 
-    assert logits.shape == (batch_size, 2)
+    assert logits.shape == (batch_size, 1)
     assert logits.dtype == torch.float32
     assert torch.isfinite(logits).all()
 
@@ -43,13 +43,12 @@ def test_forward_supports_configurable_dimensions():
     model = MTBClassifier(
         feature_dim=12,
         hidden_dim=10,
-        num_classes=4,
         dropout=0.2,
         classifier_mid_dim=7,
     )
     x = torch.randn(2, 5, 12)
 
-    assert model(x).shape == (2, 4)
+    assert model(x).shape == (2, 1)
 
 
 def test_forward_backpropagates_gradients():
@@ -70,6 +69,7 @@ def test_forward_backpropagates_gradients():
         {"feature_dim": -1},
         {"hidden_dim": 0},
         {"num_classes": 0},
+        {"num_classes": 2},
         {"classifier_mid_dim": 0},
         {"feature_dim": 54.0},
         {"hidden_dim": True},
