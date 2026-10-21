@@ -7,7 +7,7 @@ torch = pytest.importorskip("torch")
 from autocut.ml.model import MTBClassifier
 
 
-def test_default_model_matches_legacy_architecture():
+def test_default_model_has_single_logit_pu_head():
     model = MTBClassifier()
 
     assert model.feature_dim == 54
