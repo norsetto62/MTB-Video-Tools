@@ -39,11 +39,11 @@ def annotation_color(score: int) -> str:
 
 
 def validate_plot_data(timestamps: np.ndarray, probabilities: np.ndarray) -> None:
-    """Validate arrays for the binary P(bad)/P(good) probability plot."""
+    """Validate arrays for the single P probability plot."""
     if timestamps.ndim != 2 or timestamps.shape[1] != 2:
         raise ValueError("timestamps must have shape (N, 2).")
-    if probabilities.shape != (len(timestamps), 2):
-        raise ValueError("probabilities must have shape (N, 2), for P(bad) and P(good).")
+    if probabilities.shape != (len(timestamps),):
+        raise ValueError("probabilities must have shape (N,), for P membership probability.")
     if len(timestamps) == 0:
         raise ValueError("No windows were generated for this video.")
     if not np.isfinite(timestamps).all() or not np.isfinite(probabilities).all():
@@ -51,7 +51,7 @@ def validate_plot_data(timestamps: np.ndarray, probabilities: np.ndarray) -> Non
     if np.any(timestamps[:, 1] <= timestamps[:, 0]):
         raise ValueError("Every window end must be after its start.")
     if np.any(probabilities < 0) or np.any(probabilities > 1):
-        raise ValueError("Class probabilities must be between 0 and 1.")
+        raise ValueError("P probabilities must be between 0 and 1.")
 
 
 def plot_probabilities(
@@ -116,19 +116,15 @@ def plot_probabilities(
                 ),
             )
 
-    # 2. High-contrast line colors and explicit zorder so lines sit cleanly on top
-    # (Using distinct, saturated colors that pop against pastel background bands)
-    line_colors = ["#d62728", "#2ca02c"]  # Red = bad, Green = good
-    probability_labels = ["P(bad)", "P(good)"]
-    for class_id, label in enumerate(probability_labels):
-        ax.plot(
-            centres,
-            probabilities[:, class_id],
-            label=label,
-            color=line_colors[class_id],
-            linewidth=2.0,
-            zorder=2,
-        )
+    # Plot the model's single sigmoid output: estimated P membership.
+    ax.plot(
+        centres,
+        probabilities,
+        label="P(P | window)",
+        color="#2ca02c",
+        linewidth=2.0,
+        zorder=2,
+    )
 
     ax.set_xlim(0, duration)
     ax.set_ylim(0, 1)
@@ -168,7 +164,7 @@ def plot_probabilities(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot P(bad) and P(good) for each video window, with human MTB "
+            "Plot the model's P probability for each video window, with human MTB "
             "annotation intervals shown as a coloured strip."
         )
     )
