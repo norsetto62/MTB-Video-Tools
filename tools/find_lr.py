@@ -1,4 +1,4 @@
-"""Learning-rate range test using the same non-negative PU risk as training."""
+"""Learning-rate range test using the single-logit nnPU objective."""
 import sys
 from typing import Sequence
 
@@ -18,15 +18,14 @@ from autocut.cli import build_parser
 
 
 class PULoss(nn.Module):
-    """nnPU criterion; target class 2 is P, classes 0/1 are U."""
+    """nnPU criterion; label 1 is P and label 0 is U."""
 
     def __init__(self, config) -> None:
         super().__init__()
         self.config = config
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        total, _, _ = _training_loss(logits, targets, self.config)
-        return total
+        return _training_loss(logits, targets, self.config)
 
 
 def main(argv: Sequence[str] | None = None):
@@ -45,8 +44,8 @@ def main(argv: Sequence[str] | None = None):
     raw_windows, raw_targets = _combine_records(train_records, settings)
     train_X = _validate_windows(raw_windows, name="train_windows")
     train_y = targets_to_classes(raw_targets)
-    positive_indices = np.flatnonzero(train_y == 2)
-    unlabeled_indices = np.flatnonzero(train_y != 2)
+    positive_indices = np.flatnonzero(train_y == 1)
+    unlabeled_indices = np.flatnonzero(train_y == 0)
     if not len(positive_indices) or not len(unlabeled_indices):
         raise ValueError("LR finder requires both pure score-3 positives and score-0/1/2 unlabeled windows.")
 
@@ -72,7 +71,6 @@ def main(argv: Sequence[str] | None = None):
         feature_dim=train_X.shape[2],
         hidden_dim=fit_config.hidden_dim,
         classifier_mid_dim=fit_config.classifier_mid_dim,
-        num_classes=3,
         dropout=fit_config.dropout,
     ).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-7, weight_decay=fit_config.weight_decay)
