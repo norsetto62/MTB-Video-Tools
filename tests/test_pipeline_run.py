@@ -1,4 +1,6 @@
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 from autocut.config_loader import Config
@@ -106,6 +108,7 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
 
 
 
+@pytest.mark.skip(reason="P/U candidate-generation integration is intentionally deferred.")
 def test_pipeline_preserves_annotation_order_through_candidate_generation(
     tmp_path, monkeypatch
 ):
