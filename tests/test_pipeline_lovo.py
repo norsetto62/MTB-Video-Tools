@@ -154,10 +154,11 @@ def test_fixed_epoch_refit_saves_scaler_and_training_metadata(tmp_path):
     )
 
     payload = load_checkpoint(checkpoint)
-    assert summary["epochs_trained"] == 2
+    assert summary["epochs_completed"] == 2
     assert payload["epoch"] == 2
     assert payload["metadata"]["outer_test_group"] == "held-out"
-    assert payload["metadata"]["refit_epochs_selected_by_inner_group"] == 2
+    assert payload["metadata"]["positive_windows"] == 2
+    assert payload["metadata"]["unlabeled_windows"] == 4
     assert payload["scaler_state"] is not None
     assert model.training is False
     assert scaler.mean_ is not None
