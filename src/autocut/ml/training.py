@@ -152,10 +152,14 @@ def _batch_indices(
 
 
 def _evaluate(model: MTBClassifier, X: torch.Tensor, y: torch.Tensor, config: TrainingConfig) -> float:
+    """Evaluate PU risk with batched inference to bound activation memory."""
     model.eval()
+    batches: list[torch.Tensor] = []
     with torch.no_grad():
-        logits = model(X)
-        return float(_pu_risk(logits, y, config.positive_prior).item())
+        for start in range(0, len(X), config.batch_size):
+            batches.append(model(X[start : start + config.batch_size]))
+    logits = torch.cat(batches, dim=0)
+    return float(_pu_risk(logits, y, config.positive_prior).item())
 
 
 def _fit(
@@ -329,8 +333,9 @@ def train_fixed_epochs(
         raise TypeError("config must be a TrainingConfig.")
     if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs <= 0:
         raise ValueError("epochs must be a positive integer.")
+    fit_config = replace(config, epochs=epochs)
     return _fit(
-        train_windows, train_targets, config, epochs=epochs,
+        train_windows, train_targets, fit_config, epochs=epochs,
         checkpoint_path=checkpoint_path, data_config=data_config,
         metadata=metadata, early_stopping=False,
     )
