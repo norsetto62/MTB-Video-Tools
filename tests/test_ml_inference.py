@@ -36,7 +36,7 @@ def _checkpoint(*, scaler=None, feature_mask=None):
     )
 
 
-def test_inference_returns_timestamps_and_three_probabilities():
+def test_inference_returns_timestamps_and_p_probability():
     windows = _windows()
     result = infer_windows(_checkpoint(), windows, batch_size=3)
 
@@ -55,7 +55,7 @@ def test_inference_accepts_checkpoint_file(tmp_path):
     save_checkpoint(path, model, data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0})
 
     result = infer_windows(path, windows)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
 
 
 def test_inference_reuses_checkpoint_scaler():
