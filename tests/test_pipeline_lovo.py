@@ -42,16 +42,16 @@ def _settings(tmp_path):
     })
 
 
-def test_metrics_uses_binary_bad_good_confusion_matrix():
+def test_metrics_does_not_treat_unlabeled_as_negative():
     result = pipeline_lovo._metrics(
-        np.array([0, 1, 1, 0]),
-        np.array([0, 1, 0, 0]),
+        np.array([2, 0, 1, 2]),
+        np.array([2, 2, 0, 1]),
     )
     assert result["windows"] == 4
-    assert result["accuracy"] == pytest.approx(0.75)
-    assert result["micro_f1"] == pytest.approx(0.75)
-    assert result["confusion_matrix"] == [[2, 0], [1, 1]]
-    assert set(result["class_f1"]) == {"0", "1"}
+    assert result["positive_windows"] == 2
+    assert result["unlabeled_windows"] == 2
+    assert result["positive_recall_on_P"] == pytest.approx(0.5)
+    assert result["selected_fraction_of_U"] == pytest.approx(0.5)
 
 
 def test_lovo_rejects_fewer_than_three_groups(tmp_path, monkeypatch):
@@ -85,7 +85,7 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
         count = max(1, len(selected))
         marker = float(ord(sorted(group_ids)[0]) if group_ids else 0)
         X = np.full((count, 8, 54), marker, dtype=np.float32)
-        y = np.resize(np.array([0.0, 1.0]), count)
+        y = np.resize(np.array([3.0, 0.0, 1.0, 2.0]), count)
         return X, y
 
     captured = {"inner": [], "outer": [], "prepared": []}
@@ -101,7 +101,7 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
         return object(), object(), {"epochs_trained": epochs}
 
     def fake_predict(model, scaler, test_X, **kwargs):
-        return np.zeros(len(test_X), dtype=np.int64), np.tile([1.0, 0.0], (len(test_X), 1))
+        return np.zeros(len(test_X), dtype=np.int64), np.tile([0.4, 0.3, 0.3], (len(test_X), 1))
 
     monkeypatch.setattr(pipeline_lovo, "_combine_records", fake_combine)
     monkeypatch.setattr(pipeline_lovo, "train_single_fold", fake_train)
@@ -134,7 +134,7 @@ def test_fixed_epoch_refit_saves_scaler_and_training_metadata(tmp_path):
 
     rng = np.random.default_rng(7)
     windows = rng.normal(size=(6, 8, 54)).astype(np.float32)
-    targets = np.array([0.0, 1.0, 1.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    targets = np.array([3.0, 0.0, 1.0, 2.0, 3.0, 0.0], dtype=np.float32)
     checkpoint = tmp_path / "fold.pt"
     model, scaler, summary = train_fixed_epochs(
         windows,
@@ -164,7 +164,7 @@ def test_fixed_epoch_refit_saves_scaler_and_training_metadata(tmp_path):
 
 
 
-def test_lovo_prediction_uses_one_binary_good_threshold(monkeypatch):
+def test_lovo_prediction_thresholds_class_two_as_pu_positive():
     import torch
 
     class FixedModel:
@@ -172,7 +172,7 @@ def test_lovo_prediction_uses_one_binary_good_threshold(monkeypatch):
             return self
 
         def __call__(self, batch):
-            return torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32)
+            return torch.tensor([[0.0, 1.0, 2.0], [2.0, 1.0, 0.0]], dtype=torch.float32)
 
     class IdentityScaler:
         def transform(self, values):
@@ -182,10 +182,9 @@ def test_lovo_prediction_uses_one_binary_good_threshold(monkeypatch):
     predicted, probabilities = pipeline_lovo._predict(
         FixedModel(), IdentityScaler(), windows, good_threshold=0.70
     )
-    np.testing.assert_array_equal(predicted, [1, 0])
-    assert probabilities.shape == (2, 2)
+    np.testing.assert_array_equal(predicted, [2, 0])
+    assert probabilities.shape == (2, 3)
     np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
-
 
 def test_lovo_prediction_rejects_invalid_good_threshold():
     import torch
