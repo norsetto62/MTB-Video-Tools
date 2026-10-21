@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
     """Report PU selection statistics without treating unlabeled windows as negative."""
-    positive = actual == 2
-    unlabeled = actual != 2
-    predicted_positive = predicted == 2
+    positive = actual == 1
+    unlabeled = actual == 0
+    predicted_positive = predicted == 1
     return {
         "windows": int(len(actual)),
         "positive_windows": int(np.sum(positive)),
@@ -75,21 +75,23 @@ def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
     windows: np.ndarray,
-    c2_threshold: float = 0.50,
+    positive_threshold: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return three-output probabilities and class-2 PU-positive selections."""
-    if isinstance(c2_threshold, bool) or not isinstance(c2_threshold, (int, float)) or not np.isfinite(c2_threshold) or not 0.0 <= c2_threshold <= 1.0:
-        raise ValueError("c2_threshold must be between 0 and 1.")
+    """Return P probabilities and binary P/U predictions."""
+    if isinstance(positive_threshold, bool) or not isinstance(positive_threshold, (int, float)) or not np.isfinite(positive_threshold) or not 0.0 <= positive_threshold <= 1.0:
+        raise ValueError("positive_threshold must be between 0 and 1.")
     transformed = scaler.transform(windows)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
     batches: list[np.ndarray] = []
     model.eval()
     with torch.inference_mode():
         for start in range(0, len(tensor), 256):
-            batches.append(torch.softmax(model(tensor[start:start + 256]), dim=1).cpu().numpy())
+            logits = model(tensor[start:start + 256])
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise RuntimeError("P/U model must return one logit per window.")
+            batches.append(torch.sigmoid(logits[:, 0]).cpu().numpy())
     probabilities = np.concatenate(batches, axis=0)
-    fallback = probabilities[:, :2].argmax(axis=1)
-    predictions = np.where(probabilities[:, 2] >= float(c2_threshold), 2, fallback).astype(np.int64)
+    predictions = (probabilities >= float(positive_threshold)).astype(np.int64)
     return predictions, probabilities
 
 def _resolve_group_splits(
@@ -192,10 +194,9 @@ def run_lovo(
         "pu_training": {
             "objective": "non-negative PU risk",
             "positive_prior": training_config.positive_prior,
-            "unlabeled_aux_weight": training_config.unlabeled_aux_weight,
             "positive_score": 3,
             "unlabeled_scores": [0, 1, 2],
-            "classifier_outputs": 3,
+            "model_outputs": 1,
         },
     }
     
@@ -291,8 +292,7 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        c2_threshold = training_config.c2_threshold
-        predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
+        predicted, probabilities = _predict(model, scaler, test_X)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
         pooled_predicted.append(predicted)
@@ -322,9 +322,9 @@ def run_lovo(
                 {
                     "record_id": test_window_records[index][0],
                     "window_index": test_window_records[index][1],
-                    "actual_class": int(actual[index]),
-                    "predicted_class": int(predicted[index]),
-                    "probabilities": {str(i): float(probabilities[index, i]) for i in range(3)},
+                    "actual_pu_label": int(actual[index]),
+                    "predicted_pu_label": int(predicted[index]),
+                    "p_probability": float(probabilities[index]),
                 }
                 for index in range(len(actual))
             ],
