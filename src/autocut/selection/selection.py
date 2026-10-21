@@ -1,4 +1,4 @@
-"""Deterministic tier-prioritized selection within an optional duration budget."""
+"""Deterministic probability-prioritized selection within an optional duration budget."""
 from __future__ import annotations
 from dataclasses import dataclass
 import logging
@@ -72,7 +72,7 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
     When supplied, max_total_duration is the total edit-duration limit,
     normally the soundtrack duration. Mandatory material is never dropped;
     if it exhausts the budget, optional candidates are not added. Optional
-    candidates are ranked by descending max score within each tier, and only
+    candidates are ranked by descending max score (probability), and only
     candidates that fit the remaining duration are retained. Overlapping
     source intervals are suppressed to avoid repeating frames.
     max_clip_duration remains an independent per-clip constraint.
@@ -111,9 +111,9 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
             "preserving mandatory clips and selecting no optional candidates.",
             mandatory_duration, max_total_duration,
         )
-    tier_order = {"high_action": 0, "moderate_interest": 1}
+    # We rank by averaging max and mean scores (compromise to catch brief highlight and more sustained action), tie-break with duration and ordering
     ranked = sorted(candidate_list, key=lambda item: (
-        -item.score, item.duration,
+        -(item.score+item.mean_score)/2.0, item.duration,
         item.video_order, item.start, item.video_name,
         item.annotation_order if item.annotation_order is not None else -1,
     ))
@@ -139,5 +139,5 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
         selected.append(item)
         if remaining is not None:
             remaining = max(0.0, remaining - item.duration)
-        logger.info("Retained candidate: video=%s annotation_order=%s tier=%s range=[%.3f, %.3f) duration=%.3fs score=%.6f evidence=%d.", item.video_name, item.annotation_order, item.start, item.end, item.duration, item.score, len(item.window_evidence))
+        logger.info("Retained candidate: video=%s annotation_order=%s range=[%.3f, %.3f) duration=%.3fs score=%.6f evidence=%d.", item.video_name, item.annotation_order, item.start, item.end, item.duration, item.score, len(item.window_evidence))
     return SelectionResult(tuple(selected))
