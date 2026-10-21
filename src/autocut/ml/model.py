@@ -58,8 +58,10 @@ class MTBClassifier(nn.Module):
             raise TypeError("x must be a torch.Tensor.")
         if x.ndim != 3:
             raise ValueError("x must have shape (batch_size, sequence_length, feature_dim).")
-        if x.shape[0] == 0 or x.shape[1] == 0:
-            raise ValueError("x must contain at least one sequence and one time step.")
+        if x.shape[0] == 0:
+            raise ValueError("x must contain at least one sequence.")
+        if x.shape[1] == 0:
+            raise ValueError("x must contain at least one time step.")
         if x.shape[2] != self.feature_dim:
             raise ValueError(f"x must have {self.feature_dim} features per time step; got {x.shape[2]}.")
         if not x.is_floating_point():
