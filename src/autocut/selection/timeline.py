@@ -14,7 +14,6 @@ class TimelineClip:
     output_end: float
     mandatory: bool
     score: float | None = None
-    tier: str | None = None
     annotation_order: int | None = None
     @property
     def duration(self) -> float: return self.output_end - self.output_start
@@ -29,7 +28,7 @@ class Timeline:
         return {"schema_version": 1, "duration": self.duration, "clips": [
             {"video_name": c.video_name, "source_start": c.source_start, "source_end": c.source_end,
              "output_start": c.output_start, "output_end": c.output_end, "duration": c.duration,
-             "mandatory": c.mandatory, "score": c.score, "tier": c.tier, "annotation_order": c.annotation_order}
+             "mandatory": c.mandatory, "score": c.score, "annotation_order": c.annotation_order}
             for c in self.clips]}
 
 def assemble_timeline(selection: SelectionResult, mandatory_clips: Sequence[MandatoryClip] = ()) -> Timeline:
@@ -52,13 +51,13 @@ def assemble_timeline(selection: SelectionResult, mandatory_clips: Sequence[Mand
             c = item
             assert isinstance(c, SelectionCandidate)
             video_name, start, end = c.video_name, c.start, c.end
-            mandatory_flag, score, tier, annotation_order = False, c.score, c.tier, c.annotation_order
+            mandatory_flag, score, annotation_order = False, c.score, c.annotation_order
         else:
             c = item
             assert isinstance(c, MandatoryClip)
             video_name, start, end = c.video_name, c.start, c.end
-            mandatory_flag, score, tier, annotation_order = True, None, None, c.sequence_order
+            mandatory_flag, score, annotation_order = True, None, c.sequence_order
         duration = end - start
-        clips.append(TimelineClip(video_name, start, end, cursor, cursor + duration, mandatory_flag, score, tier, annotation_order))
+        clips.append(TimelineClip(video_name, start, end, cursor, cursor + duration, mandatory_flag, score, annotation_order))
         cursor += duration
     return Timeline(tuple(clips), cursor)

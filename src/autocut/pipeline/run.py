@@ -197,18 +197,13 @@ def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
         start=candidate.start + offset,
         end=candidate.end + offset,
         duration=candidate.duration,
-        tier=candidate.tier,
-        mean_score=candidate.mean_score,
-        max_score=candidate.max_score,
+        mean_probability=candidate.mean_probability,
+        max_probability=candidate.max_probability,
         window_evidence=tuple(
             WindowEvidence(
                 start=window.start + offset,
                 end=window.end + offset,
-                score=window.score,
-                tier=window.tier,
-                p0=window.p0,
-                p1=window.p1,
-                p2=window.p2,
+                probability=window.probability,
             )
             for window in candidate.window_evidence
         ),
@@ -232,10 +227,9 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
         "selection": {
-            "min_clip": 3.0, "max_clip_duration": 0.0, "class_score_weights": [0.0, 1.0, 2.5],
-            "junk_threshold": 0.20, "action_threshold": 0.60, "flow_threshold": 0.40,
+            "min_clip": 3.0, "max_clip_duration": 0.0,
             "min_candidate_duration": 3.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0,
-            "p2_envelope_decay": 0.0,
+            "positive_threshold": 0.5,
         },
         "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0},
         "logging": {"level": "INFO"},
@@ -300,14 +294,12 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         raise ValueError("logging.level must be a standard Python logging level.")
 
     candidate_fields = {
-        "class_score_weights", "junk_threshold", "action_threshold", "flow_threshold",
-        "min_candidate_duration", "max_gap_to_merge", "padding_seconds", "p2_envelope_decay",
+        "min_candidate_duration", "max_gap_to_merge", "padding_seconds", "positive_threshold",
     }
     candidate_values = {
         key: value for key, value in raw["selection"].items() if key in candidate_fields
     }
-    if isinstance(candidate_values.get("class_score_weights"), list):
-        candidate_values["class_score_weights"] = tuple(candidate_values["class_score_weights"])
+    
     # min_clip is the sole final candidate-duration filter.
     candidate_values["min_candidate_duration"] = raw["selection"]["min_clip"]
     candidate_config = CandidateGenerationConfig(**candidate_values)
@@ -488,22 +480,10 @@ def run_pipeline(
             payload = validate_checkpoint(dict(settings.model.checkpoint))
         else:
             raise TypeError("checkpoint must be a path or a checkpoint mapping.")
-
-        probabilities = inference.probabilities  # shape: [N, 3]
-        training_config = payload.get("training_config") or {}
-        positive_threshold = float(training_config.get("positive_threshold", payload.get("positive_threshold", 0.50)))
-        if not math.isfinite(positive_threshold) or not 0.0 <= positive_threshold <= 1.0:
-            raise ValueError("Checkpoint positive_threshold must be finite and between 0 and 1.")
-
-        # Suppress class-2 probability below the configured selection threshold,
-        # then renormalize before class-aware candidate generation.
-        probabilities = probabilities.copy()
-        probabilities[probabilities[:, 2] < positive_threshold, 2] = 0.0
-        row_sums = probabilities.sum(axis=1, keepdims=True)
-        probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
+        
         cleaned_inference = InferenceResult(
             timestamps=inference.timestamps,
-            probabilities=probabilities,
+            probabilities=inference.probabilities,
         )
         candidates = generate_candidates(
             cleaned_inference,

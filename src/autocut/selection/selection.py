@@ -21,11 +21,9 @@ class SelectionCandidate:
     @property
     def duration(self) -> float: return self.candidate.duration
     @property
-    def score(self) -> float: return self.candidate.max_score
+    def score(self) -> float: return self.candidate.max_probability
     @property
-    def mean_score(self) -> float: return self.candidate.mean_score
-    @property
-    def tier(self) -> str: return self.candidate.tier
+    def mean_score(self) -> float: return self.candidate.mean_probability
     @property
     def window_evidence(self) -> tuple[WindowEvidence, ...]: return self.candidate.window_evidence
 
@@ -54,19 +52,18 @@ def _validate_interval(start: float, end: float, label: str) -> None:
 def _trim_to_duration(item: SelectionCandidate, duration: float, minimum: float) -> SelectionCandidate | None:
     """Honor an explicit per-clip cap around strongest evidence, not an output budget."""
     if duration < minimum or duration >= item.duration: return None
-    evidence = sorted(item.window_evidence, key=lambda w: (-w.score, w.start, w.end))
+    evidence = sorted(item.window_evidence, key=lambda w: (-w.probability, w.start, w.end))
     midpoint = (evidence[0].start + evidence[0].end) / 2.0 if evidence else (item.start + item.end) / 2.0
     start = min(max(midpoint - duration / 2.0, item.start), item.end - duration)
     end = start + duration
     retained = tuple(w for w in item.window_evidence if w.end > start and w.start < end)
     if evidence and not retained: return None
     if retained:
-        scores = [w.score for w in retained]
-        tier = "high_action" if any(w.tier == "high_action" for w in retained) else "moderate_interest"
+        scores = [w.probability for w in retained]
         mean_score, max_score = sum(scores) / len(scores), max(scores)
     else:
-        tier, mean_score, max_score = item.tier, item.mean_score, item.score
-    candidate = CandidateClip(start, end, end - start, tier, mean_score, max_score, retained)
+        mean_score, max_score = item.mean_score, item.score
+    candidate = CandidateClip(start, end, end - start, mean_score, max_score, retained)
     return SelectionCandidate(item.video_name, item.video_order, candidate, item.annotation_order)
 
 def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips: Sequence[MandatoryClip] = (), *, min_clip_duration: float = 3.0, max_clip_duration: float = 0.0, max_total_duration: float | None = None) -> SelectionResult:
@@ -116,7 +113,7 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
         )
     tier_order = {"high_action": 0, "moderate_interest": 1}
     ranked = sorted(candidate_list, key=lambda item: (
-        tier_order.get(item.tier, 2), -item.score, item.duration,
+        -item.score, item.duration,
         item.video_order, item.start, item.video_name,
         item.annotation_order if item.annotation_order is not None else -1,
     ))
@@ -142,5 +139,5 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
         selected.append(item)
         if remaining is not None:
             remaining = max(0.0, remaining - item.duration)
-        logger.info("Retained candidate: video=%s annotation_order=%s tier=%s range=[%.3f, %.3f) duration=%.3fs score=%.6f evidence=%d.", item.video_name, item.annotation_order, item.tier, item.start, item.end, item.duration, item.score, len(item.window_evidence))
+        logger.info("Retained candidate: video=%s annotation_order=%s tier=%s range=[%.3f, %.3f) duration=%.3fs score=%.6f evidence=%d.", item.video_name, item.annotation_order, item.start, item.end, item.duration, item.score, len(item.window_evidence))
     return SelectionResult(tuple(selected))
