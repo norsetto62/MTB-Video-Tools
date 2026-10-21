@@ -110,7 +110,7 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
     assert "train_groups" not in lovo_calls[2]
 
     # Check that the JSON export file was created successfully under output/hpo/
-    expected_json_path = tmp_path / "output" / "hpo" / "test_autocut_study_best_params.json"
+    expected_json_path = tmp_path / "output" / "hpo" / "test_autocut_study_pareto_results.json"
     assert expected_json_path.exists()
 
     # Verify JSON content structure and values
@@ -118,8 +118,12 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
         payload = json.load(f)
 
     assert payload["study_name"] == "test_autocut_study"
-    assert "best_value" in payload
-    assert "best_params" in payload
-    assert "best_metrics" in payload
-    assert payload["best_metrics"]["positive_recall_on_P"] == 0.70
-    assert payload["best_metrics"]["selected_fraction_of_U"] == 0.20
+    assert payload["objectives"] == [
+        {"name": "positive_recall_on_P", "direction": "maximize"},
+        {"name": "selected_fraction_of_U", "direction": "minimize"},
+    ]
+    assert payload["pareto_front"]
+    assert "production_params" in payload
+    assert "production_metrics" in payload
+    assert payload["production_metrics"]["positive_recall_on_P"] == 0.70
+    assert payload["production_metrics"]["selected_fraction_of_U"] == 0.20
