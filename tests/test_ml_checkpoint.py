@@ -136,7 +136,7 @@ def test_custom_class_count_requires_explicit_class_mapping():
         class_mapping={"0": "a", "1": "b", "2": "c", "3": "d"},
     )
     assert payload["model_config"]["num_classes"] == 4
-    with pytest.raises(ValueError, match="binary two-class"):
+    with pytest.raises(ValueError, match="two-class or three-output"):
         validate_checkpoint(payload)
 
 
@@ -211,15 +211,14 @@ def test_restore_model_rejects_incompatible_weights():
 
 
 
-def test_legacy_three_class_checkpoint_is_rejected():
-    legacy_model = MTBClassifier(num_classes=3)
-    legacy_payload = build_checkpoint(
-        legacy_model,
-        class_mapping={
-            "0": "negative_or_non_riding",
-            "1": "ordinary_or_intermediate",
-            "2": "interesting",
-        },
-    )
-    with pytest.raises(ValueError, match="binary two-class"):
-        validate_checkpoint(legacy_payload)
+def test_three_class_pu_checkpoint_round_trip_is_supported():
+    model = MTBClassifier(num_classes=3)
+    payload = build_checkpoint(model)
+    assert payload["class_mapping"] == {
+        "0": "score_0",
+        "1": "score_1_or_2",
+        "2": "score_3_positive",
+    }
+    validated = validate_checkpoint(payload)
+    restored = restore_model(validated)
+    assert restored.num_classes == 3
