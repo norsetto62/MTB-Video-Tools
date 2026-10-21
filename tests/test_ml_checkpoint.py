@@ -1,4 +1,4 @@
-"""Tests for versioned ML checkpoint persistence."""
+"""Tests for versioned single-logit P/U checkpoint persistence."""
 
 import copy
 
@@ -36,14 +36,10 @@ def test_build_checkpoint_captures_model_and_canonical_feature_order():
     assert payload["model_config"] == {
         "hidden_dim": 128,
         "classifier_mid_dim": 64,
-        "num_classes": 3,
+        "num_classes": 1,
         "dropout": pytest.approx(0.4),
     }
-    assert payload["class_mapping"] == {
-        "0": "score_0",
-        "1": "score_1_or_2",
-        "2": "score_3_positive",
-    }
+    assert payload["class_mapping"] == {"0": "P_vs_U_logit"}
     assert payload["optimizer_state_dict"] is None
     assert payload["epoch"] is None
 
@@ -127,18 +123,9 @@ def test_build_rejects_invalid_feature_metadata(kwargs):
         build_checkpoint(model, **kwargs)
 
 
-def test_custom_class_count_requires_explicit_class_mapping():
-    model = MTBClassifier(num_classes=4)
-    with pytest.raises(ValueError, match="class_mapping"):
-        build_checkpoint(model)
-
-    payload = build_checkpoint(
-        model,
-        class_mapping={"0": "a", "1": "b", "2": "c", "3": "d"},
-    )
-    assert payload["model_config"]["num_classes"] == 4
-    with pytest.raises(ValueError, match="two-class or three-output"):
-        validate_checkpoint(payload)
+def test_model_rejects_any_output_count_other_than_one():
+    with pytest.raises(ValueError, match="exactly one output logit"):
+        MTBClassifier(num_classes=2)
 
 
 @pytest.mark.parametrize("epoch", [-1, 1.5, True])
@@ -182,7 +169,7 @@ def test_load_rejects_missing_file(tmp_path):
         (lambda p: p.update(feature_dim=0), "feature_dim"),
         (lambda p: p.update(model_class="OtherModel"), "model_class"),
         (lambda p: p.update(feature_mask=[False] * 54), "feature_mask"),
-        (lambda p: p.update(class_mapping={"0": "a"}), "class_mapping"),
+        (lambda p: p.update(class_mapping={"1": "a"}), "class_mapping"),
         (lambda p: p.update(scaler_state={"enabled": True, "mean": [0.0], "scale": [1.0]}), "feature count"),
         (lambda p: p.update(epoch=-1), "epoch"),
     ],
@@ -212,14 +199,10 @@ def test_restore_model_rejects_incompatible_weights():
 
 
 
-def test_three_class_pu_checkpoint_round_trip_is_supported():
-    model = MTBClassifier(num_classes=3)
+def test_single_logit_pu_checkpoint_round_trip_is_supported():
+    model = MTBClassifier()
     payload = build_checkpoint(model)
-    assert payload["class_mapping"] == {
-        "0": "score_0",
-        "1": "score_1_or_2",
-        "2": "score_3_positive",
-    }
+    assert payload["class_mapping"] == {"0": "P_vs_U_logit"}
     validated = validate_checkpoint(payload)
     restored = restore_model(validated)
-    assert restored.num_classes == 3
+    assert restored.num_classes == 1
