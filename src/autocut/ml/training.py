@@ -42,6 +42,7 @@ class TrainingConfig:
     weight_decay: float = 1e-2
     seed: int = 42
     positive_prior: float = 0.1
+    c2_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         for name in ("epochs", "batch_size", "hidden_dim", "classifier_mid_dim"):
@@ -75,6 +76,9 @@ class TrainingConfig:
         object.__setattr__(self, "min_delta", float(self.min_delta))
         object.__setattr__(self, "dropout", float(self.dropout))
         object.__setattr__(self, "positive_prior", float(self.positive_prior))
+        if isinstance(self.c2_threshold, bool) or not isinstance(self.c2_threshold, (int, float)) or not math.isfinite(float(self.c2_threshold)) or not 0.0 <= float(self.c2_threshold) <= 1.0:
+            raise ValueError("c2_threshold must be finite and between 0 and 1.")
+        object.__setattr__(self, "c2_threshold", float(self.c2_threshold))
 
 
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
