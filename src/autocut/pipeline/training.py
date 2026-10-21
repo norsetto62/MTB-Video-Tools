@@ -75,6 +75,10 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
     training = _section(settings, "training")
     try:
         values = training.to_dict() if isinstance(training, Config) else dict(training)
+        # Class weights belonged to supervised CE; PU risk uses class-conditional
+        # means and must not rebalance or reinterpret the unlabeled set.
+        values.pop("class_weights", None)
+        values.pop("good_threshold", None)
         return TrainingConfig(**values)
     except TypeError as exc:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
