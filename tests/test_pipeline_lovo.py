@@ -44,8 +44,8 @@ def _settings(tmp_path):
 
 def test_metrics_does_not_treat_unlabeled_as_negative():
     result = pipeline_lovo._metrics(
-        np.array([2, 0, 1, 2]),
-        np.array([2, 2, 0, 1]),
+        np.array([1, 0, 0, 1]),
+        np.array([1, 1, 0, 0]),
     )
     assert result["windows"] == 4
     assert result["positive_windows"] == 2
@@ -101,7 +101,7 @@ def test_lovo_holds_out_each_group_and_writes_fold_artifacts(tmp_path, monkeypat
         return object(), object(), {"epochs_trained": epochs}
 
     def fake_predict(model, scaler, test_X, **kwargs):
-        return np.zeros(len(test_X), dtype=np.int64), np.tile([0.4, 0.3, 0.3], (len(test_X), 1))
+        return np.zeros(len(test_X), dtype=np.int64), np.full(len(test_X), 0.3, dtype=np.float32)
 
     monkeypatch.setattr(pipeline_lovo, "_combine_records", fake_combine)
     monkeypatch.setattr(pipeline_lovo, "train_single_fold", fake_train)
@@ -164,7 +164,7 @@ def test_fixed_epoch_refit_saves_scaler_and_training_metadata(tmp_path):
 
 
 
-def test_lovo_prediction_thresholds_class_two_as_pu_positive():
+def test_lovo_prediction_thresholds_positive_probability():
     import torch
 
     class FixedModel:
@@ -172,7 +172,7 @@ def test_lovo_prediction_thresholds_class_two_as_pu_positive():
             return self
 
         def __call__(self, batch):
-            return torch.tensor([[0.0, 1.0, 2.0], [2.0, 1.0, 0.0]], dtype=torch.float32)
+            return torch.tensor([[2.0], [-2.0]], dtype=torch.float32)
 
     class IdentityScaler:
         def transform(self, values):
@@ -180,13 +180,13 @@ def test_lovo_prediction_thresholds_class_two_as_pu_positive():
 
     windows = np.zeros((2, 8, 54), dtype=np.float32)
     predicted, probabilities = pipeline_lovo._predict(
-        FixedModel(), IdentityScaler(), windows, c2_threshold=0.60
+        FixedModel(), IdentityScaler(), windows, positive_threshold=0.60
     )
-    np.testing.assert_array_equal(predicted, [2, 0])
-    assert probabilities.shape == (2, 3)
-    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
+    np.testing.assert_array_equal(predicted, [1, 0])
+    assert probabilities.shape == (2,)
+    assert probabilities[0] > probabilities[1]
 
-def test_lovo_prediction_rejects_invalid_c2_threshold():
+def test_lovo_prediction_rejects_invalid_positive_threshold():
     import torch
 
     class FixedModel:
@@ -198,9 +198,9 @@ def test_lovo_prediction_rejects_invalid_c2_threshold():
             return values
 
     for threshold in (-0.1, 1.1, float("nan"), True):
-        with pytest.raises(ValueError, match="c2_threshold"):
+        with pytest.raises(ValueError, match="positive_threshold"):
             pipeline_lovo._predict(
                 FixedModel(), IdentityScaler(),
                 np.zeros((1, 8, 54), dtype=np.float32),
-                c2_threshold=threshold,
+                positive_threshold=threshold,
             )
