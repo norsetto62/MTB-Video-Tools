@@ -75,11 +75,11 @@ def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
     windows: np.ndarray,
-    good_threshold: float = 0.50,
+    c2_threshold: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return three-output probabilities and class-2 PU-positive selections."""
-    if isinstance(good_threshold, bool) or not isinstance(good_threshold, (int, float)) or not np.isfinite(good_threshold) or not 0.0 <= good_threshold <= 1.0:
-        raise ValueError("good_threshold must be between 0 and 1.")
+    if isinstance(c2_threshold, bool) or not isinstance(c2_threshold, (int, float)) or not np.isfinite(c2_threshold) or not 0.0 <= c2_threshold <= 1.0:
+        raise ValueError("c2_threshold must be between 0 and 1.")
     transformed = scaler.transform(windows)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
     batches: list[np.ndarray] = []
@@ -89,7 +89,7 @@ def _predict(
             batches.append(torch.softmax(model(tensor[start:start + 256]), dim=1).cpu().numpy())
     probabilities = np.concatenate(batches, axis=0)
     fallback = probabilities[:, :2].argmax(axis=1)
-    predictions = np.where(probabilities[:, 2] >= float(good_threshold), 2, fallback).astype(np.int64)
+    predictions = np.where(probabilities[:, 2] >= float(c2_threshold), 2, fallback).astype(np.int64)
     return predictions, probabilities
 
 def _resolve_group_splits(
@@ -291,8 +291,8 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        good_threshold = training_config.c2_threshold
-        predicted, probabilities = _predict(model, scaler, test_X, good_threshold=good_threshold)
+        c2_threshold = training_config.c2_threshold
+        predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
         metrics = _metrics(actual, predicted)
         pooled_actual.append(actual)
         pooled_predicted.append(predicted)
