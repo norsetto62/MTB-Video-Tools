@@ -11,7 +11,7 @@ def make_timeline():
     clip = TimelineClip(
         video_name="ride.mp4", source_start=1.0, source_end=3.0,
         output_start=0.0, output_end=2.0, mandatory=False,
-        score=1.5, tier="high_action",
+        score=1.5,
     )
     return Timeline((clip,), 2.0)
 
