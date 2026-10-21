@@ -1,10 +1,8 @@
-"""Three-output PU training for the AutoCut MTB interest model.
+"""Single-logit non-negative PU training for the AutoCut MTB interest model.
 
-Pure annotation score 3 is the positive set P. Pure scores 0, 1, and 2 form
-the unlabeled set U. The existing three-output classifier is retained:
-score 0 maps to output 0, scores 1 and 2 map to output 1, and score 3 maps
-to output 2. PU risk treats output 2 as positive and outputs 0/1 jointly as
-the unlabeled side; it never treats U as confirmed negatives.
+Pure score-3 windows are P. Pure score-0/1/2 windows are U. Conflicting and
+uncovered windows are expected to have been removed by target construction.
+U is never treated as a confirmed negative set.
 """
 from __future__ import annotations
 
@@ -16,7 +14,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch import nn
 
 from autocut.ml.checkpoint import save_checkpoint
 from autocut.ml.model import MTBClassifier
@@ -27,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Validated hyperparameters for one PU training fold."""
+    """Validated hyperparameters for one P/U training fold."""
 
     epochs: int = 15
     lr: float = 1e-3
@@ -35,15 +32,12 @@ class TrainingConfig:
     hidden_dim: int = 128
     classifier_mid_dim: int = 64
     dropout: float = 0.4
-    num_classes: int = 3
     use_scaling: bool = True
     patience: int = 10
     min_delta: float = 1e-4
     weight_decay: float = 1e-2
     seed: int = 42
     positive_prior: float = 0.1
-    c2_threshold: float = 0.5
-    unlabeled_aux_weight: float = 0.25
 
     def __post_init__(self) -> None:
         for name in ("epochs", "batch_size", "hidden_dim", "classifier_mid_dim"):
@@ -56,8 +50,6 @@ class TrainingConfig:
             raise ValueError("patience must be a non-negative integer.")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise ValueError("seed must be an integer.")
-        if isinstance(self.num_classes, bool) or not isinstance(self.num_classes, int) or self.num_classes != 3:
-            raise ValueError("num_classes must be 3 for the established classifier contract.")
         for name, minimum, inclusive in (
             ("lr", 0.0, False), ("weight_decay", 0.0, True), ("min_delta", 0.0, True),
         ):
@@ -72,25 +64,12 @@ class TrainingConfig:
             raise ValueError("use_scaling must be a bool.")
         if isinstance(self.positive_prior, bool) or not isinstance(self.positive_prior, (int, float)) or not math.isfinite(float(self.positive_prior)) or not 0 < float(self.positive_prior) < 1:
             raise ValueError("positive_prior must be finite and strictly between 0 and 1.")
-        object.__setattr__(self, "lr", float(self.lr))
-        object.__setattr__(self, "weight_decay", float(self.weight_decay))
-        object.__setattr__(self, "min_delta", float(self.min_delta))
-        object.__setattr__(self, "dropout", float(self.dropout))
-        object.__setattr__(self, "positive_prior", float(self.positive_prior))
-        if isinstance(self.c2_threshold, bool) or not isinstance(self.c2_threshold, (int, float)) or not math.isfinite(float(self.c2_threshold)) or not 0.0 <= float(self.c2_threshold) <= 1.0:
-            raise ValueError("c2_threshold must be finite and between 0 and 1.")
-        object.__setattr__(self, "c2_threshold", float(self.c2_threshold))
-        if isinstance(self.unlabeled_aux_weight, bool) or not isinstance(self.unlabeled_aux_weight, (int, float)) or not math.isfinite(float(self.unlabeled_aux_weight)) or float(self.unlabeled_aux_weight) < 0.0:
-            raise ValueError("unlabeled_aux_weight must be finite and non-negative.")
-        object.__setattr__(self, "unlabeled_aux_weight", float(self.unlabeled_aux_weight))
+        for name in ("lr", "weight_decay", "min_delta", "dropout", "positive_prior"):
+            object.__setattr__(self, name, float(getattr(self, name)))
 
 
 def targets_to_classes(targets: np.ndarray) -> np.ndarray:
-    """Map pure annotation scores 0..3 to the existing three output classes.
-
-    Score 0 maps to output 0; scores 1 and 2 map to output 1; score 3 maps
-    to output 2 (the confirmed positive set P), matching main's three-class mapping.
-    """
+    """Map pure annotation scores to binary labels: P=1 for score 3, U=0 for 0/1/2."""
     try:
         values = np.asarray(targets, dtype=np.float64)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -99,10 +78,7 @@ def targets_to_classes(targets: np.ndarray) -> np.ndarray:
         raise ValueError("targets must be a non-empty one-dimensional array.")
     if not np.isfinite(values).all() or not np.isin(values, [0.0, 1.0, 2.0, 3.0]).all():
         raise ValueError("targets must contain only finite pure scores 0, 1, 2, or 3.")
-    classes = np.ones(values.shape, dtype=np.int64)
-    classes[values == 0.0] = 0
-    classes[values == 3.0] = 2
-    return classes
+    return (values == 3.0).astype(np.int64)
 
 
 def _validate_windows(windows: np.ndarray, *, name: str, feature_dim: int = 54) -> np.ndarray:
@@ -117,45 +93,36 @@ def _validate_windows(windows: np.ndarray, *, name: str, feature_dim: int = 54) 
     return values
 
 
-def _pu_risk(logits: torch.Tensor, classes: torch.Tensor, positive_prior: float) -> torch.Tensor:
-    """Non-negative PU risk, with output 2 positive and outputs 0/1 unlabeled."""
-    positive = classes == 2
-    unlabeled = classes != 2
-    if not positive.any() or not unlabeled.any():
-        raise ValueError("PU risk requires both pure score-3 positives and unlabeled score-0/1/2 windows.")
-    # logit of P(class 3) versus P(not class 3), while retaining 3 output logits.
-    binary_logit = logits[:, 2] - torch.logsumexp(logits[:, :2], dim=1)
-    positive_logits = binary_logit[positive]
-    unlabeled_logits = binary_logit[unlabeled]
-    positive_risk = positive_prior * torch.nn.functional.softplus(-positive_logits).mean()
-    negative_risk = torch.nn.functional.softplus(unlabeled_logits).mean() - positive_prior * torch.nn.functional.softplus(positive_logits).mean()
-    return positive_risk + torch.clamp(negative_risk, min=0.0)
+def _pu_risk(logits: torch.Tensor, labels: torch.Tensor, positive_prior: float) -> torch.Tensor:
+    """Compute the requested nnPU risk from one logit per window.
+
+    labels are 1 for P and 0 for U; logits are raw, un-sigmoided model outputs.
+    """
+    scores = logits.reshape(-1)
+    targets = labels.reshape(-1)
+    if len(scores) != len(targets):
+        raise ValueError("logits and labels must contain the same number of windows.")
+    positive = targets == 1
+    unlabeled = targets == 0
+    if not bool(positive.any()) or not bool(unlabeled.any()):
+        raise ValueError("PU risk requires both pure score-3 positives (P) and score-0/1/2 unlabeled windows (U).")
+    positive_logits = scores[positive]
+    unlabeled_logits = scores[unlabeled]
+    risk_positive = positive_prior * torch.nn.functional.softplus(-positive_logits).mean()
+    risk_negative = torch.nn.functional.softplus(unlabeled_logits).mean() - positive_prior * torch.nn.functional.softplus(positive_logits).mean()
+    return risk_positive + torch.clamp(risk_negative, min=0.0)
 
 
-def _validate_targets_presence(classes: np.ndarray, *, name: str) -> None:
-    if not np.any(classes == 2):
+def _validate_targets_presence(labels: np.ndarray, *, name: str) -> None:
+    if not np.any(labels == 1):
         raise ValueError(f"{name} must contain at least one pure score-3 positive (P) window.")
-    if not np.any(classes != 2):
+    if not np.any(labels == 0):
         raise ValueError(f"{name} must contain at least one unlabeled (U) window with score 0, 1, or 2.")
 
 
-def _training_loss(
-    logits: torch.Tensor,
-    classes: torch.Tensor,
-    config: TrainingConfig,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Combine nnPU risk with conditional score-0-vs-score-1/2 learning on U.
-
-    The auxiliary loss only normalizes over outputs 0 and 1. It teaches their
-    distinction within U without penalizing output 2 on unlabeled examples.
-    """
-    pu_loss = _pu_risk(logits, classes, config.positive_prior)
-    unlabeled = classes != 2
-    conditional_u_loss = torch.nn.functional.cross_entropy(
-        logits[unlabeled, :2], classes[unlabeled]
-    )
-    total = pu_loss + config.unlabeled_aux_weight * conditional_u_loss
-    return total, pu_loss, conditional_u_loss
+def _training_loss(logits: torch.Tensor, labels: torch.Tensor, config: TrainingConfig) -> torch.Tensor:
+    """The sole training objective: non-negative PU risk, with no auxiliary loss."""
+    return _pu_risk(logits, labels, config.positive_prior)
 
 
 def _batch_indices(
@@ -165,7 +132,7 @@ def _batch_indices(
     batch_size: int,
     generator: torch.Generator,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Draw class-conditional batches uniformly within P and U."""
+    """Sample equal-sized P and U subsets, uniformly within each set."""
     p_size = max(1, batch_size // 2)
     u_size = max(1, batch_size - p_size)
     p = positive_indices[torch.randint(len(positive_indices), (p_size,), generator=generator)]
@@ -174,13 +141,13 @@ def _batch_indices(
 
 
 def _evaluate(model: MTBClassifier, X: torch.Tensor, y: torch.Tensor, config: TrainingConfig) -> float:
-    """Evaluate PU risk with batched inference to bound activation memory."""
+    """Evaluate nnPU risk over all validation P and U examples."""
     model.eval()
-    batches: list[torch.Tensor] = []
     with torch.no_grad():
-        for start in range(0, len(X), config.batch_size):
-            batches.append(model(X[start : start + config.batch_size]))
-    logits = torch.cat(batches, dim=0)
+        logits = torch.cat([
+            model(X[start : start + config.batch_size])
+            for start in range(0, len(X), config.batch_size)
+        ], dim=0)
     return float(_pu_risk(logits, y, config.positive_prior).item())
 
 
@@ -227,8 +194,7 @@ def _fit(
     train_tensor = torch.from_numpy(np.ascontiguousarray(train_scaled, dtype=np.float32))
     train_label_tensor = torch.from_numpy(train_y)
     if val_X is not None:
-        val_scaled = scaler.transform(val_X)
-        val_tensor = torch.from_numpy(np.ascontiguousarray(val_scaled, dtype=np.float32))
+        val_tensor = torch.from_numpy(np.ascontiguousarray(scaler.transform(val_X), dtype=np.float32))
         val_label_tensor = torch.from_numpy(val_y)
     else:
         val_tensor = val_label_tensor = None
@@ -237,13 +203,13 @@ def _fit(
         torch.manual_seed(config.seed)
         model = MTBClassifier(
             feature_dim=train_X.shape[2], hidden_dim=config.hidden_dim,
-            classifier_mid_dim=config.classifier_mid_dim, num_classes=3, dropout=config.dropout,
+            classifier_mid_dim=config.classifier_mid_dim, dropout=config.dropout,
         ).to(torch.device("cpu"))
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
         generator = torch.Generator(device="cpu")
         generator.manual_seed(config.seed)
-        positive_indices = torch.from_numpy(np.flatnonzero(train_y == 2))
-        unlabeled_indices = torch.from_numpy(np.flatnonzero(train_y != 2))
+        positive_indices = torch.from_numpy(np.flatnonzero(train_y == 1))
+        unlabeled_indices = torch.from_numpy(np.flatnonzero(train_y == 0))
         steps = max(1, math.ceil(max(len(positive_indices), len(unlabeled_indices)) / max(1, config.batch_size // 2)))
         best_state: dict[str, torch.Tensor] | None = None
         best_loss = math.inf
@@ -254,8 +220,6 @@ def _fit(
         for epoch in range(1, epochs + 1):
             model.train()
             loss_total = 0.0
-            pu_loss_total = 0.0
-            conditional_u_loss_total = 0.0
             for _ in range(steps):
                 p_idx, u_idx = _batch_indices(
                     positive_indices, unlabeled_indices, batch_size=config.batch_size,
@@ -264,33 +228,20 @@ def _fit(
                 batch_idx = torch.cat((p_idx, u_idx))
                 optimizer.zero_grad(set_to_none=True)
                 logits = model(train_tensor[batch_idx])
-                loss, pu_loss, conditional_u_loss = _training_loss(
-                    logits, train_label_tensor[batch_idx], config
-                )
+                loss = _training_loss(logits, train_label_tensor[batch_idx], config)
                 if not torch.isfinite(loss).item():
-                    raise RuntimeError(f"Non-finite PU training risk at epoch {epoch}.")
+                    raise RuntimeError(f"Non-finite nnPU risk at epoch {epoch}.")
                 loss.backward()
                 optimizer.step()
                 loss_total += float(loss.item())
-                pu_loss_total += float(pu_loss.item())
-                conditional_u_loss_total += float(conditional_u_loss.item())
             train_loss = loss_total / steps
-            train_pu_risk = pu_loss_total / steps
-            train_u_conditional_loss = conditional_u_loss_total / steps
             if val_tensor is not None:
                 val_loss = _evaluate(model, val_tensor, val_label_tensor, config)
-                history.append({
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "train_pu_risk": train_pu_risk,
-                    "train_u_conditional_loss": train_u_conditional_loss,
-                    "val_pu_risk": val_loss,
-                })
+                history.append({"epoch": epoch, "train_pu_risk": train_loss, "val_pu_risk": val_loss})
                 if not math.isfinite(val_loss):
                     raise RuntimeError(f"Non-finite validation PU risk at epoch {epoch}.")
                 if best_state is None or val_loss < best_loss - config.min_delta:
-                    best_loss = val_loss
-                    best_epoch = epoch
+                    best_loss, best_epoch = val_loss, epoch
                     best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                     epochs_without_improvement = 0
                 else:
@@ -298,12 +249,7 @@ def _fit(
                     if early_stopping and epochs_without_improvement >= max(1, config.patience):
                         break
             else:
-                history.append({
-                    "epoch": epoch,
-                    "train_loss": train_loss,
-                    "train_pu_risk": train_pu_risk,
-                    "train_u_conditional_loss": train_u_conditional_loss,
-                })
+                history.append({"epoch": epoch, "train_pu_risk": train_loss})
         if val_tensor is not None:
             if best_state is None:
                 raise RuntimeError("Training completed without a valid best model state.")
@@ -312,18 +258,17 @@ def _fit(
             best_epoch = epochs
         model.eval()
 
-    class_counts = {str(i): int(np.sum(train_y == i)) for i in range(3)}
+    p_count = int(np.sum(train_y == 1))
+    u_count = int(np.sum(train_y == 0))
     summary: dict[str, Any] = {
         "history": history,
         "best_epoch": best_epoch,
         "best_val_pu_risk": float(best_loss) if val_tensor is not None else None,
         "epochs_completed": len(history),
         "stopped_early": early_stopping and len(history) < epochs,
-        "class_counts": class_counts,
+        "positive_windows": p_count,
+        "unlabeled_windows": u_count,
         "positive_prior": config.positive_prior,
-        "unlabeled_aux_weight": config.unlabeled_aux_weight,
-        "positive_windows": class_counts["2"],
-        "unlabeled_windows": class_counts["0"] + class_counts["1"],
         "fold_video_id": fold_video_id,
     }
     if checkpoint_path is not None:
@@ -334,7 +279,8 @@ def _fit(
             metadata={
                 **(metadata or {}),
                 "best_val_pu_risk": float(best_loss) if val_tensor is not None else None,
-                "class_counts": class_counts,
+                "positive_windows": p_count,
+                "unlabeled_windows": u_count,
                 "positive_prior": config.positive_prior,
                 "fold_video_id": fold_video_id,
             },
