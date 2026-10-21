@@ -71,14 +71,14 @@ def test_inference_reuses_checkpoint_scaler():
     )
 
     result = infer_windows(payload, windows)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
 
 
 def test_inference_applies_checkpoint_feature_mask():
     windows = _windows()
     mask = [index % 2 == 0 for index in range(54)]
     result = infer_windows(_checkpoint(feature_mask=mask), windows)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
 
 
 @pytest.mark.parametrize(
