@@ -25,13 +25,9 @@ def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
         "selection": {
             "min_clip": 3.0,
             "max_clip_duration": 0.0,
-            "class_score_weights": [0.0, 1.0, 2.5],
-            "junk_threshold": 0.20,
-            "action_threshold": 0.60,
-            "flow_threshold": 0.40,
+            "positive_threshold": 0.5,
             "max_gap_to_merge": 3.0,
             "padding_seconds": padding_seconds,
-            "p2_envelope_decay": 0.0,
         },
         "audio": {
             "sync_mode": "off",
