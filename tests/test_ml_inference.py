@@ -36,13 +36,13 @@ def _checkpoint(*, scaler=None, feature_mask=None):
     )
 
 
-def test_inference_returns_timestamps_and_binary_probabilities():
+def test_inference_returns_timestamps_and_three_probabilities():
     windows = _windows()
     result = infer_windows(_checkpoint(), windows, batch_size=3)
 
     assert isinstance(result, InferenceResult)
     np.testing.assert_array_equal(result.timestamps, windows.timestamps)
-    assert result.probabilities.shape == (len(windows.X), 2)
+    assert result.probabilities.shape == (len(windows.X), 3)
     assert result.probabilities.dtype == np.float32
     assert np.isfinite(result.probabilities).all()
     np.testing.assert_allclose(result.probabilities.sum(axis=1), 1.0, atol=1e-6)
@@ -55,7 +55,7 @@ def test_inference_accepts_checkpoint_file(tmp_path):
     save_checkpoint(path, model, data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0})
 
     result = infer_windows(path, windows)
-    assert result.probabilities.shape == (len(windows.X), 2)
+    assert result.probabilities.shape == (len(windows.X), 3)
 
 
 def test_inference_reuses_checkpoint_scaler():
@@ -71,14 +71,14 @@ def test_inference_reuses_checkpoint_scaler():
     )
 
     result = infer_windows(payload, windows)
-    assert result.probabilities.shape == (len(windows.X), 2)
+    assert result.probabilities.shape == (len(windows.X), 3)
 
 
 def test_inference_applies_checkpoint_feature_mask():
     windows = _windows()
     mask = [index % 2 == 0 for index in range(54)]
     result = infer_windows(_checkpoint(feature_mask=mask), windows)
-    assert result.probabilities.shape == (len(windows.X), 2)
+    assert result.probabilities.shape == (len(windows.X), 3)
 
 
 @pytest.mark.parametrize(
