@@ -287,10 +287,9 @@ def run_training(
         "pu_training": {
             "objective": "non-negative PU risk",
             "positive_prior": training_config.positive_prior,
-            "unlabeled_aux_weight": training_config.unlabeled_aux_weight,
             "positive_score": 3,
             "unlabeled_scores": [0, 1, 2],
-            "classifier_outputs": 3,
+            "classifier_outputs": 1,
         },
     }
     _, _, summary = train_single_fold(
