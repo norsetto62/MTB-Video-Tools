@@ -180,7 +180,7 @@ def test_lovo_prediction_thresholds_class_two_as_pu_positive():
 
     windows = np.zeros((2, 8, 54), dtype=np.float32)
     predicted, probabilities = pipeline_lovo._predict(
-        FixedModel(), IdentityScaler(), windows, good_threshold=0.70
+        FixedModel(), IdentityScaler(), windows, good_threshold=0.60
     )
     np.testing.assert_array_equal(predicted, [2, 0])
     assert probabilities.shape == (2, 3)
