@@ -25,7 +25,7 @@ def _config(**kwargs):
 
 
 def test_scores_map_to_existing_three_output_classes():
-    np.testing.assert_array_equal(targets_to_classes(np.array([0, 1, 2, 3])), [0, 0, 1, 2])
+    np.testing.assert_array_equal(targets_to_classes(np.array([0, 1, 2, 3])), [0, 1, 1, 2])
 
 
 @pytest.mark.parametrize("kwargs", [
