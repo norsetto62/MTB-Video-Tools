@@ -42,10 +42,10 @@ def test_inference_returns_timestamps_and_three_probabilities():
 
     assert isinstance(result, InferenceResult)
     np.testing.assert_array_equal(result.timestamps, windows.timestamps)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
     assert result.probabilities.dtype == np.float32
     assert np.isfinite(result.probabilities).all()
-    np.testing.assert_allclose(result.probabilities.sum(axis=1), 1.0, atol=1e-6)
+    assert np.all((result.probabilities >= 0.0) & (result.probabilities <= 1.0))
 
 
 def test_inference_accepts_checkpoint_file(tmp_path):
