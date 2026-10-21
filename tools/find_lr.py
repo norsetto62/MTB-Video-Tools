@@ -13,19 +13,22 @@ from autocut.dataset.manifest import load_manifest
 from autocut.config_loader import load_config
 from autocut.pipeline.training import _combine_records, _training_config
 from autocut.ml.scaling import FeatureScaler
-from autocut.ml.training import _validate_windows, targets_to_classes, _pu_risk
+from autocut.ml.training import _validate_windows, targets_to_classes, _training_loss
 from autocut.cli import build_parser
 
 
 class PULoss(nn.Module):
     """nnPU criterion; target class 2 is P, classes 0/1 are U."""
 
-    def __init__(self, positive_prior: float) -> None:
+    def __init__(self, positive_prior: float, aux_weight: float) -> None:
         super().__init__()
         self.positive_prior = positive_prior
+        self.aux_weight = aux_weight
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        return _pu_risk(logits, targets, self.positive_prior)
+        config = type("PUConfig", (), {"positive_prior": self.positive_prior, "unlabeled_aux_weight": self.aux_weight})()
+        total, _, _ = _training_loss(logits, targets, config)
+        return total
 
 
 def main(argv: Sequence[str] | None = None):
@@ -75,7 +78,7 @@ def main(argv: Sequence[str] | None = None):
         dropout=fit_config.dropout,
     ).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-7, weight_decay=fit_config.weight_decay)
-    criterion = PULoss(fit_config.positive_prior)
+    criterion = PULoss(fit_config.positive_prior, fit_config.unlabeled_aux_weight)
 
     finder = LRFinder(model, optimizer, criterion, device=str(device))
     finder.range_test(loader, end_lr=10, num_iter=100, step_mode="exp")
