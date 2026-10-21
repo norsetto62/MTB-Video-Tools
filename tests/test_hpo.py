@@ -28,7 +28,6 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
             "weight_decay": 1e-3,
             "dropout": 0.3,
             "positive_prior": 0.1,
-            "c2_threshold": 0.5,
             "hidden_dim": 64,
             "epochs": 1,
             "batch_size": 2,
@@ -47,7 +46,6 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
                 "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True},
                 "dropout": {"low": 0.2, "high": 0.6},
                 "positive_prior": {"low": 0.05, "high": 0.3},
-                "c2_threshold": {"low": 0.4, "high": 0.8, "step": 0.05},
                 "hidden_dim": {"choices": [32, 64, 128]},
                 
             },
