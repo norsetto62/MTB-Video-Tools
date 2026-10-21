@@ -155,14 +155,18 @@ def run_hpo(
 
     # Run Optuna optimization loop
 
-    # Calculate remaining trials so n_trials acts as a lifetime target
+    # Run the requested number of new trials in this execution session
     completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    remaining_trials = max(0, n_trials - completed_trials)
-
-    if remaining_trials > 0:
-        study.optimize(objective, n_trials=remaining_trials, gc_after_trial=True)
+    
+    if n_trials > 0:
+        logger.info(
+            "Running %d new trials for study (existing completed trials: %d)...",
+            n_trials,
+            completed_trials,
+        )
+        study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
     else:
-        logger.info("Study already has %d completed trials (target: %d). Skipping optimization.", completed_trials, n_trials)
+        logger.info("n_trials is set to 0. Skipping optimization.")
 
     # Compile results payload
     best_attrs = study.best_trial.user_attrs
