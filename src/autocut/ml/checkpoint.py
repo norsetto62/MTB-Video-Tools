@@ -21,8 +21,8 @@ from autocut.motion.features import FEATURE_NAMES
 
 CHECKPOINT_VERSION = "1.1"
 DEFAULT_CLASS_MAPPING = {
-    "0": "bad",
-    "1": "good",
+    "0": "U_unlabeled",
+    "1": "P_positive",
 }
 DEFAULT_THREE_CLASS_MAPPING = {
     "0": "score_0",
@@ -128,12 +128,14 @@ def build_checkpoint(
 
     names, mask = _validate_feature_metadata(model, feature_names, feature_mask)
     if class_mapping is None:
-        if model.num_classes == 2:
+        if model.num_classes == 1:
+            mapping = {"0": "P_vs_U_logit"}
+        elif model.num_classes == 2:
             mapping = dict(DEFAULT_CLASS_MAPPING)
         elif model.num_classes == 3:
             mapping = dict(DEFAULT_THREE_CLASS_MAPPING)
         else:
-            raise ValueError("Models with more than three outputs require an explicit class_mapping.")
+            raise ValueError("Models with unsupported output counts require an explicit class_mapping.")
     else:
         mapping = dict(class_mapping)
     if not mapping or not all(
@@ -292,8 +294,8 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
         raise ValueError("Checkpoint feature_names length does not match feature_dim.")
 
     num_classes = config["num_classes"]
-    if num_classes not in (2, 3):
-        raise ValueError("Checkpoint must use the two-class or three-output model contract.")
+    if num_classes != 1:
+        raise ValueError("Checkpoint must use the single-logit P/U model contract.")
 
     mapping = payload.get("class_mapping")
     if mapping is not None:
