@@ -80,21 +80,7 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
 
 
-def _target_thresholds(settings: Mapping[str, Any]) -> tuple[int, int]:
-    """Read experimental target thresholds in samples, not seconds."""
-    experimental = _section(settings, "experimental")
-    positive = _positive_int(
-        experimental.get("positive_threshold_samples", 4),
-        name="experimental.positive_threshold_samples",
-    )
-    negative = _positive_int(
-        experimental.get("negative_threshold_samples", 4),
-        name="experimental.negative_threshold_samples",
-    )
-    return positive, negative
-
-
-def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
+(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
     data = _section(settings, "data")
     manifest = _path(
         data.get("manifest", "data/manifest/annotations_manifest.yaml"),
@@ -175,13 +161,7 @@ def _load_record_windows(
         window=window_duration,
         stride=window_stride,
     )
-    positive_threshold, negative_threshold = _target_thresholds(settings)
-    X, y = build_targets(
-        windows,
-        annotations,
-        positive_threshold_samples=positive_threshold,
-        negative_threshold_samples=negative_threshold,
-    )
+    X, y = build_targets(windows, annotations)
     # build_targets drops uncovered windows, so the original window timestamp
     # array no longer aligns row-for-row with X. The validator checks only
     # timestamp count here; the target builder already selects those rows.
@@ -193,7 +173,7 @@ def _load_record_windows(
         )
     if len(X) == 0:
         raise ValueError(
-            f"No feature windows overlap annotations for manifest entry {record.id!r}."
+            f"No pure, non-conflicting feature windows for manifest entry {record.id!r}."
         )
     logger.info(
         "Record %s: ready (%d labelled windows) in %.1fs",
@@ -290,12 +270,10 @@ def run_training(
         "window": window_duration,
         "stride": window_stride,
         "target_generation": {
-            "positive_threshold_samples": _target_thresholds(settings)[0],
-            "negative_threshold_samples": _target_thresholds(settings)[1],
-            "positive_score": 3,
-            "negative_scores": [0, 1],
-            "ignored_scores": [2],
+            "positive_set": "pure score-3 windows",
+            "unlabeled_set": "pure score-0/1/2 windows",
             "mixed_windows": "discard",
+            "label_rule": "all overlapping annotations must agree",
         },
     }
     _, _, summary = train_single_fold(
