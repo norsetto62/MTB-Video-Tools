@@ -85,7 +85,6 @@ def _predict_record(
 
     transformed = scaler.transform(X)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
-    predictions: list[np.ndarray] = []
     probabilities: list[np.ndarray] = []
     model.eval()
     with torch.inference_mode():
@@ -93,10 +92,17 @@ def _predict_record(
             logits = model(tensor[start : start + batch_size])
             probs = torch.softmax(logits, dim=1)
             probabilities.append(probs.cpu().numpy())
-            predictions.append(probs.argmax(dim=1).cpu().numpy())
 
-    predicted_classes = np.concatenate(predictions)
     predicted_probabilities = np.concatenate(probabilities)
+    if predicted_probabilities.shape[1] == 3:
+        training_config = checkpoint.get("training_config") or {}
+        threshold = training_config.get("c2_threshold", 0.5)
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError("Checkpoint c2_threshold must be finite and between 0 and 1.")
+        fallback = predicted_probabilities[:, :2].argmax(axis=1)
+        predicted_classes = np.where(predicted_probabilities[:, 2] >= float(threshold), 2, fallback)
+    else:
+        predicted_classes = predicted_probabilities.argmax(axis=1)
     class_mapping = checkpoint.get("class_mapping") or {}
     rows = []
     for index, ((start, end), class_id, probs) in enumerate(
