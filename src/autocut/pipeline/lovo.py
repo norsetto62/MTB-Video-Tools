@@ -35,6 +35,30 @@ def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
         "predicted_positive_fraction": float(np.mean(predicted_positive)) if len(actual) else 0.0,
     }
 
+def _threshold_sweep(
+    actual: np.ndarray,
+    probabilities: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Compute diagnostic PU metrics over fixed probability thresholds."""
+    rows: list[dict[str, Any]] = []
+    for threshold_step in range(1, 20):
+        threshold = threshold_step * 0.05
+        predicted = (probabilities >= threshold).astype(np.int64)
+        metrics = _metrics(actual, predicted)
+        recall = metrics["positive_recall_on_P"]
+        u_selection = metrics["selected_fraction_of_U"]
+        rows.append({
+            "threshold": round(threshold, 2),
+            **metrics,
+            "score": (
+                float(recall * (1.0 - u_selection))
+                if recall is not None and u_selection is not None
+                else None
+            ),
+        })
+    return rows
+
+
 def _fit_fixed_epochs(
     windows: np.ndarray,
     targets: np.ndarray,
@@ -170,6 +194,10 @@ def run_lovo(
     checkpoint_dir = _path(experiment.get("checkpoint_dir", "models/experiments"), name="experiment.checkpoint_dir")
     _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
     training_config = _training_config(settings)
+    debug_settings = _section(settings, "debug")
+    threshold_sweep_enabled = debug_settings.get("threshold_sweep", False)
+    if not isinstance(threshold_sweep_enabled, bool):
+        raise ValueError("debug.threshold_sweep must be a boolean.")
     records = load_manifest(manifest_path, verify_files=True)
     all_groups = get_unique_groups(records)
     group_splits = _resolve_group_splits(
@@ -211,6 +239,7 @@ def run_lovo(
     folds: list[dict[str, Any]] = []
     pooled_actual: list[np.ndarray] = []
     pooled_predicted: list[np.ndarray] = []
+    fold_threshold_sweeps: list[list[dict[str, Any]]] = []
     
     for fold_index, (test_group, outer_train_groups) in enumerate(group_splits):
         outer_train_records = tuple(r for r in records if r.group_id in outer_train_groups)
@@ -300,6 +329,9 @@ def run_lovo(
             model, scaler, test_X, positive_threshold=positive_threshold
         )
         metrics = _metrics(actual, predicted)
+        threshold_sweep = _threshold_sweep(actual, probabilities) if threshold_sweep_enabled else None
+        if threshold_sweep is not None:
+            fold_threshold_sweeps.append(threshold_sweep)
         pooled_actual.append(actual)
         pooled_predicted.append(predicted)
         predictions_path = fold_root / f"fold_{fold_index + 1:02d}_{_experiment_slug(test_group)}_predictions.json"
@@ -317,6 +349,8 @@ def run_lovo(
             "metrics": metrics,
             "refit": refit_summary,
         }
+        if threshold_sweep is not None:
+            fold_result["threshold_sweep"] = threshold_sweep
         predictions_path.parent.mkdir(parents=True, exist_ok=True)
         predictions_payload = {
             **fold_metadata,
@@ -363,6 +397,30 @@ def run_lovo(
         f["metrics"]["selected_fraction_of_U"] for f in folds
         if f["metrics"]["selected_fraction_of_U"] is not None
     ]
+    aggregation: dict[str, Any] = {
+        "micro": pooled_metrics,
+        "macro_group_mean": {
+            "positive_recall_on_P": float(np.mean(positive_recall_values)) if positive_recall_values else None,
+            "selected_fraction_of_U": float(np.mean(u_selection_values)) if u_selection_values else None,
+        },
+        "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group PU selection statistics; U is not treated as negative.",
+    }
+    if threshold_sweep_enabled:
+        macro_sweep: list[dict[str, Any]] = []
+        for index, threshold_row in enumerate(fold_threshold_sweeps[0] if fold_threshold_sweeps else []):
+            recalls_at_threshold = [sweep[index]["positive_recall_on_P"] for sweep in fold_threshold_sweeps if sweep[index]["positive_recall_on_P"] is not None]
+            u_rates_at_threshold = [sweep[index]["selected_fraction_of_U"] for sweep in fold_threshold_sweeps if sweep[index]["selected_fraction_of_U"] is not None]
+            mean_recall = float(np.mean(recalls_at_threshold)) if recalls_at_threshold else None
+            mean_u_rate = float(np.mean(u_rates_at_threshold)) if u_rates_at_threshold else None
+            macro_sweep.append({
+                "threshold": threshold_row["threshold"],
+                "positive_recall_on_P": mean_recall,
+                "selected_fraction_of_U": mean_u_rate,
+                "score": float(mean_recall * (1.0 - mean_u_rate)) if mean_recall is not None and mean_u_rate is not None else None,
+            })
+        aggregation["threshold_sweep"] = macro_sweep
+        aggregation["threshold_sweep_definition"] = "Diagnostic only: unweighted mean of per-fold recall and U-selection metrics at each threshold; score is mean recall * (1 - mean U selection)."
+
     result: dict[str, Any] = {
         "experiment_name": experiment_name,
         "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
@@ -372,14 +430,7 @@ def run_lovo(
         "fold_count": len(folds),
         "training_config": asdict(training_config),
         "data_config": data_config,
-        "aggregation": {
-            "micro": pooled_metrics,
-            "macro_group_mean": {
-                "positive_recall_on_P": float(np.mean(positive_recall_values)) if positive_recall_values else None,
-                "selected_fraction_of_U": float(np.mean(u_selection_values)) if u_selection_values else None,
-            },
-            "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group PU selection statistics; U is not treated as negative.",
-        },
+        "aggregation": aggregation,
         "folds": folds,
     }
     result_path = fold_root / f"{slug}_lovo_summary.json"
