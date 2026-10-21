@@ -180,13 +180,13 @@ def test_lovo_prediction_thresholds_class_two_as_pu_positive():
 
     windows = np.zeros((2, 8, 54), dtype=np.float32)
     predicted, probabilities = pipeline_lovo._predict(
-        FixedModel(), IdentityScaler(), windows, good_threshold=0.60
+        FixedModel(), IdentityScaler(), windows, c2_threshold=0.60
     )
     np.testing.assert_array_equal(predicted, [2, 0])
     assert probabilities.shape == (2, 3)
     np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-6)
 
-def test_lovo_prediction_rejects_invalid_good_threshold():
+def test_lovo_prediction_rejects_invalid_c2_threshold():
     import torch
 
     class FixedModel:
@@ -198,9 +198,9 @@ def test_lovo_prediction_rejects_invalid_good_threshold():
             return values
 
     for threshold in (-0.1, 1.1, float("nan"), True):
-        with pytest.raises(ValueError, match="good_threshold"):
+        with pytest.raises(ValueError, match="c2_threshold"):
             pipeline_lovo._predict(
                 FixedModel(), IdentityScaler(),
                 np.zeros((1, 8, 54), dtype=np.float32),
-                good_threshold=threshold,
+                c2_threshold=threshold,
             )
