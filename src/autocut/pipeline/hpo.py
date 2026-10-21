@@ -48,7 +48,7 @@ def run_hpo(
     # Database path explicitly placed in data/db/
     db_dir = Path("data/db")
     db_dir.mkdir(parents=True, exist_ok=True)
-    storage_db = f"sqlite:///{db_dir / 'hpo_study.db'}"
+    storage_db = f"sqlite:///{db_dir / 'hpo_study_pu.db'}"
 
     logger.info("Initializing Optuna study '%s' with storage: %s", study_name, storage_db)
     logger.info("Proxy validation folds assigned for tuning: %s", proxy_groups)
