@@ -96,12 +96,9 @@ def run_hpo(
         lr = float(params["lr"])
         weight_decay = float(params["weight_decay"])
         dropout = float(params["dropout"])
-        class_weights = [float(params["class_weight_0"]), float(params.get("class_weight_1", 1.0))]
         hidden_dim = int(params["hidden_dim"])
-
-        # --- ADD THRESHOLD HYPERPARAMETER ---
-        # Forces Optuna to evaluate configurations under different safety margins
-        good_threshold = float(params.get("good_threshold", 0.50))
+        positive_prior = float(params.get("positive_prior", training_config.positive_prior))
+        c2_threshold = float(params.get("c2_threshold", training_config.c2_threshold))
 
         filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
 
@@ -109,9 +106,9 @@ def run_hpo(
             "training.lr": lr,
             "training.weight_decay": weight_decay,
             "training.dropout": dropout,
-            "training.class_weights": tuple(class_weights),
             "training.hidden_dim": hidden_dim,
-            "training.good_threshold": good_threshold,
+            "training.positive_prior": positive_prior,
+            "training.c2_threshold": c2_threshold,
             "data.train_groups": filtered_train_groups,
             "data.validation_groups": tuple(proxy_groups),
         })
@@ -125,51 +122,22 @@ def run_hpo(
             train_groups=tuple(filtered_train_groups),
         )
 
-        # Aggregate confusion matrices across validation folds
+        # U is unlabeled, not a negative class. Reward recall on P while
+        # penalizing how often U is selected as positive; do not compute F1
+        # or precision from pseudo-negatives.
         folds = lovo_results.get("folds", [])
-        total_cm = np.zeros((2, 2), dtype=np.float64)
-
-        all_fold_class_f1s = []
-        for f in folds:
-            metrics = f.get("metrics", {})
-            cm = metrics.get("confusion_matrix")
-            if cm is not None:
-                total_cm += np.array(cm, dtype=np.float64)
-
-            class_f1_dict = metrics.get("class_f1", {})
-            if not class_f1_dict:
-                values = metrics.get("per_class_f1")
-                if isinstance(values, (list, tuple)) and len(values) >= 2:
-                    class_f1_dict = {str(i): values[i] for i in range(2)}
-            if class_f1_dict:
-                all_fold_class_f1s.append(np.array([
-                    class_f1_dict.get("0", 0.0),
-                    class_f1_dict.get("1", 0.0),
-                ]))
-
-        if all_fold_class_f1s:
-            mean_per_class_f1 = np.mean(all_fold_class_f1s, axis=0)
-            bad_f1, good_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1])
-        else:
-            bad_f1, good_f1 = 0.0, 0.0
-
-
-        # Optimize good-class F0.5 to emphasize precision while retaining
-        # the binary bad/good confusion matrix and fold-consistent predictions.
-        total_pred = np.sum(total_cm, axis=0)
-        tp = float(total_cm[1, 1])
-        fp = float(total_pred[1] - tp)
-        fn = float(np.sum(total_cm[1, :]) - tp)
-        denom = 1.25 * tp + 0.25 * fn + fp
-        score = (1.25 * tp / denom) if denom > 0 else 0.0
-        # Set user attributes for Optuna tracking
-        macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
-        trial.set_user_attr("macro_f1", macro_f1)
-        trial.set_user_attr("bad_f1", bad_f1)
-        trial.set_user_attr("good_f1", good_f1)
-        trial.set_user_attr("good_threshold", good_threshold)
-        trial.set_user_attr("custom_rate_score", score)
-
+        recalls = [f["metrics"]["positive_recall_on_P"] for f in folds
+                   if f.get("metrics", {}).get("positive_recall_on_P") is not None]
+        u_rates = [f["metrics"]["selected_fraction_of_U"] for f in folds
+                   if f.get("metrics", {}).get("selected_fraction_of_U") is not None]
+        recall = float(np.mean(recalls)) if recalls else 0.0
+        u_selection = float(np.mean(u_rates)) if u_rates else 1.0
+        score = recall * (1.0 - u_selection)
+        trial.set_user_attr("positive_recall_on_P", recall)
+        trial.set_user_attr("selected_fraction_of_U", u_selection)
+        trial.set_user_attr("positive_prior", positive_prior)
+        trial.set_user_attr("c2_threshold", c2_threshold)
+        trial.set_user_attr("pu_selection_score", score)
         return score
 
     # Run Optuna optimization loop
@@ -190,23 +158,23 @@ def run_hpo(
         "best_value": study.best_value,
         "best_params": study.best_params,
         "best_metrics": {
-            "macro_f1": best_attrs.get("macro_f1", 0.0),
-            "bad_f1": best_attrs.get("bad_f1", 0.0),
-            "good_f1": best_attrs.get("good_f1", 0.0),
+            "positive_recall_on_P": best_attrs.get("positive_recall_on_P", 0.0),
+            "selected_fraction_of_U": best_attrs.get("selected_fraction_of_U", 1.0),
+            "positive_prior": best_attrs.get("positive_prior", training_config.positive_prior),
+            "c2_threshold": best_attrs.get("c2_threshold", training_config.c2_threshold),
         },
     }
 
     # Mirror output to screen
     logger.info("=" * 60)
     logger.info("HPO OPTIMIZATION COMPLETE")
-    logger.info("Best Objective Score: %.4f", study.best_value)
+    logger.info("Best PU selection score: %.4f", study.best_value)
     logger.info("Best Hyperparameters:")
     for k, v in study.best_params.items():
         logger.info("  - %s: %s", k, v)
-    logger.info("Best Metrics -> Macro F1: %.4f | Bad F1: %.4f | Good F1: %.4f",
-                output_payload["best_metrics"]["macro_f1"],
-                output_payload["best_metrics"]["bad_f1"],
-                output_payload["best_metrics"]["good_f1"])
+    logger.info("Best PU metrics -> P recall: %.4f | U selected: %.4f",
+                output_payload["best_metrics"]["positive_recall_on_P"],
+                output_payload["best_metrics"]["selected_fraction_of_U"])
     logger.info("=" * 60)
 
     # Save output mirror json to output/hpo/
@@ -240,11 +208,8 @@ def run_hpo(
         "training.lr": resolved_params["lr"],
         "training.weight_decay": resolved_params["weight_decay"],
         "training.dropout": resolved_params["dropout"],
-        "training.class_weights": (
-            resolved_params["class_weight_0"],
-            resolved_params.get("class_weight_1", 1.0),
-        ),
-        "training.good_threshold": resolved_params.get("good_threshold", 0.50),
+        "training.positive_prior": resolved_params.get("positive_prior", training_config.positive_prior),
+        "training.c2_threshold": resolved_params.get("c2_threshold", training_config.c2_threshold),
         "training.hidden_dim": resolved_params["hidden_dim"],
     })
     final_training = _training_config(final_settings)
