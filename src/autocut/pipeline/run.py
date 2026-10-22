@@ -56,132 +56,40 @@ def _extract_windows(
     end: float,
     settings: Config,
 ) -> FeatureWindows | None:
-    """Load cached motion features or extract, cache, and window them."""
-    cache_dir = settings.paths.cache_dir / "features"
+    """Use the canonical dataset sequence builder, then construct windows."""
+    from ..dataset.sequence import build_feature_sequence
+
     cache_clip = Clip(
         video_name=str(video_path),
         start=float(start),
         end=float(end),
         mandatory=False,
     )
-    sequence = load_feature_sequence(
-        video_path,
-        cache_dir,
-        cache_clip,
-        sample_fps=settings.video.sampling_fps,
-        processing_width=settings.video.processing_width,
-    )
-
-    if sequence is not None:
-        logger.info(
-            "Feature cache HIT: %s [%.1f, %.1f]s (%d rows).",
-            video_path.name, start, end, len(sequence.timestamps),
+    try:
+        sequence = build_feature_sequence(
+            video_path,
+            cache_clip,
+            sample_fps=settings.video.sampling_fps,
+            processing_width=settings.video.processing_width,
+            cache_dir=settings.paths.cache_dir / "features",
+            roi_left=settings.video.roi_left,
+            roi_right=settings.video.roi_right,
+            roi_bottom=settings.video.roi_bottom,
+            roi_top=settings.video.roi_top,
         )
-        # Cache timestamps are source-absolute; windows stay range-local.
+        # Dataset sequence timestamps are absolute; candidate windows are
+        # local to this processing range and translated back by the caller.
         sequence = FeatureSequence(
             features=sequence.features,
             timestamps=np.asarray(sequence.timestamps - start, dtype=np.float64),
         )
-    else:
-        logger.info(
-            "Feature cache MISS: %s [%.1f, %.1f]s; extracting motion features.",
-            video_path.name, start, end,
-        )
-        feature_rows: list[np.ndarray] = []
-        timestamps: list[float] = []
-        previous_gray: np.ndarray | None = None
-        extractor: FeatureExtractor | None = None
-        started = time.monotonic()
-        last_progress = started
-        frames_processed = 0
-        estimated_frames = max(1, int(round((end - start) * settings.video.sampling_fps)))
-
-        logger.info(
-            "Analysing %s range [%.1f, %.1f]s (%.1fs at %.2f sampled FPS).",
-            video_path, start, end, end - start, settings.video.sampling_fps,
-        )
-
-        with VideoReader(
-            video_path,
-            start=start,
-            duration=end - start,
-            sample_fps=settings.video.sampling_fps,
-        ) as reader:
-            for _frame_index, timestamp, frame in reader:
-                frames_processed += 1
-                height, width = frame.shape[:2]
-                target_width = min(width, settings.video.processing_width)
-                if target_width != width:
-                    target_height = max(2, int(round(height * target_width / width)))
-                    frame = cv2.resize(
-                        frame, (target_width, target_height),
-                        interpolation=cv2.INTER_AREA,
-                    )
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                if previous_gray is not None:
-                    if extractor is None:
-                        extractor = FeatureExtractor(gray.shape[1], gray.shape[0])
-                    flow = calculate_optical_flow(previous_gray, gray)
-                    feature_rows.append(extractor.extract_vector(flow))
-                    timestamps.append(float(timestamp))
-                previous_gray = gray
-
-                now = time.monotonic()
-                if frames_processed % 20 == 0 or now - last_progress >= 10.0:
-                    logger.info(
-                        "Motion analysis: %s — %d/%d sampled frames (%.0f%%), "
-                        "%.1fs elapsed.",
-                        video_path.name,
-                        frames_processed,
-                        estimated_frames,
-                        min(100.0, 100.0 * frames_processed / estimated_frames),
-                        now - started,
-                    )
-                    last_progress = now
-
-        logger.info(
-            "Motion analysis finished for %s: %d sampled frames, "
-            "%d motion-feature rows in %.1fs.",
-            video_path.name, frames_processed, len(feature_rows),
-            time.monotonic() - started,
-        )
-
-        if len(feature_rows) < 2:
-            logger.info(
-                "Skipping candidate inference for short range %s [%.3f, %.3f): "
-                "not enough sampled frames.",
-                video_path, start, end,
-            )
-            return None
-
-        sequence = FeatureSequence(
-            features=np.asarray(feature_rows, dtype=np.float32),
-            timestamps=np.asarray(timestamps, dtype=np.float64),
-        )
-        cached_sequence = FeatureSequence(
-            features=sequence.features,
-            timestamps=np.asarray(sequence.timestamps + start, dtype=np.float64),
-        )
-        cache_path = save_feature_sequence(
-            cached_sequence,
-            video_path,
-            cache_dir,
-            cache_clip,
-            sample_fps=settings.video.sampling_fps,
-            processing_width=settings.video.processing_width,
-        )
-        logger.info("Feature cache SAVED: %s", cache_path)
-
-    try:
         return build_windows(
             sequence,
             window=settings.features.window_duration,
             stride=settings.features.window_stride,
         )
     except ValueError as exc:
-        # A short processing range is not fatal: mandatory clips are still
-        # retained by the timeline stage.
-        if len(sequence.timestamps) * (1.0 / settings.video.sampling_fps) < settings.features.window_duration:
+        if (end - start) * settings.video.sampling_fps < settings.features.window_duration * settings.video.sampling_fps:
             logger.info(
                 "Skipping candidate inference for short range %s [%.3f, %.3f): %s",
                 video_path, start, end, exc,
@@ -223,7 +131,7 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
 
     defaults = {
         "paths": {"data_dir": "data", "models_dir": "models", "output_dir": "output", "cache_dir": "data/cache"},
-        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
+        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc", "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
         "selection": {
@@ -236,7 +144,7 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
     }
     allowed_keys = {
         "paths": {"data_dir", "models_dir", "output_dir", "cache_dir"},
-        "video": {"sampling_fps", "processing_width", "encoder"},
+        "video": {"sampling_fps", "processing_width", "encoder", "roi_left", "roi_right", "roi_bottom", "roi_top"},
         "features": {"window_duration", "window_stride"},
         "model": {"checkpoint", "inference_batch_size"},
         "selection": set(defaults["selection"]),
@@ -280,6 +188,11 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
     raw["selection"]["max_clip_duration"] = number(
         "selection", "max_clip_duration", minimum=0.0
     )
+
+    from ..dataset.sequence import validate_roi
+    roi = validate_roi(raw["video"]["roi_left"], raw["video"]["roi_right"], raw["video"]["roi_bottom"], raw["video"]["roi_top"])
+    for key, value in zip(("roi_left", "roi_right", "roi_bottom", "roi_top"), roi):
+        raw["video"][key] = value
 
     width = raw["video"]["processing_width"]
     if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
