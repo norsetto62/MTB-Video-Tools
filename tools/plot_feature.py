@@ -55,6 +55,36 @@ def resolve_feature(feature: str | int) -> tuple[int, str]:
     return index, FEATURE_NAMES[index]
 
 
+def apply_savgol_filter(
+    values: np.ndarray,
+    *,
+    window_length: int = 9,
+    polyorder: int = 2,
+) -> np.ndarray:
+    """Return a Savitzky-Golay-smoothed copy of a 1D feature signal.
+
+    Window length is measured in samples and must be odd; polyorder must be
+    smaller than the window length. Values are not modified in place.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError("feature values must be a 1D array.")
+    if window_length < 3 or window_length % 2 == 0:
+        raise ValueError("Savitzky-Golay window length must be an odd integer >= 3.")
+    if polyorder < 0 or polyorder >= window_length:
+        raise ValueError("Savitzky-Golay polynomial degree must be >= 0 and smaller than the window length.")
+    if window_length > len(values):
+        raise ValueError(f"Savitzky-Golay window length ({window_length}) exceeds the number of samples ({len(values)}).")
+    try:
+        from scipy.signal import savgol_filter
+    except ImportError as exc:
+        raise ImportError(
+            "Savitzky-Golay filtering requires SciPy. Install it with: "
+            "python -m pip install -e '.[plot]'"
+        ) from exc
+    return savgol_filter(values, window_length=window_length, polyorder=polyorder)
+
+
 def plot_feature(
     timestamps: np.ndarray,
     values: np.ndarray,
@@ -64,6 +94,8 @@ def plot_feature(
     video_name: str,
     output_path: str | Path,
     show: bool = False,
+    filtered_values: np.ndarray | None = None,
+    filter_label: str = "Savitzky–Golay",
 ) -> Path:
     """Save a feature-vs-time plot with strongly coloured annotation intervals."""
     timestamps = np.asarray(timestamps, dtype=np.float64)
@@ -72,6 +104,10 @@ def plot_feature(
         raise ValueError("timestamps and feature values must be 1D arrays with the same shape.")
     if not len(timestamps):
         raise ValueError("No feature samples are available for this video.")
+    if filtered_values is not None:
+        filtered_values = np.asarray(filtered_values, dtype=np.float64)
+        if filtered_values.shape != values.shape or not np.isfinite(filtered_values).all():
+            raise ValueError("filtered_values must match values in shape and contain only finite values.")
     if not np.isfinite(timestamps).all() or not np.isfinite(values).all():
         raise ValueError("timestamps and feature values must contain only finite values.")
     if len(timestamps) > 1 and np.any(np.diff(timestamps) <= 0):
@@ -111,6 +147,15 @@ def plot_feature(
         label=feature_name,
         zorder=3,
     )
+    if filtered_values is not None:
+        ax.plot(
+            timestamps,
+            filtered_values,
+            color="#0072B2",
+            linewidth=2.0,
+            label=filter_label,
+            zorder=4,
+        )
     ax.set_xlim(0, max(float(timestamps[-1]), max((a.end for a in annotations), default=0.0)))
     ax.set_xlabel("Video time (min:sec)")
     ax.set_ylabel(feature_name)
@@ -145,6 +190,8 @@ def plot_feature(
             feature_name=feature_name,
             video_name=video_name,
             output_path=html_destination,
+            filtered_values=filtered_values,
+            filter_label=filter_label,
         )
         import webbrowser
 
@@ -162,6 +209,8 @@ def save_interactive_html(
     feature_name: str,
     video_name: str,
     output_path: str | Path,
+    filtered_values: np.ndarray | None = None,
+    filter_label: str = "Savitzky–Golay",
 ) -> Path:
     """Write a zoomable, hoverable Plotly chart and open it in a browser."""
     try:
@@ -193,6 +242,17 @@ def save_interactive_html(
             hovertemplate="Time: %{x:.2f}s<br>Value: %{y:.6g}<extra></extra>",
         )
     )
+    if filtered_values is not None:
+        figure.add_trace(
+            go.Scatter(
+                x=timestamps,
+                y=filtered_values,
+                mode="lines",
+                name=filter_label,
+                line={"color": "#0072B2", "width": 2.2},
+                hovertemplate="Time: %{x:.2f}s<br>Filtered value: %{y:.6g}<extra></extra>",
+            )
+        )
     for score, color in ANNOTATION_COLORS.items():
         label = f"MTB {score}" + (" (P)" if score == 3 else " (U)" if score in (0, 1, 2) else "")
         figure.add_trace(
@@ -242,6 +302,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output image path (default: <annotations-stem>_<feature>_feature.png).",
     )
     parser.add_argument("--show", action="store_true", help="Also open the plot interactively.")
+    parser.add_argument(
+        "--savgol-window-length", type=int, default=9,
+        help="Savitzky-Golay window length in samples (odd integer >= 3; default: 9).",
+    )
+    parser.add_argument(
+        "--savgol-polyorder", type=int, default=2,
+        help="Savitzky-Golay polynomial degree, smaller than the window length (default: 2).",
+    )
     parser.add_argument("--list-features", action="store_true", help="List feature indices and names, then exit.")
     return parser
 
@@ -297,6 +365,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         roi_top=roi_top,
     )
 
+    filtered_values = apply_savgol_filter(
+        sequence.features[:, feature_index],
+        window_length=args.savgol_window_length,
+        polyorder=args.savgol_polyorder,
+    )
+
     output_path = args.output or args.annotations.with_name(
         f"{args.annotations.stem}_{feature_name}_feature.png"
     )
@@ -308,6 +382,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         video_name=video_path.name,
         output_path=output_path,
         show=args.show,
+        filtered_values=filtered_values,
+        filter_label=f"Savitzky–Golay (window={args.savgol_window_length}, degree={args.savgol_polyorder})",
     )
     print(f"Saved feature plot: {saved_path.resolve()}")
     return 0
