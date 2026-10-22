@@ -45,11 +45,16 @@ def _predict_record(
     info = get_video_info(record.video_path)
     clip = Clip(video_name=record.id, start=0.0, end=info.duration)
     data_config = checkpoint.get("data_config") or {}
-    _manifest, configured_fps, configured_width, configured_window, configured_stride = _data_values(settings)
+    _manifest, configured_fps, configured_width, configured_window, configured_stride, configured_roi_left, configured_roi_right, configured_roi_bottom, configured_roi_top = _data_values(settings)
     flow_fps = float(data_config.get("flow_fps", configured_fps))
     processing_width = int(data_config.get("processing_width", configured_width))
     window = float(data_config.get("window", configured_window))
     stride = float(data_config.get("stride", configured_stride))
+    roi = data_config.get("roi") or {}
+    roi_left = float(roi.get("left", configured_roi_left))
+    roi_right = float(roi.get("right", configured_roi_right))
+    roi_bottom = float(roi.get("bottom", configured_roi_bottom))
+    roi_top = float(roi.get("top", configured_roi_top))
     paths = _section(settings, "paths")
     cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
 
@@ -63,6 +68,10 @@ def _predict_record(
         sample_fps=flow_fps,
         processing_width=processing_width,
         cache_dir=cache_dir,
+        roi_left=roi_left,
+        roi_right=roi_right,
+        roi_bottom=roi_bottom,
+        roi_top=roi_top,
     )
     windows = build_windows(sequence, window=window, stride=stride)
     X = windows.X
