@@ -17,6 +17,98 @@ from ..ml.training import train_fixed_epochs
 logger = logging.getLogger(__name__)
 
 
+
+def run_hpo_diagnostics(
+    manifest_path: str | Path,
+    settings: Mapping[str, Any],
+    *,
+    trial_number: int,
+    output_path: str | Path | None = None,
+) -> Path:
+    """Re-run one stored trial on the configured proxy groups and export a CSV.
+
+    This does not create Optuna trials or run the final production refit. It
+    retrains the selected trial's fold models so diagnostics cannot accidentally
+    use checkpoints overwritten by a later trial.
+    """
+    if isinstance(trial_number, bool) or not isinstance(trial_number, int) or trial_number < 0:
+        raise ValueError("trial_number must be a non-negative integer.")
+    hpo = _section(settings, "hpo")
+    data = _section(settings, "data")
+    paths = _section(settings, "paths")
+    study_name = hpo.get("study_name")
+    if not isinstance(study_name, str) or not study_name.strip():
+        raise ValueError("hpo.study_name must be a non-empty string.")
+    proxy_groups = tuple(hpo.get("proxy_test_groups", ()))
+    if not proxy_groups or any(not isinstance(group, str) or not group.strip() for group in proxy_groups):
+        raise ValueError("hpo.proxy_test_groups must contain non-empty group IDs.")
+
+    storage_db = f"sqlite:///{Path('data/db/hpo_study_pu.db')}"
+    try:
+        study = optuna.load_study(study_name=study_name, storage=storage_db)
+    except KeyError as exc:
+        raise ValueError(f"Optuna study {study_name!r} was not found in {storage_db}.") from exc
+    trial = next((item for item in study.trials if item.number == trial_number), None)
+    if trial is None:
+        raise ValueError(f"Trial {trial_number} does not exist in study {study_name!r}.")
+    if trial.state != optuna.trial.TrialState.COMPLETE or trial.values is None:
+        raise ValueError(f"Trial {trial_number} is not a completed trial.")
+
+    search_space = hpo.get("search_space", {})
+    if isinstance(search_space, Config):
+        search_space = search_space.to_dict()
+    params = dict(trial.params)
+    for name, spec in search_space.items():
+        if "fixed" in spec:
+            params[name] = spec["fixed"]
+    training_config = _training_config(settings)
+    base_threshold = float(_section(settings, "training").get(
+        "positive_threshold", _section(settings, "training").get("c2_threshold", 0.50)
+    ))
+    required = ("lr", "weight_decay", "dropout", "hidden_dim")
+    missing = [name for name in required if name not in params]
+    if missing:
+        raise ValueError(
+            f"Trial {trial_number} lacks required model parameters: {', '.join(missing)}."
+        )
+    positive_threshold = float(params.get(
+        "positive_threshold", params.get("c2_threshold", base_threshold)
+    ))
+    positive_prior = float(params.get("positive_prior", training_config.positive_prior))
+    filtered_train_groups = tuple(group for group in data.get("train_groups", ()) if group not in proxy_groups)
+    if not filtered_train_groups:
+        raise ValueError("No training groups remain after excluding HPO proxy test groups.")
+
+    default_output = Path("output/hpo") / f"{study_name}_trial_{trial_number}_selection_diagnostics.csv"
+    destination = Path(output_path) if output_path is not None else default_output
+    diagnostic_settings = Config(settings).with_overrides({
+        "training.lr": float(params["lr"]),
+        "training.weight_decay": float(params["weight_decay"]),
+        "training.dropout": float(params["dropout"]),
+        "training.hidden_dim": int(params["hidden_dim"]),
+        "training.positive_prior": positive_prior,
+        "training.positive_threshold": positive_threshold,
+        "data.train_groups": filtered_train_groups,
+        "data.validation_groups": tuple(proxy_groups),
+        "debug.selection_diagnostics_path": str(destination),
+        "debug.selection_diagnostics_trial": trial_number,
+    })
+    # Replace, rather than append to, an old report from a prior diagnostic run.
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.unlink()
+    run_lovo(
+        manifest_path=manifest_path,
+        settings=diagnostic_settings,
+        test_groups=proxy_groups,
+        train_groups=filtered_train_groups,
+    )
+    if not destination.is_file():
+        raise RuntimeError(f"Diagnostics completed without creating report: {destination}")
+    logger.info("Selection diagnostics for trial %d written to %s", trial_number, destination.resolve())
+    return destination
+
+
 def run_hpo(
     manifest_path: str | Path,
     settings: Mapping[str, Any],
