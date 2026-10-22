@@ -285,22 +285,15 @@ def run_hpo(
             )
     
     print(
-        f" Closest ideal point     : {cid.number} with parameters: {cid.params}\n", 
-        f"Largest gap             : {lg.number} with parameters: {lg.params}\n",
+        f" Closest Ideal Point     : {cid.number} with parameters: {cid.params}\n", 
+        f"Largest Gap             : {lg.number} with parameters: {lg.params}\n",
         f"Highest Positive Recall : {hpr.number}  with parameters: {hpr.params}\n",
     )
 
-    # Production refit needs one explicit choice. Select the Pareto trial with
-    # highest P recall; break ties by lower U selection. This is a post-study
-    # deployment policy, not a combined optimization objective.
-    production_trial = min(
-        pareto_trials,
-        key=lambda trial: (
-            -trial.user_attrs.get("positive_recall_on_P", 0.0),
-            trial.user_attrs.get("selected_fraction_of_U", 1.0),
-            trial.number,
-        ),
-    )
+    # Production refit needs one explicit choice. We have choosen the Closest to the Ideal Point.
+    # This is a post-study deployment policy, not a combined optimization objective.
+    production_trial = cid
+
     production_attrs = production_trial.user_attrs
     pareto_payload = [
         {

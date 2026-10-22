@@ -54,7 +54,7 @@ def test_run_validation_predicts_windows_and_writes_json(tmp_path, monkeypatch):
             return torch.tensor([[2.0]] * len(batch), dtype=torch.float32)
 
     checkpoint = {
-        "data_config": {"flow_fps": 2.0, "window": 4.0, "stride": 2.0},
+        "data_config": {"flow_fps": 2.0, "window": 4.0, "stride": 2.0,},
         "scaler_state": FeatureScaler(enabled=False).state_dict(),
         "feature_mask": None,
         "feature_dim": 54,

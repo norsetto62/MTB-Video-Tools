@@ -92,35 +92,6 @@ def _extract_windows(
             return None
         raise
 
-def _validate_checkpoint_roi(payload: Mapping, settings: Config) -> None:
-    """Prevent inference with a checkpoint trained on a different image region."""
-    data_config = payload.get("data_config", {})
-    trained_roi = data_config.get("roi") if isinstance(data_config, Mapping) else None
-    if not isinstance(trained_roi, Mapping):
-        raise ValueError(
-            "Checkpoint has no ROI metadata. Retrain the model with the current "
-            "ROI-aware feature pipeline before inference."
-        )
-    configured_roi = {
-        "left": settings.video.roi_left,
-        "right": settings.video.roi_right,
-        "bottom": settings.video.roi_bottom,
-        "top": settings.video.roi_top,
-    }
-    for key, expected in configured_roi.items():
-        actual = trained_roi.get(key)
-        if (
-            isinstance(actual, bool)
-            or not isinstance(actual, (int, float))
-            or not math.isfinite(float(actual))
-            or not math.isclose(float(actual), float(expected), rel_tol=0.0, abs_tol=1e-9)
-        ):
-            raise ValueError(
-                f"Checkpoint ROI {key}={actual!r} does not match configured "
-                f"ROI {expected!r}; use matching settings or retrain the model."
-            )
-
-
 def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
     """Translate a range-local candidate and its evidence to source timestamps."""
     from ..selection.candidates_generation import WindowEvidence
@@ -394,7 +365,19 @@ def run_pipeline(
             payload = validate_checkpoint(dict(settings.model.checkpoint))
         else:
             raise TypeError("checkpoint must be a path or a checkpoint mapping.")
-        _validate_checkpoint_roi(payload, settings)
+        data_config = payload.get("data_config", {})
+        trained_roi = data_config.get("roi") if isinstance(data_config, Mapping) else None
+        if not isinstance(trained_roi, Mapping):
+            raise ValueError(
+                "Checkpoint has no ROI metadata. Retrain the model with the current "
+                "ROI-aware feature pipeline before inference."
+            )
+        settings = settings.with_overrides({
+            "data.roi_left": trained_roi["left"],
+            "data.roi_right": trained_roi["right"],
+            "data.roi_bottom": trained_roi["bottom"],
+            "data.roi_top": trained_roi["top"],
+        })
         windows = _extract_windows(Path(video_name), start, end, settings)
         if windows is None:
             inference_summaries.append({
