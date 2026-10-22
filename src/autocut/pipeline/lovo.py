@@ -138,7 +138,7 @@ def _write_selection_diagnostics(
     """Export every source-timeline window and its candidate-selection outcome."""
     from ..video.probe import get_video_info
 
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     paths = _section(settings, "paths")
     cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
     declared_video, annotations = load_training_annotations(record.annotation_path)
@@ -164,6 +164,8 @@ def _write_selection_diagnostics(
         sample_fps=sample_fps,
         processing_width=processing_width,
         cache_dir=cache_dir,
+        roi_left=roi_left, roi_right=roi_right,
+        roi_bottom=roi_bottom, roi_top=roi_top,
     )
     windows = build_windows(sequence, window=window_duration, stride=window_stride)
     _predicted, probabilities = _predict(
@@ -376,6 +378,7 @@ def run_lovo(
     data_config = {
         "flow_fps": sample_fps,
         "processing_width": processing_width,
+        "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
         "pu_training": {
