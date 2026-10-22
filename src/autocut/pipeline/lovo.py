@@ -353,7 +353,7 @@ def run_lovo(
         raise ValueError("experiment.name must be a non-empty string.")
     results_dir = _path(experiment.get("results_dir", "output/experiments"), name="experiment.results_dir")
     checkpoint_dir = _path(experiment.get("checkpoint_dir", "models/experiments"), name="experiment.checkpoint_dir")
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     training_config = _training_config(settings)
     debug_settings = _section(settings, "debug")
     threshold_sweep_enabled = debug_settings.get("threshold_sweep", False)
