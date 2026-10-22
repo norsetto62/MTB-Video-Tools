@@ -9,7 +9,7 @@ import time
 import cv2
 import numpy as np
 
-from ..data_models import Clip, FeatureSequence
+from ..data_models import Clip, FeatureSequence, OpticalFlow
 from ..motion.features import FeatureExtractor
 from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig, calculate_optical_flow
 from .feature_cache import load_feature_sequence, save_feature_sequence
@@ -20,6 +20,65 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SAMPLE_FPS = 2.0
 DEFAULT_PROCESSING_WIDTH = 480
+DEFAULT_ROI_LEFT = 0.15
+DEFAULT_ROI_RIGHT = 0.85
+DEFAULT_ROI_BOTTOM = 0.50
+DEFAULT_ROI_TOP = 0.10
+ROI_CONTEXT_PADDING_X = 0.05
+ROI_CONTEXT_PADDING_Y = 0.10
+
+
+def validate_roi(
+    roi_left: float = DEFAULT_ROI_LEFT,
+    roi_right: float = DEFAULT_ROI_RIGHT,
+    roi_bottom: float = DEFAULT_ROI_BOTTOM,
+    roi_top: float = DEFAULT_ROI_TOP,
+) -> tuple[float, float, float, float]:
+    """Validate and normalize target ROI bounds in [0, 1] frame coordinates."""
+    values = {
+        "roi_left": roi_left,
+        "roi_right": roi_right,
+        "roi_bottom": roi_bottom,
+        "roi_top": roi_top,
+    }
+    normalized: dict[str, float] = {}
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a finite number in [0.0, 1.0].")
+        value = float(value)
+        if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be a finite number in [0.0, 1.0].")
+        normalized[name] = value
+    if normalized["roi_left"] >= normalized["roi_right"]:
+        raise ValueError("roi_left must be less than roi_right.")
+    if normalized["roi_top"] >= normalized["roi_bottom"]:
+        raise ValueError("roi_top must be less than roi_bottom.")
+    return (normalized["roi_left"], normalized["roi_right"], normalized["roi_bottom"], normalized["roi_top"])
+
+
+def _roi_pixel_bounds(
+    width: int,
+    height: int,
+    *,
+    roi_left: float,
+    roi_right: float,
+    roi_bottom: float,
+    roi_top: float,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    """Return context bounds followed by target bounds in resized-frame pixels."""
+    left, right, bottom, top = validate_roi(roi_left, roi_right, roi_bottom, roi_top)
+    context_left = max(0, int(np.floor((left - ROI_CONTEXT_PADDING_X) * width)))
+    context_right = min(width, int(np.ceil((right + ROI_CONTEXT_PADDING_X) * width)))
+    context_top = max(0, int(np.floor((top - ROI_CONTEXT_PADDING_Y) * height)))
+    context_bottom = min(height, int(np.ceil((bottom + ROI_CONTEXT_PADDING_Y) * height)))
+    target_left = max(context_left, min(context_right - 1, int(np.floor(left * width))))
+    target_right = max(target_left + 1, min(context_right, int(np.ceil(right * width))))
+    target_top = max(context_top, min(context_bottom - 1, int(np.floor(top * height))))
+    target_bottom = max(target_top + 1, min(context_bottom, int(np.ceil(bottom * height))))
+    if context_right <= context_left or context_bottom <= context_top:
+        raise ValueError("ROI context must contain at least one pixel in each dimension.")
+    return (context_left, context_right, context_top, context_bottom,
+            target_left, target_right, target_top, target_bottom)
 
 
 def build_feature_sequence(
@@ -30,6 +89,10 @@ def build_feature_sequence(
     processing_width: int = DEFAULT_PROCESSING_WIDTH,
     cache_dir: str | Path | None = None,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = DEFAULT_ROI_LEFT,
+    roi_right: float = DEFAULT_ROI_RIGHT,
+    roi_bottom: float = DEFAULT_ROI_BOTTOM,
+    roi_top: float = DEFAULT_ROI_TOP,
 ) -> FeatureSequence:
     """Build a motion-feature sequence for a video clip.
 
@@ -73,6 +136,8 @@ def build_feature_sequence(
             sample_fps=sample_fps,
             processing_width=processing_width,
             flow_config=flow_config,
+            roi_left=roi_left, roi_right=roi_right,
+            roi_bottom=roi_bottom, roi_top=roi_top,
         )
         if cached is not None:
             logger.info("Feature cache hit: %s (%d rows)", video_path, len(cached.features))
@@ -107,21 +172,21 @@ def build_feature_sequence(
                     min(100.0, 100.0 * sampled_frames / expected_frames),
                     time.perf_counter() - started,
                 )
-            processed = _prepare_frame(
-                frame,
-                processing_width=processing_width,
+            processed = _prepare_frame(frame, processing_width=processing_width)
+            gray_full = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+            (context_left, context_right, context_top, context_bottom,
+             target_left, target_right, target_top, target_bottom) = _roi_pixel_bounds(
+                processed.shape[1], processed.shape[0],
+                roi_left=roi_left, roi_right=roi_right,
+                roi_bottom=roi_bottom, roi_top=roi_top,
             )
+            gray = gray_full[context_top:context_bottom, context_left:context_right]
 
             if extractor is None:
                 extractor = FeatureExtractor(
-                    roi_width=processed.shape[1],
-                    roi_height=processed.shape[0],
+                    roi_width=target_right - target_left,
+                    roi_height=target_bottom - target_top,
                 )
-
-            gray = cv2.cvtColor(
-                processed,
-                cv2.COLOR_BGR2GRAY,
-            )
 
             if previous_gray is None:
                 previous_gray = gray
@@ -133,7 +198,13 @@ def build_feature_sequence(
                 config=flow_config,
             )
 
-            vector = extractor.extract_vector(flow)
+            target_slice_y = slice(target_top - context_top, target_bottom - context_top)
+            target_slice_x = slice(target_left - context_left, target_right - context_left)
+            target_flow = OpticalFlow(
+                u=flow.u[target_slice_y, target_slice_x],
+                v=flow.v[target_slice_y, target_slice_x],
+            )
+            vector = extractor.extract_vector(target_flow)
 
             feature_vectors.append(vector)
             timestamps.append(
@@ -175,6 +246,8 @@ def build_feature_sequence(
             sample_fps=sample_fps,
             processing_width=processing_width,
             flow_config=flow_config,
+            roi_left=roi_left, roi_right=roi_right,
+            roi_bottom=roi_bottom, roi_top=roi_top,
         )
     return sequence
 
