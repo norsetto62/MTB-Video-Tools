@@ -182,14 +182,24 @@ def _write_selection_diagnostics(
         timeline_end,
         config=candidate_config,
     )
-    candidate_for_window: dict[int, tuple[int, Any]] = {}
-    # Candidate evidence uses the same source window timestamps as the input.
+    candidate_for_window: dict[int, tuple[int, Any, bool]] = {}
+    # Map both threshold-selected evidence windows and lower-scoring windows
+    # covered only because a candidate was padded around its evidence.
+    timestamp_to_index = {
+        (round(float(start), 6), round(float(end), 6)): index
+        for index, (start, end) in enumerate(windows.timestamps)
+    }
     for candidate_index, candidate in enumerate(candidates, start=1):
-        for evidence in candidate.window_evidence:
-            for window_index, (start, end) in enumerate(windows.timestamps):
-                if abs(float(start) - evidence.start) < 1e-6 and abs(float(end) - evidence.end) < 1e-6:
-                    candidate_for_window[window_index] = (candidate_index, candidate)
-                    break
+        evidence_indices = {
+            timestamp_to_index[(round(item.start, 6), round(item.end, 6))]
+            for item in candidate.window_evidence
+            if (round(item.start, 6), round(item.end, 6)) in timestamp_to_index
+        }
+        for window_index, (start, end) in enumerate(windows.timestamps):
+            if float(start) < candidate.end and float(end) > candidate.start:
+                candidate_for_window[window_index] = (
+                    candidate_index, candidate, window_index in evidence_indices
+                )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists() or path.stat().st_size == 0
@@ -223,8 +233,8 @@ def _write_selection_diagnostics(
             selected = bool(probabilities[window_index] >= positive_threshold)
             mapped = candidate_for_window.get(window_index)
             if mapped:
-                candidate_index, candidate = mapped
-                outcome = "IN_FINAL_CANDIDATE"
+                candidate_index, candidate, is_evidence = mapped
+                outcome = "IN_FINAL_CANDIDATE" if is_evidence else "IN_CANDIDATE_PADDING"
                 candidate_id = f"{record.id}-C{candidate_index:03d}"
                 candidate_values = {
                     "candidate_start_s": f"{candidate.start:.3f}",
