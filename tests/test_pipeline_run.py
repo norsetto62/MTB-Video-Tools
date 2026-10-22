@@ -133,10 +133,10 @@ def test_pipeline_preserves_annotation_order_through_binary_pu_candidate_generat
         run, "_extract_windows",
         lambda *args, **kwargs: SimpleNamespace(X=np.zeros((2, 1, 54), dtype=np.float32)),
     )
-    # The pipeline loads checkpoint metadata after inference; inference itself
+    # The pipeline loads checkpoint metadata before extraction; inference itself
     # is stubbed here so this integration test focuses on real P/U candidate
     # generation, source-time offsets, and annotation-order preservation.
-    monkeypatch.setattr(run, "load_checkpoint", lambda *args, **kwargs: {\n        "data_config": {"roi": {"left": 0.15, "right": 0.85, "bottom": 0.50, "top": 0.10}}\n    })
+    monkeypatch.setattr(\n        run, "load_checkpoint",\n        lambda *args, **kwargs: {\n            "data_config": {"roi": {"left": 0.15, "right": 0.85, "bottom": 0.50, "top": 0.10}}\n        },\n    )
     monkeypatch.setattr(run, "validate_checkpoint", lambda payload: payload)
     inference_calls = iter([
         InferenceResult(
