@@ -143,8 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
             "background shading for the video's training annotation scores."
         )
     )
-    parser.add_argument("annotations", type=Path, help="Training annotation TXT file.")
-    parser.add_argument("feature", help="Canonical feature name or zero-based feature index.")
+    parser.add_argument("annotations", type=Path, nargs="?", help="Training annotation TXT file.")
+    parser.add_argument("feature", nargs="?", help="Canonical feature name or zero-based feature index.")
     parser.add_argument(
         "--config",
         type=Path,
@@ -169,6 +169,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{index:2d}  {name}")
         return 0
 
+    if args.annotations is None or args.feature is None:
+        parser.error("annotations and feature are required unless --list-features is used")
     if not args.annotations.is_file():
         raise FileNotFoundError(f"Annotation file not found: {args.annotations}")
     feature_index, feature_name = resolve_feature(args.feature)
