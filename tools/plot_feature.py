@@ -79,19 +79,9 @@ def plot_feature(
 
     try:
         import matplotlib
-
-        # Batch environments commonly select Agg, which can save PNGs but
-        # cannot open a window. When --show is requested, select a GUI backend
-        # before importing pyplot.
-        if show:
-            try:
-                matplotlib.use("TkAgg", force=True)
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Interactive plotting needs a GUI-capable Matplotlib backend. "
-                    "On Windows, install/enable Tkinter or run without --show."
-                ) from exc
-
+        # This utility always writes a static PNG. Interactive viewing is
+        # handled separately by a browser-based Plotly HTML page.
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
         from matplotlib.patches import Patch
         from matplotlib.ticker import FuncFormatter
@@ -144,9 +134,90 @@ def plot_feature(
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(destination, dpi=160, bbox_inches="tight")
-    if show:
-        plt.show(block=True)
     plt.close(figure)
+
+    if show:
+        html_destination = destination.with_suffix(".html")
+        save_interactive_html(
+            timestamps,
+            values,
+            annotations,
+            feature_name=feature_name,
+            video_name=video_name,
+            output_path=html_destination,
+        )
+        import webbrowser
+
+        webbrowser.open(html_destination.resolve().as_uri())
+        print(f"Opened interactive feature plot: {html_destination.resolve()}")
+
+    return destination
+
+
+def save_interactive_html(
+    timestamps: np.ndarray,
+    values: np.ndarray,
+    annotations: Sequence[object],
+    *,
+    feature_name: str,
+    video_name: str,
+    output_path: str | Path,
+) -> Path:
+    """Write a zoomable, hoverable Plotly chart and open it in a browser."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError as exc:
+        raise ImportError(
+            "Browser-based interactive plotting requires Plotly. Install it with: "
+            "python -m pip install plotly"
+        ) from exc
+
+    figure = go.Figure()
+    for annotation in annotations:
+        score = int(annotation.score)
+        figure.add_vrect(
+            x0=annotation.start,
+            x1=annotation.end,
+            fillcolor=ANNOTATION_COLORS[score],
+            opacity=0.30,
+            line_width=0,
+            layer="below",
+        )
+    figure.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=values,
+            mode="lines",
+            name=feature_name,
+            line={"color": "#111111", "width": 1.5},
+            hovertemplate="Time: %{x:.2f}s<br>Value: %{y:.6g}<extra></extra>",
+        )
+    )
+    for score, color in ANNOTATION_COLORS.items():
+        label = f"MTB {score}" + (" (P)" if score == 3 else " (U)" if score in (0, 1, 2) else "")
+        figure.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker={"size": 10, "color": color, "symbol": "square"},
+                name=label,
+                hoverinfo="skip",
+            )
+        )
+    figure.update_layout(
+        title={"text": f"{feature_name} over time — {video_name}", "x": 0.01},
+        xaxis_title="Video time (seconds)",
+        yaxis_title=feature_name,
+        hovermode="x",
+        template="plotly_white",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
+        margin={"l": 70, "r": 30, "t": 110, "b": 70},
+    )
+    figure.update_xaxes(showgrid=True)
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.write_html(destination, include_plotlyjs="cdn", full_html=True)
     return destination
 
 
