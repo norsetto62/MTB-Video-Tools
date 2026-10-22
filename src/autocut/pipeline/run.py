@@ -84,7 +84,7 @@ def _extract_windows(
             stride=settings.features.window_stride,
         )
     except ValueError as exc:
-        if (end - start) * settings.video.sampling_fps < settings.features.window_duration * settings.video.sampling_fps:
+        if end - start < settings.features.window_duration:
             logger.info(
                 "Skipping candidate inference for short range %s [%.3f, %.3f): %s",
                 video_path, start, end, exc,
