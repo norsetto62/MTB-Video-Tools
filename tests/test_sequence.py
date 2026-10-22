@@ -384,3 +384,32 @@ def test_build_feature_sequence_returns_compatible_cache_hit(
     actual = build_feature_sequence(video, clip, cache_dir=cache_dir)
     np.testing.assert_array_equal(actual.features, expected.features)
     np.testing.assert_array_equal(actual.timestamps, expected.timestamps)
+
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("roi_left", -0.01), ("roi_left", 1.01),
+        ("roi_right", float("nan")), ("roi_bottom", float("inf")),
+        ("roi_top", True),
+    ],
+)
+def test_build_feature_sequence_rejects_invalid_roi_bounds(name, value):
+    clip = Clip(video_name="test.mp4", start=0.0, end=2.0)
+    kwargs = {name: value}
+    with pytest.raises(ValueError, match=name):
+        build_feature_sequence("test.mp4", clip, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"roi_left": 0.8, "roi_right": 0.2}, "roi_left must be less"),
+        ({"roi_top": 0.8, "roi_bottom": 0.2}, "roi_top must be less"),
+    ],
+)
+def test_build_feature_sequence_rejects_reversed_roi(kwargs, message):
+    clip = Clip(video_name="test.mp4", start=0.0, end=2.0)
+    with pytest.raises(ValueError, match=message):
+        build_feature_sequence("test.mp4", clip, **kwargs)
