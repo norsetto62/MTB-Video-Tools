@@ -27,6 +27,7 @@ ml = [
 plot = [
     "matplotlib",
     "plotly",
+    "scipy",
 ]
 hpo = [
     "optuna>=3.0.0",
