@@ -6,6 +6,7 @@ import numpy as np
 import optuna
 from datetime import datetime
 from typing import Any
+from math import dist
 
 from ..config_loader import Config
 from .lovo import run_lovo
@@ -177,6 +178,25 @@ def run_hpo(
     )
     if not pareto_trials:
         raise RuntimeError("HPO produced no completed Pareto-efficient trials.")
+
+    cid = min(
+            pareto_trials, 
+            key=lambda t: dist([t.values[0], t.values[1]], [1.0, 0.0])
+            )
+    lg = max(
+            pareto_trials, 
+            key=lambda t: t.values[0] - t.values[1]
+            )
+    hpr = min(
+            pareto_trials,
+            key=lambda t: (-t.values[0], t.values[1], t.number,)
+            )
+    
+    print(
+        f" Closest ideal point     : {cid.number} with parameters: {cid.params}\n", 
+        f"Largest gap             : {lg.number} with parameters: {lg.params}\n",
+        f"Highest Positive Recall : {hpr.number}  with parameters: {hpr.params}\n",
+    )
 
     # Production refit needs one explicit choice. Select the Pareto trial with
     # highest P recall; break ties by lower U selection. This is a post-study
