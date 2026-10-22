@@ -78,6 +78,20 @@ def plot_feature(
         raise ValueError("timestamps must be strictly increasing.")
 
     try:
+        import matplotlib
+
+        # Batch environments commonly select Agg, which can save PNGs but
+        # cannot open a window. When --show is requested, select a GUI backend
+        # before importing pyplot.
+        if show:
+            try:
+                matplotlib.use("TkAgg", force=True)
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Interactive plotting needs a GUI-capable Matplotlib backend. "
+                    "On Windows, install/enable Tkinter or run without --show."
+                ) from exc
+
         import matplotlib.pyplot as plt
         from matplotlib.patches import Patch
         from matplotlib.ticker import FuncFormatter
@@ -131,7 +145,7 @@ def plot_feature(
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(destination, dpi=160, bbox_inches="tight")
     if show:
-        plt.show()
+        plt.show(block=True)
     plt.close(figure)
     return destination
 
