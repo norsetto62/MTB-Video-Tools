@@ -65,3 +65,28 @@ def test_plot_feature_rejects_mismatched_shapes(tmp_path):
             video_name="test.mp4",
             output_path=tmp_path / "invalid.png",
         )
+
+
+def test_savgol_filter_preserves_quadratic_signal():
+    pytest.importorskip("scipy")
+    x = np.arange(21, dtype=np.float64)
+    values = 0.5 * x**2 - 2.0 * x + 3.0
+    filtered = PLOT_HELPER.apply_savgol_filter(values, window_length=7, polyorder=2)
+    np.testing.assert_allclose(filtered, values, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("window_length", "polyorder", "message"),
+    [
+        (4, 2, "odd integer"),
+        (3, 3, "smaller than the window length"),
+        (25, 2, "exceeds the number of samples"),
+    ],
+)
+def test_savgol_filter_rejects_invalid_parameters(window_length, polyorder, message):
+    with pytest.raises(ValueError, match=message):
+        PLOT_HELPER.apply_savgol_filter(
+            np.arange(21, dtype=np.float64),
+            window_length=window_length,
+            polyorder=polyorder,
+        )
