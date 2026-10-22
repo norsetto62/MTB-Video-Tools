@@ -99,8 +99,8 @@ def test_build_feature_sequence_from_clip(monkeypatch: pytest.MonkeyPatch) -> No
 
     class FakeExtractor:
         def __init__(self, roi_width, roi_height) -> None:
-            assert roi_width == DEFAULT_PROCESSING_WIDTH
-            assert roi_height % 2 == 0
+            assert roi_width == 336
+            assert roi_height == 108
             self.calls = 0
 
         def extract_vector(self, flow):
@@ -112,7 +112,11 @@ def test_build_feature_sequence_from_clip(monkeypatch: pytest.MonkeyPatch) -> No
             )
 
     def fake_calculate_optical_flow(previous_gray, current_gray, config=None):
-        return object()
+        from autocut.data_models import OpticalFlow
+        return OpticalFlow(
+            u=np.zeros(previous_gray.shape, dtype=np.float32),
+            v=np.zeros(previous_gray.shape, dtype=np.float32),
+        )
 
     monkeypatch.setattr(
         "autocut.dataset.sequence.VideoReader",
