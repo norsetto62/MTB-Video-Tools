@@ -4,14 +4,12 @@ import argparse
 from pathlib import Path
 import sys
 
-import cv2
 import numpy as np
 
 from autocut.annotations import load_training_annotations
 from autocut.data_models import Clip, FeatureSequence
 from autocut.dataset.sequence import build_feature_sequence
-from autocut.utils import convert_s_to_hms
-from autocut.video.probe import get_video_info
+from autocut.motion.features import FEATURE_NAMES, GRID_ROWS, GRID_COLS
 
 SAMPLE_FPS = 2.0
 PROCESSING_WIDTH = 480
