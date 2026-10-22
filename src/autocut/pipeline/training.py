@@ -20,7 +20,7 @@ import numpy as np
 from ..annotations import load_training_annotations
 from ..config_loader import Config
 from ..dataset.manifest import DatasetRecord, load_manifest
-from ..dataset.sequence import build_feature_sequence
+from ..dataset.sequence import build_feature_sequence, DEFAULT_ROI_LEFT, DEFAULT_ROI_RIGHT, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_TOP, validate_roi
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows
 from ..ml.training import TrainingConfig, train_single_fold
@@ -105,7 +105,11 @@ def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, 
     window_stride = _positive_float(
         data.get("window_stride", 2.0), name="data.window_stride"
     )
-    return manifest, sample_fps, processing_width, window_duration, window_stride
+    roi = validate_roi(
+        data.get("roi_left", DEFAULT_ROI_LEFT), data.get("roi_right", DEFAULT_ROI_RIGHT),
+        data.get("roi_bottom", DEFAULT_ROI_BOTTOM), data.get("roi_top", DEFAULT_ROI_TOP),
+    )
+    return manifest, sample_fps, processing_width, window_duration, window_stride, *roi
 
 
 def _experiment_slug(name: str) -> str:
@@ -122,7 +126,7 @@ def _load_record_windows(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Extract annotated training windows for one manifest record."""
     record_started = time.perf_counter()
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     paths = _section(settings, "paths")
     cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
     logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
@@ -163,6 +167,8 @@ def _load_record_windows(
         sample_fps=sample_fps,
         processing_width=processing_width,
         cache_dir=cache_dir,
+        roi_left=roi_left, roi_right=roi_right,
+        roi_bottom=roi_bottom, roi_top=roi_top,
     )
     logger.info("Record %s: extracted %d feature rows; building windows", record.id, len(sequence.features))
     windows = build_windows(
@@ -276,6 +282,7 @@ def run_training(
     data_config = {
         "flow_fps": sample_fps,
         "processing_width": processing_width,
+        "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
         "target_generation": {
