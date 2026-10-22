@@ -151,6 +151,23 @@ Horizontal: 10%–90% · Vertical: 0%–60%
 
 The extra pixels give Farneback surrounding image information. They do not become part of the feature calculations.
 
+## Configurable target ROI
+
+The target rectangle is configured with four normalized coordinates:
+
+| Parameter | Meaning | Default |
+|---|---|---:|
+| `roi_left` | Left edge, fraction of frame width | `0.15` |
+| `roi_right` | Right edge, fraction of frame width | `0.85` |
+| `roi_top` | Top edge, fraction of frame height | `0.10` |
+| `roi_bottom` | Bottom edge, fraction of frame height | `0.50` |
+
+Every coordinate must be finite and in `[0.0, 1.0]`; left must be less than right, and top less than bottom. In the training configuration these keys belong under `data`; in the production configuration they belong under `video`. Keep the values identical between training and inference: the runtime rejects a checkpoint with missing ROI metadata or different ROI bounds.
+
+The context crop adds 5% of frame width on each horizontal side and 10% of frame height above and below the target, clipped to the frame boundary. Farneback runs on that context crop; the flow is then cropped to the target ROI before the existing 54 features are calculated.
+
+Changing any ROI coordinate changes the feature-cache identity. The feature-cache version is also incremented, so caches created before ROI support are not reused. Sampling FPS is part of the same cache identity. Window duration and stride do not affect raw optical-flow features and are not stored in a separate window cache: window tensors are rebuilt from the cached raw sequence whenever training or inference runs.
+
 ### Why this is a good compromise
 
 * It preserves the meaning and dimensions of our existing 54 features.
