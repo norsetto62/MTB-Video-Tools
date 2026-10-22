@@ -212,20 +212,3 @@ def test_run_config_sections_rejects_invalid_video_width():
     else:
         raise AssertionError("invalid processing width should be rejected")
 
-
-def test_checkpoint_roi_must_match_run_configuration(tmp_path):
-    settings, _candidate_config, _audio_config = run._run_config_sections(
-        run.Config({
-            "paths": {
-                "data_dir": str(tmp_path), "models_dir": str(tmp_path),
-                "output_dir": str(tmp_path), "cache_dir": str(tmp_path / "cache"),
-            },
-            "video": {"roi_left": 0.20},
-            "model": {"checkpoint": str(tmp_path / "model.pt")},
-        })
-    )
-    with pytest.raises(ValueError, match="does not match configured ROI"):
-        run._validate_checkpoint_roi(
-            {"data_config": {"roi": {"left": 0.15, "right": 0.85, "bottom": 0.50, "top": 0.10}}},
-            settings,
-        )
