@@ -8,12 +8,10 @@ import cv2
 import numpy as np
 
 from autocut.annotations import load_training_annotations
-from autocut.data_models import FeatureSequence
-from autocut.motion.features import FeatureExtractor, FEATURE_NAMES, GRID_ROWS, GRID_COLS
-from autocut.motion.flow import calculate_optical_flow
+from autocut.data_models import Clip, FeatureSequence
+from autocut.dataset.sequence import build_feature_sequence
 from autocut.utils import convert_s_to_hms
 from autocut.video.probe import get_video_info
-from autocut.video.reader import VideoReader
 
 SAMPLE_FPS = 2.0
 PROCESSING_WIDTH = 480
@@ -395,113 +393,31 @@ def parse_arguments() -> Path:
 
 def main() -> int:
     annotation_path = parse_arguments()
-    output_dir = Path("data/audit")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print("Processing", annotation_path)
-
     video_path, annotations = load_training_annotations(annotation_path)
-    video_info = get_video_info(video_path)
+    if not annotations:
+        print("Error: annotation file contains no intervals.", file=sys.stderr)
+        return 1
 
-    # Calculate ROI spatial geometries
-    processing_width = PROCESSING_WIDTH
-    processing_height = round(video_info.height * processing_width / video_info.width)
-    if processing_height % 2:
-        processing_height += 1
-
-    roi_x0 = round(processing_width * 0.15)
-    roi_width = round(processing_width * 0.7)
-    roi_y0 = round(processing_height * 0.1)
-    roi_height = round(processing_height * 0.4)
-
-    tot_annotations = len(annotations)
-    audit_failures: list[tuple[int, str]] = []
+    clip_start = float(annotations[0].start)
+    clip_end = float(annotations[-1].end)
+    clip = Clip(
+        video_name=video_path.stem,
+        start=clip_start,
+        end=clip_end,
+    )
+    print(
+        f"Extracting/auditing canonical features for [{clip_start:.3f}, {clip_end:.3f}) "
+        f"at {SAMPLE_FPS:g} sampled FPS and {PROCESSING_WIDTH}px processing width."
+    )
+    sequence = build_feature_sequence(
+        video_path,
+        clip,
+        sample_fps=SAMPLE_FPS,
+        processing_width=PROCESSING_WIDTH,
+        cache_dir=Path("data/cache/features"),
+    )
     fail_counter = 0
-    last_progress_time = 0.0
-
-    filename = f"{annotation_path.stem}.npz"
-    npz_path = output_dir / filename
-
-    # --------------------------------------------------------------------
-    # Cache Hit: Read sequence directly from .npz
-    # --------------------------------------------------------------------
-    if npz_path.exists():
-        print(f"Loading cached NPZ: {npz_path.name}")
-        with np.load(npz_path) as data:
-            features = data["features"]
-            timestamps = data["timestamps"]
-
-        sequence = FeatureSequence(
-            features=features,
-            timestamps=timestamps,
-        )
-        total_frames = len(features)
-
-    # --------------------------------------------------------------------
-    # Cache Miss: Extract Optical Flow & Features from Video
-    # --------------------------------------------------------------------
-    else:
-        features_list = []
-        timestamps_list = []
-        duration = annotations[tot_annotations-1].end - annotations[0].start
-        total_frames = round(duration * SAMPLE_FPS)
-        processing_start_wall = cv2.getTickCount()
-        with VideoReader(
-            video_path=video_path,
-            start=annotations[0].start,
-            duration=duration,
-            sample_fps=SAMPLE_FPS,
-        ) as training_video:
-            previous_gray = None
-            extractor = FeatureExtractor(roi_width=roi_width, roi_height=roi_height)
-
-            for frame_index, timestamp, frame in training_video:
-                frame_resized = cv2.resize(
-                    frame,
-                    (processing_width, processing_height),
-                    interpolation=cv2.INTER_AREA,
-                )
-                gray_crop = frame_resized[
-                    roi_y0 : roi_y0 + roi_height, roi_x0 : roi_x0 + roi_width
-                ]
-                current_gray = cv2.cvtColor(gray_crop, cv2.COLOR_BGR2GRAY)
-
-                if previous_gray is not None:
-                    flow = calculate_optical_flow(
-                        previous_gray=previous_gray,
-                        current_gray=current_gray,
-                    )
-                    features_list.append(extractor.extract_vector(flow))
-                    timestamps_list.append(timestamp)
-
-                previous_gray = current_gray
-                            
-                # -------------------------------------------------------
-                # Progress
-                # -------------------------------------------------------
-
-                elapsed_wall = (
-                    cv2.getTickCount() -
-                    processing_start_wall
-                ) / cv2.getTickFrequency()
-
-                # Only print progress every 2 sec
-                if elapsed_wall - last_progress_time >= 2.0 :
-                    time_per_frame = elapsed_wall / frame_index
-                    frames_left = total_frames - frame_index
-                    eta_seconds = frames_left * time_per_frame
-                    print(f"\rProcessed {frame_index} of {total_frames} frames in {convert_s_to_hms(elapsed_wall)} ETA {convert_s_to_hms(eta_seconds)}", flush=True)
-                    last_progress_time = elapsed_wall
-
-            features = np.asarray(features_list, dtype=np.float32)
-            timestamps = np.asarray(timestamps_list, dtype=np.float64)
-
-            # Cache arrays to disk
-            np.savez(npz_path, features=features, timestamps=timestamps)
-
-            sequence = FeatureSequence(
-                features=features,
-                timestamps=timestamps,
-            )
+    audit_failures: list[tuple[int, str]] = []
 
     # --------------------------------------------------------------------
     # Run Sequence Audit
