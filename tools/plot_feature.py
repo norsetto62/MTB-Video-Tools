@@ -195,7 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     video_info = get_video_info(video_path)
     sequence = build_feature_sequence(
         video_path,
-        Clip(video_name=video_path.stem, start=0.0, end=float(video_info.duration)),
+        # Match training's exact cache identity: its extraction clip ends at the\n        # last annotation end (clamped to the probed video duration), not the\n        # full video duration. A different end time produces a different cache key.\n        Clip(\n            video_name=video_path.stem,\n            start=0.0,\n            end=min(float(annotations[-1].end), float(video_info.duration)),\n        ),
         sample_fps=sample_fps,
         processing_width=processing_width,
         cache_dir=cache_dir,
