@@ -86,8 +86,16 @@ def _validate_windows(windows: np.ndarray, *, name: str, feature_dim: int = 54) 
         values = np.asarray(windows, dtype=np.float32)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{name} must be convertible to a float32 array.") from exc
-    if values.ndim != 3 or values.shape[0] == 0 or values.shape[1] != 8 or values.shape[2] != feature_dim:
-        raise ValueError(f"{name} must have non-empty shape (N, 8, {feature_dim}).")
+    if (
+        values.ndim != 3
+        or values.shape[0] == 0
+        or values.shape[1] < 2
+        or values.shape[2] != feature_dim
+    ):
+        raise ValueError(
+            f"{name} must have non-empty shape (N, T, {feature_dim}) "
+            "with at least two time steps."
+        )
     if not np.isfinite(values).all():
         raise ValueError(f"{name} must contain only finite values.")
     return values
@@ -186,6 +194,31 @@ def _fit(
         raise ValueError("data_config must be a dictionary or None.")
     if metadata is not None and not isinstance(metadata, dict):
         raise ValueError("metadata must be a dictionary or None.")
+    if data_config is not None and "flow_fps" in data_config and "window" in data_config:
+        flow_fps = data_config["flow_fps"]
+        window_duration = data_config["window"]
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+            for value in (flow_fps, window_duration)
+        ):
+            raise ValueError("data_config flow_fps and window must be finite positive numbers.")
+        expected_steps_float = float(flow_fps) * float(window_duration)
+        expected_steps = int(round(expected_steps_float))
+        if not math.isclose(expected_steps_float, expected_steps, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError("window duration multiplied by flow_fps must be an integer number of feature steps.")
+        if train_X.shape[1] != expected_steps:
+            raise ValueError(
+                f"train_windows must contain {expected_steps} time steps from "
+                f"window={window_duration}s and flow_fps={flow_fps}; got {train_X.shape[1]}."
+            )
+        if val_X is not None and val_X.shape[1] != expected_steps:
+            raise ValueError(
+                f"val_windows must contain {expected_steps} time steps from "
+                f"window={window_duration}s and flow_fps={flow_fps}; got {val_X.shape[1]}."
+            )
     if fold_video_id is not None and (not isinstance(fold_video_id, str) or not fold_video_id.strip()):
         raise ValueError("fold_video_id must be a non-empty string or None.")
 
