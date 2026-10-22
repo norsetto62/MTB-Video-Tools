@@ -154,6 +154,7 @@ def build_feature_sequence(
     extractor: FeatureExtractor | None = None
     previous_gray: np.ndarray | None = None
     sampled_frames = 0
+    roi_bounds: tuple[int, int, int, int, int, int, int, int] | None = None
     expected_frames = max(1, int(np.ceil(clip.duration * sample_fps)))
     logger.info(
         "Extracting motion features: %s (about %d sampled frames)",
@@ -177,14 +178,16 @@ def build_feature_sequence(
                     time.perf_counter() - started,
                 )
             processed = _prepare_frame(frame, processing_width=processing_width)
-            gray_full = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+            if roi_bounds is None:
+                roi_bounds = _roi_pixel_bounds(
+                    processed.shape[1], processed.shape[0],
+                    roi_left=roi_left, roi_right=roi_right,
+                    roi_bottom=roi_bottom, roi_top=roi_top,
+                )
             (context_left, context_right, context_top, context_bottom,
-             target_left, target_right, target_top, target_bottom) = _roi_pixel_bounds(
-                processed.shape[1], processed.shape[0],
-                roi_left=roi_left, roi_right=roi_right,
-                roi_bottom=roi_bottom, roi_top=roi_top,
-            )
-            gray = gray_full[context_top:context_bottom, context_left:context_right]
+             target_left, target_right, target_top, target_bottom) = roi_bounds
+            context_frame = processed[context_top:context_bottom, context_left:context_right]
+            gray = cv2.cvtColor(context_frame, cv2.COLOR_BGR2GRAY)
 
             if extractor is None:
                 extractor = FeatureExtractor(
