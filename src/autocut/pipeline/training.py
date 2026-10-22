@@ -89,7 +89,7 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
 
 
-def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
+def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float, float, float, float, float]:
     data = _section(settings, "data")
     manifest = _path(
         data.get("manifest", "data/manifest/annotations_manifest.yaml"),
@@ -249,7 +249,7 @@ def run_training(
         experiment.get("results_dir", "output/experiments"),
         name="experiment.results_dir",
     )
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     records = load_manifest(manifest_path, verify_files=True)
     known_groups = {record.group_id for record in records}
     unknown = (train_groups | validation_groups) - known_groups
