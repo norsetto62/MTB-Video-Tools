@@ -88,7 +88,7 @@ def test_run_training_combines_groups_and_writes_checkpoint_and_json(tmp_path, m
     result = pipeline_training.run_training(manifest, settings)
 
     assert captured["record_ids"] == [["a"], ["b"]]
-    sample_steps = int(round(2 * 4))
+    sample_steps = int(round(settings["data"]["sampling_fps"] * settings["data"]["window_duration"]))
     assert captured["shapes"] == ((9, sample_steps, 54), (6, sample_steps, 54))
     assert captured["kwargs"]["checkpoint_path"] == tmp_path / "models" / "train-test_best.pt"
     assert result["train_groups"] == ["train"]
