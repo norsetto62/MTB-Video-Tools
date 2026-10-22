@@ -14,23 +14,18 @@ from ..config_loader import Config
 from ..audio.config import AudioConfig
 from ..selection.candidates_generation import CandidateGenerationConfig
 
-import cv2
 import numpy as np
 
 from ..annotations import load_annotations
 from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
-from ..dataset.feature_cache import load_feature_sequence, save_feature_sequence
 from ..dataset.windows import build_windows
 from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows, InferenceResult
 from ..ml.checkpoint import load_checkpoint, validate_checkpoint
-from ..motion.features import FeatureExtractor
-from ..motion.flow import calculate_optical_flow
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
 from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
-from ..video.reader import VideoReader
 from ..audio.pipeline import prepare_audio_timeline
 from ..audio.analysis import AudioAnalysis, analyze_audio
 
