@@ -136,7 +136,7 @@ def test_pipeline_preserves_annotation_order_through_binary_pu_candidate_generat
     # The pipeline loads checkpoint metadata after inference; inference itself
     # is stubbed here so this integration test focuses on real P/U candidate
     # generation, source-time offsets, and annotation-order preservation.
-    monkeypatch.setattr(run, "load_checkpoint", lambda *args, **kwargs: {})
+    monkeypatch.setattr(run, "load_checkpoint", lambda *args, **kwargs: {\n        "data_config": {"roi": {"left": 0.15, "right": 0.85, "bottom": 0.50, "top": 0.10}}\n    })
     monkeypatch.setattr(run, "validate_checkpoint", lambda payload: payload)
     inference_calls = iter([
         InferenceResult(
@@ -206,3 +206,21 @@ def test_run_config_sections_rejects_invalid_video_width():
         assert "video.processing_width must be a positive integer" in str(exc)
     else:
         raise AssertionError("invalid processing width should be rejected")
+
+
+def test_checkpoint_roi_must_match_run_configuration(tmp_path):
+    settings, _candidate_config, _audio_config = run._run_config_sections(
+        run.Config({
+            "paths": {
+                "data_dir": str(tmp_path), "models_dir": str(tmp_path),
+                "output_dir": str(tmp_path), "cache_dir": str(tmp_path / "cache"),
+            },
+            "video": {"roi_left": 0.20},
+            "model": {"checkpoint": str(tmp_path / "model.pt")},
+        })
+    )
+    with pytest.raises(ValueError, match="does not match configured ROI"):
+        run._validate_checkpoint_roi(
+            {"data_config": {"roi": {"left": 0.15, "right": 0.85, "bottom": 0.50, "top": 0.10}}},
+            settings,
+        )
