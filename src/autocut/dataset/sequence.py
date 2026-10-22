@@ -125,6 +125,10 @@ def build_feature_sequence(
     if processing_width < 2:
         raise ValueError("processing_width must be at least 2.")
 
+    roi_left, roi_right, roi_bottom, roi_top = validate_roi(
+        roi_left, roi_right, roi_bottom, roi_top
+    )
+
     if clip.end <= clip.start:
         raise ValueError("clip end must be greater than clip start.")
 
