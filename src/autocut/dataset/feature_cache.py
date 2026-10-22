@@ -23,7 +23,7 @@ from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
 
 logger = logging.getLogger(__name__)
 
-FEATURE_CACHE_VERSION = 2
+FEATURE_CACHE_VERSION = 3
 FEATURE_SCHEMA_VERSION = 1
 _ARRAY_FORMAT_VERSION = 1
 
@@ -72,6 +72,10 @@ def _identity(
     sample_fps: float,
     processing_width: int,
     flow_config: FarnebackConfig,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> tuple[dict[str, Any], str]:
     source = Path(video_path).expanduser().resolve()
@@ -90,6 +94,7 @@ def _identity(
         "clip": {"start": float(clip.start), "end": float(clip.end)},
         "sample_fps": float(sample_fps),
         "processing_width": int(processing_width),
+        "roi": {"left": float(roi_left), "right": float(roi_right), "bottom": float(roi_bottom), "top": float(roi_top)},
         "flow_config": _config_payload(flow_config),
     }
     if source_fingerprint_mode == "sha256":
@@ -107,12 +112,17 @@ def feature_cache_path(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> Path:
     """Return the deterministic cache path; metadata fingerprinting is the default."""
     _, key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
+        roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
         source_fingerprint_mode=source_fingerprint_mode,
     )
     return Path(cache_dir) / f"{key}.npz"
@@ -219,6 +229,7 @@ def load_feature_sequence(
         expected, key = _identity(
             video_path, clip, sample_fps=sample_fps,
             processing_width=processing_width, flow_config=flow_config,
+            roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
             source_fingerprint_mode=source_fingerprint_mode,
         )
         target = Path(cache_dir) / f"{key}.npz"
