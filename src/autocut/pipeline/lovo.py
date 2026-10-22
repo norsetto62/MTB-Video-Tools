@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import csv
 import json
 import logging
 from collections.abc import Mapping
@@ -14,6 +15,12 @@ import torch
 
 from .training import _combine_records, _experiment_slug, _data_values, _path, _section, _training_config
 from ..dataset.manifest import get_unique_groups, load_manifest
+from ..dataset.sequence import build_feature_sequence
+from ..dataset.windows import build_windows
+from ..annotations import load_training_annotations
+from ..data_models import Clip
+from ..selection.candidates_generation import CandidateGenerationConfig, generate_candidates
+from ..ml.inference import InferenceResult
 from ..ml.model import MTBClassifier
 from ..ml.scaling import FeatureScaler
 from ..ml.training import targets_to_classes, train_fixed_epochs, train_single_fold
@@ -117,6 +124,148 @@ def _predict(
     probabilities = np.concatenate(batches, axis=0)
     predictions = (probabilities >= float(positive_threshold)).astype(np.int64)
     return predictions, probabilities
+
+def _write_selection_diagnostics(
+    path: Path,
+    *,
+    record: Any,
+    settings: Mapping[str, Any],
+    model: MTBClassifier,
+    scaler: FeatureScaler,
+    positive_threshold: float,
+    fold_metadata: Mapping[str, Any],
+) -> None:
+    """Export every source-timeline window and its candidate-selection outcome."""
+    from ..video.probe import get_video_info
+
+    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    paths = _section(settings, "paths")
+    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
+    declared_video, annotations = load_training_annotations(record.annotation_path)
+    if declared_video.resolve() != record.video_path.resolve():
+        raise ValueError(
+            f"Manifest entry {record.id!r} points to {record.video_path}, but "
+            f"its annotation file declares {declared_video}."
+        )
+    if not annotations:
+        raise ValueError(f"Manifest entry {record.id!r} has no annotations for diagnostics.")
+
+    video_info = get_video_info(record.video_path)
+    timeline_end = float(annotations[-1].end)
+    if timeline_end > video_info.duration + 0.05:
+        raise ValueError(
+            f"Annotation end ({timeline_end:.3f}s) exceeds video duration "
+            f"({video_info.duration:.3f}s) for {record.id!r}."
+        )
+    timeline_end = min(timeline_end, float(video_info.duration))
+    sequence = build_feature_sequence(
+        record.video_path,
+        Clip(video_name=record.id, start=0.0, end=timeline_end),
+        sample_fps=sample_fps,
+        processing_width=processing_width,
+        cache_dir=cache_dir,
+    )
+    windows = build_windows(sequence, window=window_duration, stride=window_stride)
+    _predicted, probabilities = _predict(
+        model, scaler, windows.X, positive_threshold=positive_threshold
+    )
+
+    selection = _section(settings, "selection")
+    candidate_config = CandidateGenerationConfig(
+        positive_threshold=positive_threshold,
+        min_candidate_duration=float(selection.get("min_clip", selection.get("min_candidate_duration", 3.0))),
+        max_gap_to_merge=float(selection.get("max_gap_to_merge", 3.0)),
+        padding_seconds=float(selection.get("padding_seconds", 2.0)),
+    )
+    candidates = generate_candidates(
+        InferenceResult(timestamps=windows.timestamps, probabilities=probabilities),
+        timeline_end,
+        config=candidate_config,
+    )
+    candidate_for_window: dict[int, tuple[int, Any]] = {}
+    # Candidate evidence uses the same source window timestamps as the input.
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        for evidence in candidate.window_evidence:
+            for window_index, (start, end) in enumerate(windows.timestamps):
+                if abs(float(start) - evidence.start) < 1e-6 and abs(float(end) - evidence.end) < 1e-6:
+                    candidate_for_window[window_index] = (candidate_index, candidate)
+                    break
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=[
+            "trial_number", "record_id", "group_id", "source_video",
+            "window_index", "window_start_s", "window_end_s", "p_probability",
+            "threshold", "selected_by_threshold", "annotation_status",
+            "overlapping_annotation_scores", "overlapping_annotation_remarks",
+            "selection_outcome", "candidate_id", "candidate_start_s",
+            "candidate_end_s", "candidate_duration_s", "candidate_mean_probability",
+            "candidate_max_probability",
+        ])
+        if write_header:
+            writer.writeheader()
+        trial_number = fold_metadata.get("diagnostic_trial_number", "")
+        for window_index, (start, end) in enumerate(windows.timestamps):
+            overlapping = [
+                annotation for annotation in annotations
+                if min(float(end), annotation.end) - max(float(start), annotation.start) > 0.0
+            ]
+            scores = sorted({int(annotation.score) for annotation in overlapping})
+            if not overlapping:
+                annotation_status = "UNCOVERED"
+            elif len(scores) > 1:
+                annotation_status = "MIXED"
+            elif scores[0] == 3:
+                annotation_status = "P"
+            else:
+                annotation_status = "U"
+            selected = bool(probabilities[window_index] >= positive_threshold)
+            mapped = candidate_for_window.get(window_index)
+            if mapped:
+                candidate_index, candidate = mapped
+                outcome = "IN_FINAL_CANDIDATE"
+                candidate_id = f"{record.id}-C{candidate_index:03d}"
+                candidate_values = {
+                    "candidate_start_s": f"{candidate.start:.3f}",
+                    "candidate_end_s": f"{candidate.end:.3f}",
+                    "candidate_duration_s": f"{candidate.duration:.3f}",
+                    "candidate_mean_probability": f"{candidate.mean_probability:.6f}",
+                    "candidate_max_probability": f"{candidate.max_probability:.6f}",
+                }
+            else:
+                candidate_id = ""
+                candidate_values = {
+                    "candidate_start_s": "", "candidate_end_s": "",
+                    "candidate_duration_s": "", "candidate_mean_probability": "",
+                    "candidate_max_probability": "",
+                }
+                outcome = (
+                    "BELOW_THRESHOLD" if not selected
+                    else "THRESHOLD_SELECTED_BUT_NO_FINAL_CANDIDATE"
+                )
+            writer.writerow({
+                "trial_number": trial_number,
+                "record_id": record.id,
+                "group_id": record.group_id,
+                "source_video": str(record.video_path),
+                "window_index": window_index,
+                "window_start_s": f"{float(start):.3f}",
+                "window_end_s": f"{float(end):.3f}",
+                "p_probability": f"{float(probabilities[window_index]):.6f}",
+                "threshold": f"{positive_threshold:.6f}",
+                "selected_by_threshold": selected,
+                "annotation_status": annotation_status,
+                "overlapping_annotation_scores": "|".join(map(str, scores)),
+                "overlapping_annotation_remarks": " | ".join(
+                    annotation.remarks for annotation in overlapping if annotation.remarks
+                ),
+                "selection_outcome": outcome,
+                "candidate_id": candidate_id,
+                **candidate_values,
+            })
+
+
 
 def _resolve_group_splits(
     all_groups: tuple[str, ...],
@@ -328,6 +477,24 @@ def run_lovo(
         predicted, probabilities = _predict(
             model, scaler, test_X, positive_threshold=positive_threshold
         )
+        diagnostics_path_value = debug_settings.get("selection_diagnostics_path")
+        if diagnostics_path_value:
+            diagnostics_path = _path(
+                diagnostics_path_value, name="debug.selection_diagnostics_path"
+            )
+            for diagnostic_record in test_records:
+                _write_selection_diagnostics(
+                    diagnostics_path,
+                    record=diagnostic_record,
+                    settings=settings,
+                    model=model,
+                    scaler=scaler,
+                    positive_threshold=positive_threshold,
+                    fold_metadata={
+                        **fold_metadata,
+                        "diagnostic_trial_number": debug_settings.get("selection_diagnostics_trial", ""),
+                    },
+                )
         metrics = _metrics(actual, predicted)
         threshold_sweep = _threshold_sweep(actual, probabilities) if threshold_sweep_enabled else None
         if threshold_sweep is not None:
