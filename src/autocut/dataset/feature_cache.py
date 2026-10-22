@@ -147,6 +147,10 @@ def save_feature_sequence(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> Path:
     """Write a feature sequence and metadata via an atomic file replacement."""
@@ -155,6 +159,7 @@ def save_feature_sequence(
     metadata, identity_key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
+        roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
         source_fingerprint_mode=source_fingerprint_mode,
     )
     features = np.asarray(sequence.features)
