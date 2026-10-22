@@ -227,6 +227,10 @@ def load_feature_sequence(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> FeatureSequence | None:
     """Load a compatible cache entry; missing, stale, or corrupt entries are misses."""
