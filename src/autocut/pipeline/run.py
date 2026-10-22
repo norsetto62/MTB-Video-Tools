@@ -92,6 +92,35 @@ def _extract_windows(
             return None
         raise
 
+def _validate_checkpoint_roi(payload: Mapping, settings: Config) -> None:
+    """Prevent inference with a checkpoint trained on a different image region."""
+    data_config = payload.get("data_config", {})
+    trained_roi = data_config.get("roi") if isinstance(data_config, Mapping) else None
+    if not isinstance(trained_roi, Mapping):
+        raise ValueError(
+            "Checkpoint has no ROI metadata. Retrain the model with the current "
+            "ROI-aware feature pipeline before inference."
+        )
+    configured_roi = {
+        "left": settings.video.roi_left,
+        "right": settings.video.roi_right,
+        "bottom": settings.video.roi_bottom,
+        "top": settings.video.roi_top,
+    }
+    for key, expected in configured_roi.items():
+        actual = trained_roi.get(key)
+        if (
+            isinstance(actual, bool)
+            or not isinstance(actual, (int, float))
+            or not math.isfinite(float(actual))
+            or not math.isclose(float(actual), float(expected), rel_tol=0.0, abs_tol=1e-9)
+        ):
+            raise ValueError(
+                f"Checkpoint ROI {key}={actual!r} does not match configured "
+                f"ROI {expected!r}; use matching settings or retrain the model."
+            )
+
+
 def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
     """Translate a range-local candidate and its evidence to source timestamps."""
     from ..selection.candidates_generation import WindowEvidence
@@ -359,6 +388,13 @@ def run_pipeline(
             })
             continue
         order = video_order[video_name]
+        if isinstance(settings.model.checkpoint, (str, Path)):
+            payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
+        elif isinstance(settings.model.checkpoint, Mapping):
+            payload = validate_checkpoint(dict(settings.model.checkpoint))
+        else:
+            raise TypeError("checkpoint must be a path or a checkpoint mapping.")
+        _validate_checkpoint_roi(payload, settings)
         windows = _extract_windows(Path(video_name), start, end, settings)
         if windows is None:
             inference_summaries.append({
@@ -382,13 +418,6 @@ def run_pipeline(
             windows,
             batch_size=settings.model.inference_batch_size,
         )
-        if isinstance(settings.model.checkpoint, (str, Path)):
-            payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
-        elif isinstance(settings.model.checkpoint, Mapping):
-            payload = validate_checkpoint(dict(settings.model.checkpoint))
-        else:
-            raise TypeError("checkpoint must be a path or a checkpoint mapping.")
-        
         cleaned_inference = InferenceResult(
             timestamps=inference.timestamps,
             probabilities=inference.probabilities,
