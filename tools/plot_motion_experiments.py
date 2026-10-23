@@ -3,6 +3,7 @@
 Examples:
     python tools/plot_motion_experiments.py annotations.txt --show
     python tools/plot_motion_experiments.py annotations.txt --signals edge_residual,tunnel_vision --show
+    python tools/plot_motion_experiments.py annotations.txt --edge-cells 0,0 0,2 --center-cell 1,1
     python tools/plot_motion_experiments.py --list-signals
 
 Signals are derived from the canonical 54-column feature sequence. No model
@@ -24,22 +25,15 @@ from autocut.motion.features import FEATURE_NAMES
 from autocut.pipeline.training import _data_values
 from autocut.video.probe import get_video_info
 
-
 ANNOTATION_COLORS = {
     0: "#8A8A8A",
     1: "#0072B2",
     2: "#E69F00",
     3: "#D55E00",
 }
-
-# Keep the default view focused on the original hypothesis. More detailed
-# cell-level residuals are available via --signals all or --list-signals.
 DEFAULT_SIGNALS = (
-    "edge_left_residual",
-    "edge_right_residual",
-    "edge_residual",
-    "center_residual",
-    "tunnel_vision",
+    "edge_left_residual", "edge_right_residual", "edge_residual",
+    "center_residual", "tunnel_vision",
 )
 
 
@@ -51,12 +45,38 @@ def _column(name: str) -> int:
         raise RuntimeError(f"Required canonical feature {name!r} is missing.") from exc
 
 
-def derive_signals(features: np.ndarray, *, epsilon: float = 1e-5) -> dict[str, np.ndarray]:
-    """Calculate residual-motion signals from canonical feature rows.
+def parse_cell(value: str) -> tuple[int, int]:
+    """Parse a 3x3 grid cell specified as ROW,COL."""
+    try:
+        row_text, col_text = value.split(",", maxsplit=1)
+        row, col = int(row_text), int(col_text)
+    except (ValueError, AttributeError) as exc:
+        raise argparse.ArgumentTypeError("Cell must be ROW,COL, e.g. 0,2.") from exc
+    if row not in range(3) or col not in range(3):
+        raise argparse.ArgumentTypeError("Cell row and column must each be 0, 1, or 2.")
+    return row, col
 
-    Residual vectors subtract the global mean flow vector (flow_u, flow_v)
-    from each cell's mean flow vector. This removes common translation, but
-    does not guarantee removal of camera rotation, zoom, parallax, etc.
+
+def _relative_magnitude(features: np.ndarray, row: int, col: int) -> np.ndarray:
+    global_u = features[:, _column("flow_u")]
+    global_v = features[:, _column("flow_v")]
+    cell_u = features[:, _column(f"grid_{row}_{col}_u")]
+    cell_v = features[:, _column(f"grid_{row}_{col}_v")]
+    return np.hypot(cell_u - global_u, cell_v - global_v)
+
+
+def derive_signals(
+    features: np.ndarray,
+    *,
+    epsilon: float = 1e-5,
+    edge_cells: Sequence[tuple[int, int]] = ((0, 0), (0, 2)),
+    center_cell: tuple[int, int] = (1, 1),
+) -> dict[str, np.ndarray]:
+    """Calculate cell residuals, edge activity, center activity and their ratio.
+
+    A cell residual is the magnitude of its mean flow vector minus the global
+    mean flow vector. The global subtraction removes common translation only;
+    rotation, zoom, parallax and flow-estimation errors can remain.
     """
     features = np.asarray(features, dtype=np.float64)
     if features.ndim != 2 or features.shape[1] != len(FEATURE_NAMES):
@@ -68,29 +88,32 @@ def derive_signals(features: np.ndarray, *, epsilon: float = 1e-5) -> dict[str, 
         raise ValueError("Feature array contains non-finite values.")
     if not np.isfinite(epsilon) or epsilon <= 0:
         raise ValueError("epsilon must be a finite number greater than zero.")
+    if not edge_cells:
+        raise ValueError("At least one edge cell is required.")
 
-    global_u = features[:, _column("flow_u")]
-    global_v = features[:, _column("flow_v")]
+    for row, col in [*edge_cells, center_cell]:
+        if row not in range(3) or col not in range(3):
+            raise ValueError(f"Invalid grid cell {(row, col)}; row and col must be 0, 1, or 2.")
+
     signals: dict[str, np.ndarray] = {}
-
-    residuals: dict[str, np.ndarray] = {}
+    residuals: dict[tuple[int, int], np.ndarray] = {}
     for row in range(3):
         for col in range(3):
-            prefix = f"grid_{row}_{col}"
-            rel_u = features[:, _column(f"{prefix}_u")] - global_u
-            rel_v = features[:, _column(f"{prefix}_v")] - global_v
-            magnitude = np.hypot(rel_u, rel_v)
-            residuals[f"{row}{col}"] = magnitude
-            signals[f"residual_{row}{col}"] = magnitude
+            value = _relative_magnitude(features, row, col)
+            residuals[(row, col)] = value
+            signals[f"residual_{row}{col}"] = value
 
-    signals["edge_left_residual"] = residuals["00"]
-    signals["edge_right_residual"] = residuals["02"]
-    signals["edge_residual"] = (
-        signals["edge_left_residual"] + signals["edge_right_residual"]
-    ) / 2.0
-    signals["center_residual"] = residuals["11"]
+    signals["edge_left_residual"] = residuals[(0, 0)]
+    signals["edge_right_residual"] = residuals[(0, 2)]
+    signals["edge_residual"] = np.mean(
+        np.stack([residuals[cell] for cell in edge_cells], axis=0), axis=0
+    )
+    signals["center_residual"] = residuals[center_cell]
     signals["tunnel_vision"] = signals["edge_residual"] / (
         signals["center_residual"] + epsilon
+    )
+    signals["global_flow_magnitude"] = np.hypot(
+        features[:, _column("flow_u")], features[:, _column("flow_v")]
     )
     return signals
 
@@ -107,7 +130,7 @@ def apply_savgol(values: np.ndarray, window_length: int, polyorder: int) -> np.n
     if window_length > len(values):
         raise ValueError(
             f"Savitzky-Golay window length ({window_length}) exceeds "
-            f"the number of samples ({len(values)}); use --no-smoothing or a smaller window."
+            f"number of samples ({len(values)}); use --no-smoothing or a smaller window."
         )
     try:
         from scipy.signal import savgol_filter
@@ -190,21 +213,20 @@ def plot_signals(
     ]
     figure.legend(handles=handles, loc="upper center", ncol=4, bbox_to_anchor=(0.5, 1.0))
     figure.tight_layout(rect=(0, 0, 1, 0.985))
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=160, bbox_inches="tight")
     plt.close(figure)
 
     if show:
+        html_path = output_path.with_suffix(".html")
         save_interactive_html(
             timestamps, signals, annotations, video_name=video_name,
-            output_path=output_path.with_suffix(".html"),
-            smooth=smooth, smoothed=smoothed,
+            output_path=html_path, smooth=smooth, smoothed=smoothed,
             window_length=window_length, polyorder=polyorder,
         )
         import webbrowser
-        webbrowser.open(output_path.with_suffix(".html").resolve().as_uri())
-        print(f"Opened interactive plot: {output_path.with_suffix('.html').resolve()}")
+        webbrowser.open(html_path.resolve().as_uri())
+        print(f"Opened interactive plot: {html_path.resolve()}")
     return output_path
 
 
@@ -293,12 +315,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated signal names, or 'all'. Default: the five main experiment signals.",
     )
     parser.add_argument("--list-signals", action="store_true", help="List available engineered signals and exit.")
-    parser.add_argument("--epsilon", type=float, default=1e-5, help="Positive denominator stabilizer for tunnel_vision (default: 1e-5).")
+    parser.add_argument("--edge-cells", nargs="+", type=parse_cell, default=[(0, 0), (0, 2)],
+                        metavar="ROW,COL", help="Cells averaged for edge_residual and tunnel_vision; default: 0,0 0,2.")
+    parser.add_argument("--center-cell", type=parse_cell, default=(1, 1), metavar="ROW,COL",
+                        help="Cell used as center_residual denominator; default: 1,1.")
+    parser.add_argument("--epsilon", type=float, default=1e-5,
+                        help="Positive denominator stabilizer for tunnel_vision (default: 1e-5).")
     parser.add_argument("--no-smoothing", action="store_true", help="Plot raw signals only.")
-    parser.add_argument("--savgol-window-length", type=int, default=9, help="Odd smoothing window in samples (default: 9).")
-    parser.add_argument("--savgol-polyorder", type=int, default=2, help="Smoothing polynomial degree (default: 2).")
-    parser.add_argument("--output", type=Path, help="PNG output path (default: <annotation-stem>_motion_experiments.png).")
-    parser.add_argument("--show", action="store_true", help="Also open a zoomable Plotly HTML plot in the browser.")
+    parser.add_argument("--savgol-window-length", type=int, default=9,
+                        help="Odd smoothing window in samples (default: 9).")
+    parser.add_argument("--savgol-polyorder", type=int, default=2,
+                        help="Smoothing polynomial degree (default: 2).")
+    parser.add_argument("--output", type=Path,
+                        help="PNG output path (default: <annotation-stem>_motion_experiments.png).")
+    parser.add_argument("--show", action="store_true",
+                        help="Also open a zoomable Plotly HTML plot in the browser.")
     return parser
 
 
@@ -314,6 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for row in range(3):
             for col in range(3):
                 print(f"  residual_{row}{col}")
+        print("  global_flow_magnitude")
         print("Use --signals all to plot every signal.")
         return 0
 
@@ -337,19 +369,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     cache_dir = Path(paths.get("cache_dir", "data/cache")).expanduser()
     video_info = get_video_info(video_path)
     clip = Clip(
-        video_name=video_path.stem,
-        start=0.0,
+        video_name=video_path.stem, start=0.0,
         end=min(float(annotations[-1].end), float(video_info.duration)),
     )
     sequence = build_feature_sequence(
-        video_path, clip,
-        sample_fps=sample_fps,
-        processing_width=processing_width,
-        cache_dir=cache_dir,
+        video_path, clip, sample_fps=sample_fps,
+        processing_width=processing_width, cache_dir=cache_dir,
         roi_left=roi_left, roi_right=roi_right,
         roi_bottom=roi_bottom, roi_top=roi_top,
     )
-    all_signals = derive_signals(sequence.features, epsilon=args.epsilon)
+    all_signals = derive_signals(
+        sequence.features, epsilon=args.epsilon,
+        edge_cells=args.edge_cells, center_cell=args.center_cell,
+    )
 
     if args.signals.strip().lower() == "all":
         selected_names = list(all_signals)
@@ -369,15 +401,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     saved_path = plot_signals(
         sequence.timestamps, signals, annotations,
-        video_name=video_path.name,
-        output_path=output_path,
+        video_name=video_path.name, output_path=output_path,
         smooth=not args.no_smoothing,
-        window_length=args.savgol_window_length,
-        polyorder=args.savgol_polyorder,
+        window_length=args.savgol_window_length, polyorder=args.savgol_polyorder,
         show=args.show,
     )
     print(f"Saved motion experiment plot: {saved_path.resolve()}")
     print(f"Signals plotted: {', '.join(selected_names)}")
+    print(f"Edge cells averaged: {args.edge_cells}; center cell: {args.center_cell}")
     print(f"Tunnel Vision epsilon: {args.epsilon:g}")
     return 0
 
