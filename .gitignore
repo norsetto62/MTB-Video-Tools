@@ -10,6 +10,7 @@ __pycache__/
 
 # Generated analysis data
 data/
+lr_finder_plot.png
 
 # Generated output
 output/
