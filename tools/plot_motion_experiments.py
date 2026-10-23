@@ -327,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--savgol-polyorder", type=int, default=2,
                         help="Smoothing polynomial degree (default: 2).")
     parser.add_argument("--output", type=Path,
-                        help="PNG output path (default: <annotation-stem>_motion_experiments.png).")
+                        help="PNG output path (default: data/plots/<annotation-stem>_motion_experiments.png).")
     parser.add_argument("--show", action="store_true",
                         help="Also open a zoomable Plotly HTML plot in the browser.")
     return parser
@@ -396,7 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--signals contains duplicate names")
     signals = {name: all_signals[name] for name in selected_names}
 
-    output_path = args.output or args.annotations.with_name(
+    output_path = args.output or Path("data/plots") / (
         f"{args.annotations.stem}_motion_experiments.png"
     )
     saved_path = plot_signals(
