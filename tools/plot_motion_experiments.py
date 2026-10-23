@@ -20,6 +20,7 @@ import numpy as np
 from autocut.annotations import load_training_annotations
 from autocut.config_loader import load_config
 from autocut.data_models import Clip
+from autocut.dataset.feature_cache import load_feature_sequence
 from autocut.dataset.sequence import build_feature_sequence
 from autocut.motion.features import FEATURE_NAMES
 from autocut.pipeline.training import _data_values
@@ -33,7 +34,9 @@ ANNOTATION_COLORS = {
 }
 DEFAULT_SIGNALS = (
     "edge_left_residual", "edge_right_residual", "edge_residual",
-    "center_residual", "tunnel_vision",
+    "center_residual", "tunnel_vision", "bottom_edge_residual",
+    "vertical_flow_gradient", "lateral_flow_asymmetry", "optical_flow_divergence",
+    "expansion_index", "directional_turbulence", "roll_index",
 )
 
 
@@ -112,6 +115,51 @@ def derive_signals(
     signals["tunnel_vision"] = signals["edge_residual"] / (
         signals["center_residual"] + epsilon
     )
+
+    # Regional flow vectors and magnitudes (before subtracting global flow).
+    vectors: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+    magnitudes: dict[tuple[int, int], np.ndarray] = {}
+    angles: list[np.ndarray] = []
+    for row in range(3):
+        for col in range(3):
+            u = features[:, _column(f"grid_{row}_{col}_u")]
+            v = features[:, _column(f"grid_{row}_{col}_v")]
+            vectors[(row, col)] = (u, v)
+            magnitudes[(row, col)] = np.hypot(u, v)
+            angles.append(np.arctan2(v, u))
+
+    top = np.mean(np.stack([magnitudes[(0, col)] for col in range(3)]), axis=0)
+    bottom = np.mean(np.stack([magnitudes[(2, col)] for col in range(3)]), axis=0)
+    left = np.mean(np.stack([magnitudes[(row, 0)] for row in range(3)]), axis=0)
+    right = np.mean(np.stack([magnitudes[(row, 2)] for row in range(3)]), axis=0)
+    center_magnitude = magnitudes[(1, 1)]
+    peripheral_cells = [
+        magnitudes[(row, col)] for row in range(3) for col in range(3)
+        if (row, col) != (1, 1)
+    ]
+    peripheral = np.mean(np.stack(peripheral_cells), axis=0)
+
+    signals["bottom_edge_residual"] = np.mean(
+        np.stack([residuals[(2, 0)], residuals[(2, 2)]], axis=0), axis=0
+    )
+    signals["vertical_flow_gradient"] = (top - bottom) / (center_magnitude + epsilon)
+    signals["lateral_flow_asymmetry"] = (right - left) / (center_magnitude + epsilon)
+
+    # Approximate spatial derivatives over the 3x3 grid; grid spacing is two cell steps.
+    u_left = np.mean(np.stack([vectors[(row, 0)][0] for row in range(3)]), axis=0)
+    u_right = np.mean(np.stack([vectors[(row, 2)][0] for row in range(3)]), axis=0)
+    v_top = np.mean(np.stack([vectors[(0, col)][1] for col in range(3)]), axis=0)
+    v_bottom = np.mean(np.stack([vectors[(2, col)][1] for col in range(3)]), axis=0)
+    signals["optical_flow_divergence"] = (u_right - u_left) / 2.0 + (v_bottom - v_top) / 2.0
+    signals["expansion_index"] = (peripheral - center_magnitude) / (center_magnitude + epsilon)
+    # Angles wrap at +/- pi, so use circular variance rather than linear variance.
+    mean_cos = np.mean(np.stack([np.cos(angle) for angle in angles]), axis=0)
+    mean_sin = np.mean(np.stack([np.sin(angle) for angle in angles]), axis=0)
+    signals["directional_turbulence"] = 1.0 - np.hypot(mean_cos, mean_sin)
+    signals["roll_index"] = (
+        magnitudes[(0, 0)] + magnitudes[(2, 2)]
+        - magnitudes[(0, 2)] - magnitudes[(2, 0)]
+    ) / (center_magnitude + epsilon)
     signals["global_flow_magnitude"] = np.hypot(
         features[:, _column("flow_u")], features[:, _column("flow_v")]
     )
@@ -328,6 +376,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Smoothing polynomial degree (default: 2).")
     parser.add_argument("--output", type=Path,
                         help="PNG output path (default: data/plots/<annotation-stem>_motion_experiments.png).")
+    parser.add_argument("--allow-extraction", action="store_true",
+                        help="Allow expensive optical-flow extraction if the exact feature cache entry is missing.")
     parser.add_argument("--show", action="store_true",
                         help="Also open a zoomable Plotly HTML plot in the browser.")
     return parser
@@ -345,6 +395,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         for row in range(3):
             for col in range(3):
                 print(f"  residual_{row}{col}")
+        for name in DEFAULT_SIGNALS[5:]:
+            print(f"  {name}")
         print("  global_flow_magnitude")
         print("Use --signals all to plot every signal.")
         return 0
@@ -372,12 +424,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         video_name=video_path.stem, start=0.0,
         end=min(float(annotations[-1].end), float(video_info.duration)),
     )
-    sequence = build_feature_sequence(
-        video_path, clip, sample_fps=sample_fps,
-        processing_width=processing_width, cache_dir=cache_dir,
+    sequence = load_feature_sequence(
+        video_path, cache_dir, clip, sample_fps=sample_fps,
+        processing_width=processing_width,
         roi_left=roi_left, roi_right=roi_right,
         roi_bottom=roi_bottom, roi_top=roi_top,
     )
+    if sequence is None:
+        if not args.allow_extraction:
+            raise RuntimeError(
+                "No exact cached feature sequence matches this video, clip range, sampling, "
+                "processing width, and ROI. To avoid unexpectedly expensive disk/CPU work, "
+                "no extraction was started. Re-run with --allow-extraction to compute and cache it."
+            )
+        print("Exact feature cache miss; extracting optical-flow features because --allow-extraction was set.")
+        sequence = build_feature_sequence(
+            video_path, clip, sample_fps=sample_fps,
+            processing_width=processing_width, cache_dir=cache_dir,
+            roi_left=roi_left, roi_right=roi_right,
+            roi_bottom=roi_bottom, roi_top=roi_top,
+        )
+    else:
+        print(f"Reusing exact cached feature sequence ({len(sequence.features)} rows).")
     all_signals = derive_signals(
         sequence.features, epsilon=args.epsilon,
         edge_cells=args.edge_cells, center_cell=args.center_cell,
