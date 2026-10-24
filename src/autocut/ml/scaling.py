@@ -1,4 +1,4 @@
-"""Feature standardization for AutoCut time-series feature arrays.
+"""Feature scaling for AutoCut time-series feature arrays.
 
 Statistics are fitted independently for each feature across all available
 training examples and time steps. Callers are responsible for fitting only on
@@ -16,13 +16,17 @@ import numpy as np
 
 @dataclass
 class FeatureScaler:
-    """Standardize 2D (T, F) or 3D (N, T, F) arrays feature-wise.
+    """Scale 2D (T, F) or 3D (N, T, F) arrays feature-wise.
+
+    The standard strategy uses mean and standard deviation. The robust
+    strategy uses median and interquartile range (IQR), reducing the effect
+    of isolated extreme values on fitted location and scale. Neither strategy
+    clips outliers.
 
     Args:
-        enabled: If false, preserve input values (converted to float32) without
-            fitting or applying standardization.
-        eps: Positive threshold below which a feature's standard deviation is
-            treated as zero and its scale is set to 1.0.
+        enabled: If false, preserve input values (converted to float32).
+        eps: Positive threshold below which a fitted scale is replaced by 1.
+        strategy: Either "standard" or "robust".
     """
 
     enabled: bool = True
@@ -126,7 +130,7 @@ class FeatureScaler:
         """Fit on X and return its standardized values."""
         return self.fit(X).transform(X)
 
-    def state_dict(self) -> dict[str, bool | float | list[float] | None]:
+    def state_dict(self) -> dict[str, bool | float | str | list[float] | None]:
         """Return a JSON-serializable representation of scaler state."""
         return {
             "enabled": self.enabled,
