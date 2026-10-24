@@ -28,7 +28,7 @@ from autocut.video.probe import get_video_info
 
 ANNOTATION_COLORS = {
     0: "#8A8A8A",
-    1: "#0072B2",
+    1: "#B0D7D7",
     2: "#E69F00",
     3: "#D55E00",
 }
@@ -240,7 +240,7 @@ def plot_signals(
         ax.plot(timestamps, values, color="#222222", linewidth=1.0, label="raw", zorder=3)
         if smooth:
             ax.plot(
-                timestamps, smoothed[name], color="#0072B2", linewidth=1.6,
+                timestamps, smoothed[name], color="#B20000", linewidth=1.6,
                 label=f"Savitzky–Golay ({window_length}, {polyorder})", zorder=4,
             )
         ax.set_ylabel(name.replace("_", "\n"), rotation=0, ha="right", va="center", labelpad=30)
@@ -306,27 +306,28 @@ def save_interactive_html(
         subplot_titles=names,
     )
     for row, name in enumerate(names, start=1):
-        for annotation in annotations:
-            figure.add_vrect(
-                x0=annotation.start, x1=annotation.end,
-                fillcolor=ANNOTATION_COLORS[annotation.score],
-                opacity=0.25, line_width=0, layer="below", row=row, col=1,
-            )
-        figure.add_trace(
-            go.Scatter(
-                x=timestamps, y=signals[name], mode="lines", name=f"{name} raw",
-                line={"color": "#222222", "width": 1.2},
-                hovertemplate="Time: %{x:.2f}s<br>Raw: %{y:.6g}<extra></extra>",
-            ), row=row, col=1,
-        )
         if smooth:
             figure.add_trace(
                 go.Scatter(
                     x=timestamps, y=smoothed[name], mode="lines",
                     name=f"{name} smoothed",
-                    line={"color": "#0072B2", "width": 1.6},
+                    line={"color": "#B20000", "width": 1.6},
                     hovertemplate="Time: %{x:.2f}s<br>Smoothed: %{y:.6g}<extra></extra>",
                 ), row=row, col=1,
+            ) 
+        else:
+            figure.add_trace(
+                go.Scatter(
+                    x=timestamps, y=signals[name], mode="lines", name=f"{name} raw",
+                    line={"color": "#222222", "width": 1.2},
+                    hovertemplate="Time: %{x:.2f}s<br>Raw: %{y:.6g}<extra></extra>",
+                ), row=row, col=1,
+            )
+        for annotation in annotations:
+            figure.add_vrect(
+                x0=annotation.start, x1=annotation.end,
+                fillcolor=ANNOTATION_COLORS[annotation.score],
+                opacity=0.25, line_width=0, layer="below", row=row, col=1,
             )
     for score, color in ANNOTATION_COLORS.items():
         figure.add_trace(
