@@ -91,3 +91,29 @@ def test_training_rejects_window_length_inconsistent_with_fps_and_duration():
             train_X, train_y, val_X, val_y, _config(),
             data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0},
         )
+
+
+
+def test_training_accepts_four_engineered_features_and_uses_robust_scaling(tmp_path):
+    rng = np.random.default_rng(27)
+    train_X = rng.normal(size=(18, 8, 4)).astype(np.float32)
+    val_X = rng.normal(loc=0.5, size=(12, 8, 4)).astype(np.float32)
+    train_y = np.resize(np.array([3, 0, 1, 2], dtype=np.float32), len(train_X))
+    val_y = np.resize(np.array([3, 0, 1, 2], dtype=np.float32), len(val_X))
+    path = tmp_path / "engineered.pt"
+
+    model, scaler, summary = train_single_fold(
+        train_X, train_y, val_X, val_y,
+        _config(scaler_strategy="robust"),
+        checkpoint_path=path,
+    )
+
+    assert model.feature_dim == 4
+    assert scaler.strategy == "robust"
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert payload["feature_names"] == [
+        "vertical_flow_gradient", "lateral_flow_asymmetry",
+        "expansion_index", "roll_index",
+    ]
+    assert payload["scaler_state"]["strategy"] == "robust"
+    assert summary["best_val_pu_risk"] >= 0.0
