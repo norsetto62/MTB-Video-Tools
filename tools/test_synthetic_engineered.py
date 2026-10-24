@@ -17,8 +17,6 @@ from autocut.annotations import load_training_annotations
 from autocut.data_models import FeatureWindows
 from autocut.dataset.targets import build_targets
 from autocut.ml.training import TrainingConfig, train_single_fold
-from autocut.ml.scaling import FeatureScaler
-from autocut.ml.checkpoint import load_checkpoint, restore_model
 import torch
 
 
@@ -113,7 +111,7 @@ def run(args: argparse.Namespace) -> int:
             bias=args.bias, event_duration=event_duration, event_starts=event_starts,
             workdir=workdir, split_name="train",
         )
-        val_X, val_y, val_timestamps = _make_split(
+        val_X, val_y, _ = _make_split(
             seed=args.seed + 1, duration=args.duration, fps=args.fps,
             window=args.window, stride=args.stride, noise_std=args.noise_std,
             bias=args.bias, event_duration=event_duration, event_starts=event_starts,
