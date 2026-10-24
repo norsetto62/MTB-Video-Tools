@@ -170,8 +170,11 @@ def test_robust_scaler_uses_median_and_iqr_instead_of_outlier_inflated_std():
     assert robust.mean_[0] == pytest.approx(2.0)
     assert robust.scale_[0] == pytest.approx(2.0)
     assert standard.scale_[0] > 1000.0
-    assert abs(robust.transform(np.array([[3.0]], dtype=np.float32))[0, 0]) > 0.4
-    assert abs(standard.transform(np.array([[3.0]], dtype=np.float32))[0, 0]) < 0.01
+    normal_values = np.array([[2.0], [3.0]], dtype=np.float32)
+    robust_gap = np.diff(robust.transform(normal_values)[:, 0])[0]
+    standard_gap = np.diff(standard.transform(normal_values)[:, 0])[0]
+    assert robust_gap == pytest.approx(0.5)
+    assert standard_gap < 0.001
 
 
 def test_robust_scaler_state_round_trip_preserves_strategy_and_transform():
