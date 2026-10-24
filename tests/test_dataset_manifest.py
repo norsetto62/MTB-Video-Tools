@@ -129,7 +129,6 @@ def test_load_manifest_missing_fields(tmp_path: Path) -> None:
 videos:
   - id: clip_1
     group_id: g1
-    video: v.mp4
 """,
     )
     with pytest.raises(ValueError, match="missing required field"):
