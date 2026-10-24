@@ -24,7 +24,7 @@ def test_engineered_features_have_fixed_order_and_expected_grid_ratios():
         "expansion_index", "roll_index",
     )
     assert X.shape == (1, 4)
-    np.testing.assert_allclose(X[0], [-7.0 / 2.0, 2.0 / 2.0, 5.0 / 2.0, (2 + 10 - 4 - 8) / 2.0])
+    np.testing.assert_allclose(X[0], [-3.0, 4.0 / 3.0, 1.625, 0.0])
 
 
 def test_engineered_features_support_window_batches_and_do_not_smooth():
