@@ -17,6 +17,7 @@ from ..data_models import Clip
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
 from ..dataset.windows import build_windows
+from ..motion.engineered import ENGINEERED_FEATURE_NAMES, engineer_motion_features
 from ..ml.checkpoint import load_checkpoint, restore_model
 from ..ml.scaling import FeatureScaler
 
@@ -75,6 +76,8 @@ def _predict_record(
     )
     windows = build_windows(sequence, window=window, stride=stride)
     X = windows.X
+    if checkpoint.get("feature_names") == list(ENGINEERED_FEATURE_NAMES):
+        X = engineer_motion_features(X)
 
     feature_mask = checkpoint.get("feature_mask")
     if feature_mask is not None:
