@@ -20,9 +20,10 @@ import numpy as np
 from ..annotations import load_training_annotations
 from ..config_loader import Config
 from ..dataset.manifest import DatasetRecord, load_manifest
-from ..dataset.sequence import build_feature_sequence
+from ..dataset.sequence import build_feature_sequence, DEFAULT_ROI_LEFT, DEFAULT_ROI_RIGHT, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_TOP, validate_roi
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows
+from ..motion.engineered import engineer_motion_features
 from ..ml.training import TrainingConfig, train_single_fold
 
 logger = logging.getLogger(__name__)
@@ -75,12 +76,21 @@ def _training_config(settings: Mapping[str, Any]) -> TrainingConfig:
     training = _section(settings, "training")
     try:
         values = training.to_dict() if isinstance(training, Config) else dict(training)
+        # Class weights belonged to supervised CE; PU risk uses class-conditional
+        # means and must not rebalance or reinterpret the unlabeled set.
+        values.pop("class_weights", None)
+        values.pop("good_threshold", None)
+        # These belonged to the former multi-output head, not the P/U objective.
+        values.pop("num_classes", None)
+        values.pop("positive_threshold", None)
+        values.pop("positive_threshold", None)
+        values.pop("unlabeled_aux_weight", None)
         return TrainingConfig(**values)
     except TypeError as exc:
         raise ValueError(f"Invalid training configuration: {exc}") from exc
 
 
-def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float]:
+def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, float, float, float, float, float]:
     data = _section(settings, "data")
     manifest = _path(
         data.get("manifest", "data/manifest/annotations_manifest.yaml"),
@@ -96,7 +106,11 @@ def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, 
     window_stride = _positive_float(
         data.get("window_stride", 2.0), name="data.window_stride"
     )
-    return manifest, sample_fps, processing_width, window_duration, window_stride
+    roi = validate_roi(
+        data.get("roi_left", DEFAULT_ROI_LEFT), data.get("roi_right", DEFAULT_ROI_RIGHT),
+        data.get("roi_bottom", DEFAULT_ROI_BOTTOM), data.get("roi_top", DEFAULT_ROI_TOP),
+    )
+    return manifest, sample_fps, processing_width, window_duration, window_stride, *roi
 
 
 def _experiment_slug(name: str) -> str:
@@ -111,28 +125,30 @@ def _load_record_windows(
     record: DatasetRecord,
     settings: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extract annotated training windows for one manifest record."""
+    """Extract P/U windows; an absent annotation file means every window is U."""
     record_started = time.perf_counter()
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     paths = _section(settings, "paths")
     cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
-    logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
-    video_path, annotations = load_training_annotations(record.annotation_path)
-    if video_path.resolve() != record.video_path.resolve():
-        raise ValueError(
-            f"Manifest entry {record.id!r} points to {record.video_path}, but "
-            f"its annotation file declares {video_path}."
-        )
-    if not annotations:
-        raise ValueError(f"Manifest entry {record.id!r} has no training annotations.")
 
-    # The training annotation format covers the complete video timeline. A
-    # clip from 0 to the last annotation end keeps timestamps aligned with the
-    # absolute annotation times and lets VideoReader enforce the clip bounds.
+    annotations = None
+    if record.annotation_path is not None:
+        logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
+        video_path, annotations = load_training_annotations(record.annotation_path)
+        if video_path.resolve() != record.video_path.resolve():
+            raise ValueError(
+                f"Manifest entry {record.id!r} points to {record.video_path}, but "
+                f"its annotation file declares {video_path}."
+            )
+        if not annotations:
+            raise ValueError(f"Manifest entry {record.id!r} has no training annotations.")
+    else:
+        logger.info("Record %s: no annotations; treating all windows as U", record.id)
+
     from ..video.probe import get_video_info
     logger.info("Record %s: probing video metadata", record.id)
     info = get_video_info(record.video_path)
-    clip_end = annotations[-1].end
+    clip_end = annotations[-1].end if annotations else info.duration
     duration_tolerance = 0.05
 
     if clip_end > info.duration + duration_tolerance:
@@ -140,7 +156,7 @@ def _load_record_windows(
             f"Annotation end ({clip_end:.3f}s) exceeds video duration "
             f"({info.duration:.3f}s) for manifest entry {record.id!r}."
         )
-    
+
     from ..data_models import Clip
     clip = Clip(video_name=record.id, start=0.0, end=min(clip_end, info.duration))
     logger.info(
@@ -154,6 +170,8 @@ def _load_record_windows(
         sample_fps=sample_fps,
         processing_width=processing_width,
         cache_dir=cache_dir,
+        roi_left=roi_left, roi_right=roi_right,
+        roi_bottom=roi_bottom, roi_top=roi_top,
     )
     logger.info("Record %s: extracted %d feature rows; building windows", record.id, len(sequence.features))
     windows = build_windows(
@@ -161,10 +179,15 @@ def _load_record_windows(
         window=window_duration,
         stride=window_stride,
     )
-    X, y = build_targets(windows, annotations)
-    # build_targets drops uncovered windows, so the original window timestamp
-    # array no longer aligns row-for-row with X. The validator checks only
-    # timestamp count here; the target builder already selects those rows.
+    if annotations is None:
+        # Unannotated footage contributes to U only; do not infer negative labels.
+        X = windows.X
+        y = np.zeros(len(X), dtype=np.float32)
+    else:
+        X, y = build_targets(windows, annotations)
+    # Keep the four unsmoothed engineered signals as the only model inputs.
+    X = engineer_motion_features(X)
+    # build_targets drops uncovered windows, so timestamps need not align row-for-row.
     errors = validate_targets(X, np.zeros((len(y), 2), dtype=np.float64), y)
     if errors:
         raise ValueError(
@@ -173,7 +196,7 @@ def _load_record_windows(
         )
     if len(X) == 0:
         raise ValueError(
-            f"No feature windows overlap annotations for manifest entry {record.id!r}."
+            f"No pure, non-conflicting feature windows for manifest entry {record.id!r}."
         )
     logger.info(
         "Record %s: ready (%d labelled windows) in %.1fs",
@@ -185,11 +208,18 @@ def _load_record_windows(
 def _combine_records(
     records: tuple[DatasetRecord, ...],
     settings: Mapping[str, Any],
+    *,
+    allow_unannotated: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build and concatenate all labeled windows for selected records."""
+    """Build and concatenate P/U windows; optionally admit annotation-free U videos."""
     features: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     for index, record in enumerate(records, start=1):
+        if record.annotation_path is None and not allow_unannotated:
+            raise ValueError(
+                f"Manifest entry {record.id!r} has no annotations; "
+                "unannotated videos are allowed only in the training split."
+            )
         logger.info(
             "Preparing %s data: video %d/%d (%.0f%%): %s (group %s)",
             "split", index, len(records), 100.0 * index / len(records),
@@ -234,7 +264,7 @@ def run_training(
         experiment.get("results_dir", "output/experiments"),
         name="experiment.results_dir",
     )
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     records = load_manifest(manifest_path, verify_files=True)
     known_groups = {record.group_id for record in records}
     unknown = (train_groups | validation_groups) - known_groups
@@ -255,7 +285,7 @@ def run_training(
         experiment_name, len(train_records), len(val_records),
     )
     logger.info("Preparing training split: 0/%d videos", len(train_records))
-    train_X, train_y = _combine_records(train_records, settings)
+    train_X, train_y = _combine_records(train_records, settings, allow_unannotated=True)
     logger.info("Training data ready: %d labelled windows from %d videos", len(train_X), len(train_records))
     logger.info("Preparing validation split: 0/%d videos", len(val_records))
     val_X, val_y = _combine_records(val_records, settings)
@@ -267,8 +297,22 @@ def run_training(
     data_config = {
         "flow_fps": sample_fps,
         "processing_width": processing_width,
+        "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
+        "target_generation": {
+            "positive_set": "pure score-3 windows from annotated videos",
+            "unlabeled_set": "pure score-0/1/2 windows plus all windows from annotation-free training videos",
+            "mixed_windows": "discard for annotated videos",
+            "label_rule": "all overlapping annotations must agree; annotation-free videos contribute only U",
+        },
+        "pu_training": {
+            "objective": "non-negative PU risk",
+            "positive_prior": training_config.positive_prior,
+            "positive_score": 3,
+            "unlabeled_scores": [0, 1, 2],
+            "classifier_outputs": 1,
+        },
     }
     _, _, summary = train_single_fold(
         train_X,

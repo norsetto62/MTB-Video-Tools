@@ -1,4 +1,6 @@
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 from autocut.config_loader import Config
@@ -23,13 +25,9 @@ def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
         "selection": {
             "min_clip": 3.0,
             "max_clip_duration": 0.0,
-            "class_score_weights": [0.0, 1.0, 2.5],
-            "junk_threshold": 0.20,
-            "action_threshold": 0.60,
-            "flow_threshold": 0.40,
+            "positive_threshold": 0.5,
             "max_gap_to_merge": 3.0,
             "padding_seconds": padding_seconds,
-            "p2_envelope_decay": 0.0,
         },
         "audio": {
             "sync_mode": "off",
@@ -106,12 +104,12 @@ def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
 
 
 
-def test_pipeline_preserves_annotation_order_through_candidate_generation(
+def test_pipeline_preserves_annotation_order_through_binary_pu_candidate_generation(
     tmp_path, monkeypatch
 ):
     import numpy as np
 
-    from autocut.selection.candidates_generation import CandidateClip
+    from autocut.ml.inference import InferenceResult
 
     source = tmp_path / "ride.mp4"
     source.write_bytes(b"video placeholder")
@@ -121,63 +119,44 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         f"{source.name}\n00:10 00:20\n00:01 00:08\n", encoding="utf-8"
     )
     checkpoint = tmp_path / "model.pt"
-    import torch
-
-    checkpoint = tmp_path / "model.pt"
-
-    # Initialize a matching dummy model to get a valid state_dict
-    probe_model = MTBClassifier(
-        feature_dim=1,
-        hidden_dim=4,
-        classifier_mid_dim=4,
-        num_classes=3,
-        dropout=0.0,
-    )
-
-    checkpoint = tmp_path / "model.pt"
-    dummy_payload = {
-        "checkpoint_version": CHECKPOINT_VERSION,
-        "feature_dim": 1,
-        "model_config": {
-            "hidden_dim": 4,
-            "classifier_mid_dim": 4,
-            "num_classes": 3,
-            "dropout": 0.0,
-        },
-        "model_state_dict": probe_model.state_dict(),
-        "c2_threshold": 0.50,
-    }
-    torch.save(dummy_payload, checkpoint)
+    checkpoint.write_bytes(b"checkpoint placeholder")
     output_dir = tmp_path / "output"
     settings = _run_settings(
         checkpoint, output_dir, tmp_path / "cache", padding_seconds=0.0
     )
+
     monkeypatch.setattr(
         run, "get_video_info",
         lambda path: VideoInfo(1920, 1080, 30.0, 30.0),
     )
     monkeypatch.setattr(
         run, "_extract_windows",
-        lambda *args, **kwargs: SimpleNamespace(X=np.zeros((1, 1, 1))),
+        lambda *args, **kwargs: SimpleNamespace(X=np.zeros((2, 1, 54), dtype=np.float32)),
     )
-    # Replace object() with a namespace that supplies what run.py expects:
+    # The pipeline loads checkpoint metadata before extraction; inference itself
+    # is stubbed here so this integration test focuses on real P/U candidate
+    # generation, source-time offsets, and annotation-order preservation.
     monkeypatch.setattr(
-        run, 
-        "infer_windows", 
-        lambda *args, **kwargs: SimpleNamespace(
-            timestamps=np.array([[0.0, 1.0], [1.0, 2.0]]),
-            probabilities=np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1]], dtype=np.float32)
-        )
+        run, "load_checkpoint",
+        lambda *args, **kwargs: {
+            "data_config": {"roi": {"left": 0.15, "right": 0.85, "bottom": 0.50, "top": 0.10}}
+        },
     )
+    monkeypatch.setattr(run, "validate_checkpoint", lambda payload: payload)
+    inference_calls = iter([
+        InferenceResult(
+            timestamps=np.asarray([[0.0, 4.0], [4.0, 8.0]]),
+            probabilities=np.asarray([0.8, 0.7], dtype=np.float32),
+        ),
+        InferenceResult(
+            timestamps=np.asarray([[0.0, 3.5], [3.5, 7.0]]),
+            probabilities=np.asarray([0.8, 0.7], dtype=np.float32),
+        ),
+    ])
     monkeypatch.setattr(
-        run, "generate_candidates",
-        lambda inference, clip_duration, config: [
-            CandidateClip(
-                start=0.0, end=4.0, duration=4.0,
-                tier="high_action", mean_score=1.0, max_score=1.0,
-            )
-        ],
+        run, "infer_windows", lambda *args, **kwargs: next(inference_calls)
     )
+
     captured = {}
 
     def fake_render(timeline, output_path, **kwargs):
@@ -195,6 +174,7 @@ def test_pipeline_preserves_annotation_order_through_candidate_generation(
         (1.0, 3),
     ]
     assert [item["annotation_order"] for item in result["inference"]] == [2, 3]
+    assert [item["candidate_count"] for item in result["inference"]] == [1, 1]
     assert result["candidate_count"] == 2
 
 
@@ -231,3 +211,4 @@ def test_run_config_sections_rejects_invalid_video_width():
         assert "video.processing_width must be a positive integer" in str(exc)
     else:
         raise AssertionError("invalid processing width should be rejected")
+

@@ -78,15 +78,17 @@ Instead, the model estimates a continuous **interest score** on a 0–3 scale:
 | `2` | Middling / borderline |
 | `3` | Clearly interesting / worth keeping |
 
-The dataset uses overlapping temporal windows. Each window receives a duration-weighted target derived from the annotations that overlap it. Consequently, intermediate values between 0 and 3 are valid model targets.
+Training windows may overlap adjacent annotation intervals. A window is retained only when every annotation interval overlapping it has the same score; a window crossing a class boundary is discarded, even if one score covers most of its duration.
 
-The purpose of the model is therefore to answer:
+Training uses positive-unlabeled (PU) learning:
 
-> **How interesting is this moment of the ride?**
+- **P (positive):** only pure score-3 windows.
+- **U (unlabeled):** pure score-0, score-1, and score-2 windows. These are not treated as confirmed negatives.
+- **Conflicting windows:** discarded.
 
-rather than:
+The model has a single raw logit for P versus U. Score 3 maps to the positive set P; scores 0, 1, and 2 map to the unlabeled set U. Training uses the non-negative PU risk only, with no auxiliary classification objective. U examples are not treated as confirmed negatives. Configure `training.positive_prior` for the assumed positive prevalence used by the PU risk; the code default is 0.1 and should be checked against the dataset. The model's sigmoid output is the estimated P probability. Candidate-generation integration is intentionally outside the scope of this experiment.
 
-> **What particular MTB feature is visible here?**
+The purpose of the model is therefore to prioritize clearly interesting moments without flooding training with presumed negatives.
 
 ## Processing pipeline
 

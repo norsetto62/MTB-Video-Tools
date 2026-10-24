@@ -6,6 +6,7 @@ import numpy as np
 import optuna
 from datetime import datetime
 from typing import Any
+from math import dist
 
 from ..config_loader import Config
 from .lovo import run_lovo
@@ -14,6 +15,98 @@ from .training import _combine_records, _section, _training_config
 from ..ml.training import train_fixed_epochs
 
 logger = logging.getLogger(__name__)
+
+
+
+def run_hpo_diagnostics(
+    manifest_path: str | Path,
+    settings: Mapping[str, Any],
+    *,
+    trial_number: int,
+    output_path: str | Path | None = None,
+) -> Path:
+    """Re-run one stored trial on the configured proxy groups and export a CSV.
+
+    This does not create Optuna trials or run the final production refit. It
+    retrains the selected trial's fold models so diagnostics cannot accidentally
+    use checkpoints overwritten by a later trial.
+    """
+    if isinstance(trial_number, bool) or not isinstance(trial_number, int) or trial_number < 0:
+        raise ValueError("trial_number must be a non-negative integer.")
+    hpo = _section(settings, "hpo")
+    data = _section(settings, "data")
+    paths = _section(settings, "paths")
+    study_name = hpo.get("study_name")
+    if not isinstance(study_name, str) or not study_name.strip():
+        raise ValueError("hpo.study_name must be a non-empty string.")
+    proxy_groups = tuple(hpo.get("proxy_test_groups", ()))
+    if not proxy_groups or any(not isinstance(group, str) or not group.strip() for group in proxy_groups):
+        raise ValueError("hpo.proxy_test_groups must contain non-empty group IDs.")
+
+    storage_db = f"sqlite:///{Path('data/db/hpo_study_pu.db')}"
+    try:
+        study = optuna.load_study(study_name=study_name, storage=storage_db)
+    except KeyError as exc:
+        raise ValueError(f"Optuna study {study_name!r} was not found in {storage_db}.") from exc
+    trial = next((item for item in study.trials if item.number == trial_number), None)
+    if trial is None:
+        raise ValueError(f"Trial {trial_number} does not exist in study {study_name!r}.")
+    if trial.state != optuna.trial.TrialState.COMPLETE or trial.values is None:
+        raise ValueError(f"Trial {trial_number} is not a completed trial.")
+
+    search_space = hpo.get("search_space", {})
+    if isinstance(search_space, Config):
+        search_space = search_space.to_dict()
+    params = dict(trial.params)
+    for name, spec in search_space.items():
+        if "fixed" in spec:
+            params[name] = spec["fixed"]
+    training_config = _training_config(settings)
+    base_threshold = float(_section(settings, "training").get(
+        "positive_threshold", _section(settings, "training").get("c2_threshold", 0.50)
+    ))
+    required = ("lr", "weight_decay", "dropout", "hidden_dim")
+    missing = [name for name in required if name not in params]
+    if missing:
+        raise ValueError(
+            f"Trial {trial_number} lacks required model parameters: {', '.join(missing)}."
+        )
+    positive_threshold = float(params.get(
+        "positive_threshold", params.get("c2_threshold", base_threshold)
+    ))
+    positive_prior = float(params.get("positive_prior", training_config.positive_prior))
+    filtered_train_groups = tuple(group for group in data.get("train_groups", ()) if group not in proxy_groups)
+    if not filtered_train_groups:
+        raise ValueError("No training groups remain after excluding HPO proxy test groups.")
+
+    default_output = Path("output/hpo") / f"{study_name}_trial_{trial_number}_selection_diagnostics.csv"
+    destination = Path(output_path) if output_path is not None else default_output
+    diagnostic_settings = Config(settings).with_overrides({
+        "training.lr": float(params["lr"]),
+        "training.weight_decay": float(params["weight_decay"]),
+        "training.dropout": float(params["dropout"]),
+        "training.hidden_dim": int(params["hidden_dim"]),
+        "training.positive_prior": positive_prior,
+        "training.positive_threshold": positive_threshold,
+        "data.train_groups": filtered_train_groups,
+        "data.validation_groups": tuple(proxy_groups),
+        "debug.selection_diagnostics_path": str(destination),
+        "debug.selection_diagnostics_trial": trial_number,
+    })
+    # Replace, rather than append to, an old report from a prior diagnostic run.
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.unlink()
+    run_lovo(
+        manifest_path=manifest_path,
+        settings=diagnostic_settings,
+        test_groups=proxy_groups,
+        train_groups=filtered_train_groups,
+    )
+    if not destination.is_file():
+        raise RuntimeError(f"Diagnostics completed without creating report: {destination}")
+    logger.info("Selection diagnostics for trial %d written to %s", trial_number, destination.resolve())
+    return destination
 
 
 def run_hpo(
@@ -40,6 +133,9 @@ def run_hpo(
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
     training_config = _training_config(settings)
+    base_threshold = float(_section(settings, "training").get(
+        "positive_threshold", _section(settings, "training").get("c2_threshold", 0.50)
+    ))
     train_groups = tuple(data.get("train_groups", ()))
     search_space = hpo.get("search_space", {})
     if isinstance(search_space, Config):
@@ -48,7 +144,7 @@ def run_hpo(
     # Database path explicitly placed in data/db/
     db_dir = Path("data/db")
     db_dir.mkdir(parents=True, exist_ok=True)
-    storage_db = f"sqlite:///{db_dir / 'hpo_study.db'}"
+    storage_db = f"sqlite:///{db_dir / 'hpo_study_pu.db'}"
 
     logger.info("Initializing Optuna study '%s' with storage: %s", study_name, storage_db)
     logger.info("Proxy validation folds assigned for tuning: %s", proxy_groups)
@@ -57,13 +153,23 @@ def run_hpo(
         study_name=study_name,
         storage=storage_db,
         load_if_exists=True,
-        direction="maximize",
+        directions=["maximize", "minimize"],
         sampler=optuna.samplers.TPESampler(seed=training_config.seed),
     )
 
     if not search_space:
         raise ValueError(
             "HPO search space is empty. Configure hpo.search_space in the training YAML."
+        )
+    obsolete = sorted(
+        name for name in search_space
+        if name.startswith("class_weight_") or name == "good_threshold"
+    )
+    if obsolete:
+        raise ValueError(
+            "PU HPO does not use supervised class weights or binary good_threshold; "
+            "replace these search-space entries with positive_prior and c2_threshold. "
+            "Obsolete entries: " + ", ".join(obsolete)
         )
 
     def suggest_parameters(trial: optuna.Trial) -> dict[str, object]:
@@ -91,17 +197,14 @@ def run_hpo(
         return params
 
     # Define objective function closure
-    def objective(trial: optuna.Trial) -> float:
+    def objective(trial: optuna.Trial) -> tuple[float, float]:
         params = suggest_parameters(trial)
         lr = float(params["lr"])
         weight_decay = float(params["weight_decay"])
         dropout = float(params["dropout"])
-        class_weights = [float(params["class_weight_0"]), 1.0, float(params["class_weight_2"])]
         hidden_dim = int(params["hidden_dim"])
-
-        # --- ADD THRESHOLD HYPERPARAMETER ---
-        # Forces Optuna to evaluate configurations under different safety margins
-        c2_threshold = float(params["c2_threshold"])
+        positive_prior = float(params.get("positive_prior", training_config.positive_prior))
+        positive_threshold = float(params.get("positive_threshold", params.get("c2_threshold", base_threshold)))
 
         filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
 
@@ -109,9 +212,9 @@ def run_hpo(
             "training.lr": lr,
             "training.weight_decay": weight_decay,
             "training.dropout": dropout,
-            "training.class_weights": tuple(class_weights),
             "training.hidden_dim": hidden_dim,
-            "training.c2_threshold": c2_threshold,
+            "training.positive_prior": positive_prior,
+            "training.positive_threshold": positive_threshold,
             "data.train_groups": filtered_train_groups,
             "data.validation_groups": tuple(proxy_groups),
         })
@@ -125,125 +228,139 @@ def run_hpo(
             train_groups=tuple(filtered_train_groups),
         )
 
-        # Aggregate confusion matrices across validation folds
+        # U is unlabeled, not a negative class. Reward recall on P while
+        # penalizing how often U is selected as positive; do not compute F1
+        # or precision from pseudo-negatives.
         folds = lovo_results.get("folds", [])
-        total_cm = np.zeros((3, 3), dtype=np.float64)
-
-        all_fold_class_f1s = []
-        for f in folds:
-            metrics = f.get("metrics", {})
-            cm = metrics.get("confusion_matrix")
-            if cm is not None:
-                total_cm += np.array(cm, dtype=np.float64)
-
-            class_f1_dict = metrics.get("class_f1", {})
-            if not class_f1_dict:
-                values = metrics.get("per_class_f1")
-                if isinstance(values, (list, tuple)) and len(values) >= 3:
-                    class_f1_dict = {str(i): values[i] for i in range(3)}
-            if class_f1_dict:
-                arr = np.array([class_f1_dict.get("0", 0.0), class_f1_dict.get("1", 0.0), class_f1_dict.get("2", 0.0)])
-                all_fold_class_f1s.append(arr)
-
-        if all_fold_class_f1s:
-            mean_per_class_f1 = np.mean(all_fold_class_f1s, axis=0)
-            c0_f1, c1_f1, c2_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1]), float(mean_per_class_f1[2])
-        else:
-            c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
-
-        # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
-        total_pred=np.sum(total_cm, axis=0, keepdims=True)
-        total_true=np.sum(total_cm, axis=1, keepdims=True)
-        empty_pred = (total_pred.squeeze() == 0)
-        empty_true = (total_true.squeeze() == 0)
-        safe_pred = np.where(total_pred == 0, 1.0, total_pred)
-        safe_true = np.where(total_true == 0, 1.0, total_true)
-        recall = np.diag(total_cm/safe_true, k=0).copy()
-        precision = np.diag(total_cm/safe_pred, k=0).copy()
-        recall[empty_true] = 1.0
-        precision[empty_pred] = 1.0
-        #f1 = 2.0 * recall * precision / (recall + precision)
-        f2 = 5.0 * recall * precision / (recall + 4.0 * precision)
-        f05 = 1.25 * recall * precision / (recall + 0.25 * precision)
-
-        # Multiplicative Scaling (harmonic mean of class_0 f2, class_1 f2 and class_2 f0.5)
-        den = f2[1] * f05[2] + f2[0] * f05[2] + f2[0] * f2[1]
-        if den == 0.0:
-            score = 0.0
-        else:
-            score = 3.0 * f2[0] * f2[1] * f05[2] / den
-        """
-        Since f05[2] is so importanto to us, we could use weights:
-
-        score = (1+a*a+b*b)*(c0_f2 * c1_f2 * c2_f05)/(a*a*c1_f2*c2_f05+b*b*c0_f2*c1_f2+c0_f2*c2_f05)
-
-        With a*a=1 and b*b=4 we would make c0_f05 more important:
-
-        score = 6.0 *(c0_f2 * c1_f2 * c2_f05)/(c1_f2*c2_f05+c0_f2*c2_f05+4.0*c0_f2*c1_f2)
-        """
-        # Set user attributes for Optuna tracking
-        macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
-        trial.set_user_attr("macro_f1", macro_f1)
-        trial.set_user_attr("class_0_f1", c0_f1)
-        trial.set_user_attr("class_1_f1", c1_f1)
-        trial.set_user_attr("class_2_f1", c2_f1)
-        trial.set_user_attr("class2_threshold", c2_threshold)
-        trial.set_user_attr("custom_rate_score", score)
-
-        return score
+        recalls = [f["metrics"]["positive_recall_on_P"] for f in folds
+                   if f.get("metrics", {}).get("positive_recall_on_P") is not None]
+        u_rates = [f["metrics"]["selected_fraction_of_U"] for f in folds
+                   if f.get("metrics", {}).get("selected_fraction_of_U") is not None]
+        recall = float(np.mean(recalls)) if recalls else 0.0
+        u_selection = float(np.mean(u_rates)) if u_rates else 1.0
+        trial.set_user_attr("positive_recall_on_P", recall)
+        trial.set_user_attr("selected_fraction_of_U", u_selection)
+        trial.set_user_attr("positive_prior", positive_prior)
+        trial.set_user_attr("positive_threshold", positive_threshold)
+        return recall, u_selection
 
     # Run Optuna optimization loop
 
-    # Calculate remaining trials so n_trials acts as a lifetime target
+    # Run the requested number of new trials in this execution session
     completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    remaining_trials = max(0, n_trials - completed_trials)
-
-    if remaining_trials > 0:
-        study.optimize(objective, n_trials=remaining_trials, gc_after_trial=True)
+    
+    if n_trials > 0:
+        logger.info(
+            "Running %d new trials for study (existing completed trials: %d)...",
+            n_trials,
+            completed_trials,
+        )
+        study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
     else:
-        logger.info("Study already has %d completed trials (target: %d). Skipping optimization.", completed_trials, n_trials)
+        logger.info("n_trials is set to 0. Skipping optimization.")
 
-    # Compile results payload
-    best_attrs = study.best_trial.user_attrs
+    # Multi-objective studies have a Pareto frontier, not a single best_trial.
+    pareto_trials = sorted(
+        study.best_trials,
+        key=lambda trial: (
+            trial.user_attrs.get("selected_fraction_of_U", 1.0),
+            -trial.user_attrs.get("positive_recall_on_P", 0.0),
+            trial.number,
+        ),
+    )
+    if not pareto_trials:
+        raise RuntimeError("HPO produced no completed Pareto-efficient trials.")
+
+    cid = min(
+            pareto_trials, 
+            key=lambda t: dist([t.values[0], t.values[1]], [1.0, 0.0])
+            )
+    lg = max(
+            pareto_trials, 
+            key=lambda t: t.values[0] - t.values[1]
+            )
+    hpr = min(
+            pareto_trials,
+            key=lambda t: (-t.values[0], t.values[1], t.number,)
+            )
+    
+    print(
+        f" Closest Ideal Point     : {cid.number} with parameters: {cid.params}\n", 
+        f"Largest Gap             : {lg.number} with parameters: {lg.params}\n",
+        f"Highest Positive Recall : {hpr.number}  with parameters: {hpr.params}\n",
+    )
+
+    # Production refit needs one explicit choice. We have choosen the Closest to the Ideal Point.
+    # This is a post-study deployment policy, not a combined optimization objective.
+    production_trial = cid
+
+    production_attrs = production_trial.user_attrs
+    pareto_payload = [
+        {
+            "trial_number": trial.number,
+            "objectives": {
+                "positive_recall_on_P": trial.values[0],
+                "selected_fraction_of_U": trial.values[1],
+            },
+            "params": trial.params,
+            "metrics": {
+                "positive_recall_on_P": trial.user_attrs.get("positive_recall_on_P", 0.0),
+                "selected_fraction_of_U": trial.user_attrs.get("selected_fraction_of_U", 1.0),
+                "positive_prior": trial.user_attrs.get("positive_prior", training_config.positive_prior),
+                "positive_threshold": trial.user_attrs.get("positive_threshold", base_threshold),
+            },
+        }
+        for trial in pareto_trials
+    ]
     output_payload = {
         "study_name": study_name,
-        "best_value": study.best_value,
-        "best_params": study.best_params,
-        "best_metrics": {
-            "macro_f1": best_attrs.get("macro_f1", 0.0),
-            "class_0_f1": best_attrs.get("class_0_f1", 0.0),
-            "class_1_f1": best_attrs.get("class_1_f1", 0.0),
-            "class_2_f1": best_attrs.get("class_2_f1", 0.0),
+        "objectives": [
+            {"name": "positive_recall_on_P", "direction": "maximize"},
+            {"name": "selected_fraction_of_U", "direction": "minimize"},
+        ],
+        "pareto_front": pareto_payload,
+        "production_selection_policy": "highest P recall on Pareto front; ties broken by lower U selection",
+        "production_trial_number": production_trial.number,
+        "production_params": production_trial.params,
+        "production_metrics": {
+            "positive_recall_on_P": production_attrs.get("positive_recall_on_P", 0.0),
+            "selected_fraction_of_U": production_attrs.get("selected_fraction_of_U", 1.0),
+            "positive_prior": production_attrs.get("positive_prior", training_config.positive_prior),
+            "positive_threshold": production_attrs.get("positive_threshold", base_threshold),
         },
     }
 
-    # Mirror output to screen
+    # Mirror results to screen, including the non-dominated trade-off set.
     logger.info("=" * 60)
-    logger.info("HPO OPTIMIZATION COMPLETE")
-    logger.info("Best Objective Score: %.4f", study.best_value)
-    logger.info("Best Hyperparameters:")
-    for k, v in study.best_params.items():
-        logger.info("  - %s: %s", k, v)
-    logger.info("Best Metrics -> Macro F1: %.4f | C0 F1: %.4f | C1 F1: %.4f | C2 F1: %.4f",
-                output_payload["best_metrics"]["macro_f1"],
-                output_payload["best_metrics"]["class_0_f1"],
-                output_payload["best_metrics"]["class_1_f1"],
-                output_payload["best_metrics"]["class_2_f1"])
+    logger.info("MULTI-OBJECTIVE HPO COMPLETE")
+    logger.info("Pareto-efficient trials: %d", len(pareto_trials))
+    for item in pareto_payload:
+        metrics = item["metrics"]
+        logger.info(
+            "Trial %d -> P recall: %.4f | U selected: %.4f",
+            item["trial_number"],
+            metrics["positive_recall_on_P"],
+            metrics["selected_fraction_of_U"],
+        )
+    logger.info(
+        "Production trial %d selected by highest P recall (tie-break: lower U selection).",
+        production_trial.number,
+    )
     logger.info("=" * 60)
 
     # Save output mirror json to output/hpo/
     output_dir = Path("output/hpo")
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / f"{study_name}_best_params.json"
+    json_path = output_dir / f"{study_name}_pareto_results.json"
     
     with open(json_path, "w") as f:
         json.dump(output_payload, f, indent=4)
         
     logger.info("Successfully exported winning configuration JSON to %s", json_path)
 
-    # Execute Final Production Master Refit using winning parameters
+    # Execute Final Production Master Refit using the explicit Pareto-front selection policy
     log_msg = (
-            f"Starting Final Production Master Refit with best parameters..."
+            f"Starting Final Production Master Refit with selected Pareto trial {production_trial.number}..."
     )
 
     # Let the logger do its job if INFO is enabled
@@ -253,7 +370,7 @@ def run_hpo(
     if logger.getEffectiveLevel() >= logging.WARNING:
             print(log_msg)
 
-    resolved_params = dict(study.best_params)
+    resolved_params = dict(production_trial.params)
     for name, spec in search_space.items():
         if "fixed" in spec:
             resolved_params[name] = spec["fixed"]
@@ -262,12 +379,10 @@ def run_hpo(
         "training.lr": resolved_params["lr"],
         "training.weight_decay": resolved_params["weight_decay"],
         "training.dropout": resolved_params["dropout"],
-        "training.class_weights": (
-            resolved_params["class_weight_0"],
-            1.0,
-            resolved_params["class_weight_2"],
+        "training.positive_prior": resolved_params.get("positive_prior", training_config.positive_prior),
+        "training.positive_threshold": resolved_params.get(
+            "positive_threshold", resolved_params.get("c2_threshold", base_threshold)
         ),
-        "training.c2_threshold": resolved_params["c2_threshold"],
         "training.hidden_dim": resolved_params["hidden_dim"],
     })
     final_training = _training_config(final_settings)

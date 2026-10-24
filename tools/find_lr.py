@@ -1,131 +1,89 @@
+"""Learning-rate range test using the single-logit nnPU objective."""
 import sys
 from typing import Sequence
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader, WeightedRandomSampler
+from torch import nn, optim
+from torch.utils.data import DataLoader, TensorDataset
 from torch_lr_finder import LRFinder
 
-# 1. Import your actual model and project utilities
 from autocut.ml.model import MTBClassifier
 from autocut.dataset.manifest import load_manifest
 from autocut.config_loader import load_config
 from autocut.pipeline.training import _combine_records, _training_config
 from autocut.ml.scaling import FeatureScaler
-from autocut.ml.training import _validate_windows, targets_to_classes
+from autocut.ml.training import _validate_windows, targets_to_classes, _training_loss
 from autocut.cli import build_parser
 
+
+class PULoss(nn.Module):
+    """nnPU criterion; label 1 is P and label 0 is U."""
+
+    def __init__(self, config) -> None:
+        super().__init__()
+        self.config = config
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return _training_loss(logits, targets, self.config)
+
+
 def main(argv: Sequence[str] | None = None):
-
-    print("Loading configuration and training data...")
-
-    arguments = list(sys.argv[1:] if argv is None else argv)
+    print("Loading PU training data...")
     parser = build_parser()
-    args = parser.parse_args(arguments)
-    
-    # Load settings and manifest using your project flow
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     settings = load_config(args.config)
     data = settings.get("data", {})
-    if not hasattr(data, "get"):
-        raise ValueError("Configuration section 'data' must be a mapping.")
-    manifest = args.manifest or data.get(
-        "manifest", "data/manifest/annotations_manifest.yaml"
-    )
-
+    manifest = args.manifest or data.get("manifest", "data/manifest/annotations_manifest.yaml")
     records = load_manifest(manifest, verify_files=True)
     train_groups = set(data.get("train_groups", ()))
     train_records = tuple(record for record in records if record.group_id in train_groups)
-    
     if not train_records:
         raise ValueError("No manifest records match training groups for LR finder.")
 
-    print(f"Combining {len(train_records)} training records...")
     raw_windows, raw_targets = _combine_records(train_records, settings)
-
-    # Apply the project's official validation and target mapping
     train_X = _validate_windows(raw_windows, name="train_windows")
-    train_y_raw = targets_to_classes(raw_targets)
+    train_y = targets_to_classes(raw_targets)
+    positive_indices = np.flatnonzero(train_y == 1)
+    unlabeled_indices = np.flatnonzero(train_y == 0)
+    if not len(positive_indices) or not len(unlabeled_indices):
+        raise ValueError("LR finder requires both pure score-3 positives and score-0/1/2 unlabeled windows.")
 
-    # 2. Apply your project's exact FeatureScaler and target formatting
     fit_config = _training_config(settings)
     scaler = FeatureScaler(enabled=fit_config.use_scaling)
-    transformed_train = scaler.fit_transform(train_X)
-    
-    train_tensor = torch.from_numpy(np.ascontiguousarray(transformed_train, dtype=np.float32))
-    train_label_tensor = torch.from_numpy(train_y_raw.astype(np.int64, copy=False))
+    transformed = scaler.fit_transform(train_X)
 
-    print("Setting up model, class weights, and weighted sampler...")
-    
-    # 3. Instantiate MTBClassifier (locking in hidden_dim=128 as determined in Study #12)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Interleave class-conditional samples so each even-sized minibatch has
+    # both P and U. Sampling within each set is uniform; no weighted sampler.
+    rng = np.random.default_rng(fit_config.seed)
+    per_set = max(len(positive_indices), len(unlabeled_indices))
+    p = rng.choice(positive_indices, size=per_set, replace=len(positive_indices) < per_set)
+    u = rng.choice(unlabeled_indices, size=per_set, replace=len(unlabeled_indices) < per_set)
+    order = np.empty(2 * per_set, dtype=np.int64)
+    order[0::2], order[1::2] = p, u
+    X = torch.from_numpy(np.ascontiguousarray(transformed[order], dtype=np.float32))
+    y = torch.from_numpy(train_y[order])
+    batch_size = max(2, fit_config.batch_size + fit_config.batch_size % 2)
+    loader = DataLoader(TensorDataset(X, y), batch_size=batch_size, shuffle=False)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MTBClassifier(
         feature_dim=train_X.shape[2],
-        hidden_dim=128,  # Locked in from Study #12
+        hidden_dim=fit_config.hidden_dim,
         classifier_mid_dim=fit_config.classifier_mid_dim,
-        num_classes=fit_config.num_classes,
         dropout=fit_config.dropout,
     ).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-7, weight_decay=fit_config.weight_decay)
+    criterion = PULoss(fit_config)
 
-    # 4. Set up criterion with your class weights
-    class_weights = torch.tensor(fit_config.class_weights, dtype=torch.float32, device=device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-
-    # 5. Set up AdamW (start lr ultra-low for the finder sweep)
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=1e-7,
-        weight_decay=fit_config.weight_decay,
-    )
-
-    # 6. Replicate your exact WeightedRandomSampler logic
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(fit_config.seed)
-
-    class_counts = np.bincount(train_y_raw)
-    total_samples = len(train_y_raw)
-    num_classes = fit_config.num_classes
-
-    computed_class_weights = np.zeros_like(class_counts, dtype=float)
-    for i, count in enumerate(class_counts):
-        if count > 0:
-            computed_class_weights[i] = total_samples / (num_classes * count)
-
-    sample_weights = computed_class_weights[train_y_raw]
-    sample_weights_tensor = torch.DoubleTensor(sample_weights)
-
-    sampler = WeightedRandomSampler(
-        weights=sample_weights_tensor.tolist(),
-        num_samples=len(sample_weights_tensor),
-        replacement=True,
-        generator=generator,
-    )
-
-    loader = DataLoader(
-        TensorDataset(train_tensor, train_label_tensor),
-        batch_size=fit_config.batch_size,
-        sampler=sampler,
-        generator=generator,
-    )
-
-    print("Initializing LRFinder and running range test...")
-    
-    # 7. Run torch-lr-finder with the exact same data loader and configuration
-    lr_finder = LRFinder(model, optimizer, criterion, device=device)
-    
-    # Ramps up lr exponentially over 100 iterations
-    lr_finder.range_test(loader, end_lr=10, num_iter=100, step_mode="exp")
-
-    # 8. Plot results (opens matplotlib window)
+    finder = LRFinder(model, optimizer, criterion, device=str(device))
+    finder.range_test(loader, end_lr=10, num_iter=100, step_mode="exp")
     import matplotlib.pyplot as plt
-    lr_finder.plot()
+    finder.plot()
     plt.savefig("lr_finder_plot.png", bbox_inches="tight", dpi=300)
-    print("Saved learning rate curve to lr_finder_plot.png")    
+    finder.reset()
+    print("Saved PU learning-rate curve to lr_finder_plot.png")
 
-    # 9. Reset model weights so nothing changes permanently
-    lr_finder.reset()
-    print("\nLR Finder complete! Check the pop-up graph for your optimal learning rate drop.")
 
 if __name__ == "__main__":
     main()

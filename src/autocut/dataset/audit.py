@@ -230,7 +230,8 @@ def audit_manifest(
             "window_duration_seconds": window_duration,
             "stride_seconds": window_stride,
             "total_windows": 0,
-            "annotated_windows_estimate": 0,
+            "pure_windows_estimate": 0,
+            "conflicting_windows_estimate": 0,
         },
     }
 
@@ -240,7 +241,8 @@ def audit_manifest(
     total_duration = 0.0
     total_annotations = 0
     total_windows = 0
-    total_labeled_windows = 0
+    total_pure_windows = 0
+    total_conflicting_windows = 0
     target_seconds = {str(i): 0.0 for i in range(4)}
 
     for index, item in enumerate(items, start=1):
@@ -325,18 +327,28 @@ def audit_manifest(
                 windows = _estimated_windows(
                     duration, window_duration, window_stride
                 )
-                labeled = 0
+                pure = 0
+                conflicting = 0
                 for window_index in range(windows):
                     start = window_index * window_stride
                     end = start + window_duration
-                    if any(min(end, a.end) > max(start, a.start) for a in annotations):
-                        labeled += 1
+                    scores = {
+                        a.score for a in annotations
+                        if min(end, a.end) > max(start, a.start)
+                    }
+                    if len(scores) == 1:
+                        pure += 1
+                    elif len(scores) > 1:
+                        conflicting += 1
                 entry["window_estimate"] = {
                     "total": windows,
-                    "overlapping_annotations": labeled,
+                    "pure_windows": pure,
+                    "conflicting_windows": conflicting,
+                    "uncovered_windows": windows - pure - conflicting,
                 }
                 total_windows += windows
-                total_labeled_windows += labeled
+                total_pure_windows += pure
+                total_conflicting_windows += conflicting
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             entry["errors"].append(f"Annotation validation failed: {exc}")
 
@@ -349,6 +361,11 @@ def audit_manifest(
         report["videos"].append(entry)
 
     _read_split_config(Path(training_config).expanduser(), report, manifest_groups)
+    report["window_estimates"].update({
+        "total_windows": total_windows,
+        "pure_windows_estimate": total_pure_windows,
+        "conflicting_windows_estimate": total_conflicting_windows,
+    })
     report["summary"] = {
         "manifest_entries": len(items),
         "unique_ids": len(seen_ids),
@@ -360,7 +377,8 @@ def audit_manifest(
             key: round(value, 3) for key, value in target_seconds.items()
         },
         "estimated_total_windows": total_windows,
-        "estimated_windows_overlapping_annotations": total_labeled_windows,
+        "estimated_pure_windows": total_pure_windows,
+        "estimated_conflicting_windows": total_conflicting_windows,
     }
     if report["errors"]:
         report["status"] = "error"

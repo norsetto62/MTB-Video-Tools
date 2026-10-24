@@ -61,7 +61,9 @@ def test_manifest_audit_reports_video_annotations_and_window_estimates(tmp_path,
     assert report["summary"]["annotation_intervals"] == 2
     assert report["summary"]["annotation_seconds_by_target"]["1"] == 5.0
     assert report["summary"]["estimated_total_windows"] == 4
-    assert report["videos"][0]["window_estimate"]["overlapping_annotations"] == 4
+    assert report["videos"][0]["window_estimate"]["pure_windows"] == 2
+    assert report["videos"][0]["window_estimate"]["conflicting_windows"] == 2
+    assert report["summary"]["estimated_pure_windows"] == 2
     assert report["group_split"]["status"] == "invalid"
 
 

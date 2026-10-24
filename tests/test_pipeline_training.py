@@ -69,8 +69,9 @@ def test_run_training_combines_groups_and_writes_checkpoint_and_json(tmp_path, m
         # Make it explicit that train and validation receive separate records.
         captured.setdefault("record_ids", []).append([r.id for r in records])
         count = 9 if records[0].group_id == "train" else 6
-        X = np.zeros((count, 8, 54), dtype=np.float32)
-        y = np.resize(np.array([0.0, 1.0, 3.0], dtype=np.float32), count)
+        sample_steps = int(round(settings["data"]["sampling_fps"] * settings["data"]["window_duration"]))
+        X = np.zeros((count, sample_steps, 54), dtype=np.float32)
+        y = np.resize(np.array([0.0, 1.0], dtype=np.float32), count)
         return X, y
 
     def fake_train(train_X, train_y, val_X, val_y, config, **kwargs):
@@ -87,7 +88,8 @@ def test_run_training_combines_groups_and_writes_checkpoint_and_json(tmp_path, m
     result = pipeline_training.run_training(manifest, settings)
 
     assert captured["record_ids"] == [["a"], ["b"]]
-    assert captured["shapes"] == ((9, 8, 54), (6, 8, 54))
+    sample_steps = int(round(settings["data"]["sampling_fps"] * settings["data"]["window_duration"]))
+    assert captured["shapes"] == ((9, sample_steps, 54), (6, sample_steps, 54))
     assert captured["kwargs"]["checkpoint_path"] == tmp_path / "models" / "train-test_best.pt"
     assert result["train_groups"] == ["train"]
     assert result["validation_groups"] == ["val"]

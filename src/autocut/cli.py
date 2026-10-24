@@ -80,6 +80,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Training and HPO YAML configuration file"
     )
     hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    hpo.add_argument(
+        "--diagnose-trial",
+        type=int,
+        help="Export full-timeline selection diagnostics for an existing trial without running new trials or a production refit.",
+    )
+    hpo.add_argument(
+        "--diagnostics-output",
+        type=Path,
+        help="CSV output path for --diagnose-trial (default: output/hpo/<study>_trial_<N>_selection_diagnostics.csv).",
+    )
     
     return parser
 
@@ -245,6 +255,19 @@ def dispatch(args: argparse.Namespace) -> int:
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
         if args.command == "hpo":
+            if args.diagnose_trial is not None:
+                from .pipeline.hpo import run_hpo_diagnostics
+
+                report_path = run_hpo_diagnostics(
+                    manifest,
+                    settings,
+                    trial_number=args.diagnose_trial,
+                    output_path=args.diagnostics_output,
+                )
+                print(f"Selection diagnostics written to: {report_path.resolve()}")
+                return 0
+            if args.diagnostics_output is not None:
+                raise ValueError("--diagnostics-output requires --diagnose-trial.")
             from .pipeline.hpo import run_hpo
 
             run_hpo(manifest, settings)

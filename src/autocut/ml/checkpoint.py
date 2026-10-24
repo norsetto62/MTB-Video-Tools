@@ -20,11 +20,6 @@ from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
 
 CHECKPOINT_VERSION = "1.1"
-DEFAULT_CLASS_MAPPING = {
-    "0": "negative_or_non_riding",
-    "1": "ordinary_or_intermediate",
-    "2": "interesting",
-}
 DEFAULT_DATA_CONFIG = {
     "flow_fps": 2.0,
     "window": 4.0,
@@ -123,7 +118,10 @@ def build_checkpoint(
             raise ValueError("best_metric must be a finite number or None.")
 
     names, mask = _validate_feature_metadata(model, feature_names, feature_mask)
-    mapping = dict(DEFAULT_CLASS_MAPPING if class_mapping is None else class_mapping)
+    if class_mapping is None:
+        mapping = {"0": "P_vs_U_logit"}
+    else:
+        mapping = dict(class_mapping)
     if not mapping or not all(
         isinstance(key, str) and isinstance(value, str) and value
         for key, value in mapping.items()
@@ -279,12 +277,19 @@ def validate_checkpoint(payload: Any) -> dict[str, Any]:
     elif names is not None and len(names) != feature_dim:
         raise ValueError("Checkpoint feature_names length does not match feature_dim.")
 
+    num_classes = config["num_classes"]
+    if num_classes != 1:
+        raise ValueError("Checkpoint must use the single-logit P/U model contract.")
+
     mapping = payload.get("class_mapping")
     if mapping is not None:
-        if not isinstance(mapping, dict) or set(mapping) != {
-            str(index) for index in range(config["num_classes"])
-        }:
-            raise ValueError("Checkpoint class_mapping does not match num_classes.")
+        expected_keys = {str(index) for index in range(num_classes)}
+        if (
+            not isinstance(mapping, dict)
+            or set(mapping) != expected_keys
+            or any(not isinstance(value, str) or not value for value in mapping.values())
+        ):
+            raise ValueError("Checkpoint class_mapping must cover every output class with a non-empty label.")
 
     scaler_state = payload.get("scaler_state")
     if scaler_state is not None:

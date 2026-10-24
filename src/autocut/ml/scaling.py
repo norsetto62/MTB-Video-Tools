@@ -1,4 +1,4 @@
-"""Feature standardization for AutoCut time-series feature arrays.
+"""Feature scaling for AutoCut time-series feature arrays.
 
 Statistics are fitted independently for each feature across all available
 training examples and time steps. Callers are responsible for fitting only on
@@ -16,17 +16,22 @@ import numpy as np
 
 @dataclass
 class FeatureScaler:
-    """Standardize 2D (T, F) or 3D (N, T, F) arrays feature-wise.
+    """Scale 2D (T, F) or 3D (N, T, F) arrays feature-wise.
+
+    The standard strategy uses mean and standard deviation. The robust
+    strategy uses median and interquartile range (IQR), reducing the effect
+    of isolated extreme values on fitted location and scale. Neither strategy
+    clips outliers.
 
     Args:
-        enabled: If false, preserve input values (converted to float32) without
-            fitting or applying standardization.
-        eps: Positive threshold below which a feature's standard deviation is
-            treated as zero and its scale is set to 1.0.
+        enabled: If false, preserve input values (converted to float32).
+        eps: Positive threshold below which a fitted scale is replaced by 1.
+        strategy: Either "standard" or "robust".
     """
 
     enabled: bool = True
     eps: float = 1e-8
+    strategy: str = "standard"
     mean_: np.ndarray | None = field(default=None, init=False, repr=False)
     scale_: np.ndarray | None = field(default=None, init=False, repr=False)
 
@@ -38,6 +43,8 @@ class FeatureScaler:
         if not math.isfinite(float(self.eps)) or float(self.eps) <= 0.0:
             raise ValueError("eps must be a finite positive number.")
         self.eps = float(self.eps)
+        if self.strategy not in {"standard", "robust"}:
+            raise ValueError("strategy must be 'standard' or 'robust'.")
 
     @staticmethod
     def _as_feature_array(X: np.ndarray, *, operation: str) -> np.ndarray:
@@ -75,20 +82,25 @@ class FeatureScaler:
             return self
 
         reduce_axes = (0, 1) if X_arr.ndim == 3 else (0,)
-        mean64 = np.mean(X_arr, axis=reduce_axes, dtype=np.float64)
-        variance64 = np.var(X_arr, axis=reduce_axes, dtype=np.float64)
-        std64 = np.sqrt(variance64)
+        if self.strategy == "robust":
+            median64 = np.median(X_arr, axis=reduce_axes)
+            q25 = np.percentile(X_arr, 25, axis=reduce_axes)
+            q75 = np.percentile(X_arr, 75, axis=reduce_axes)
+            center = median64.astype(np.float32)
+            raw_scale = (q75 - q25).astype(np.float32)
+        else:
+            mean64 = np.mean(X_arr, axis=reduce_axes, dtype=np.float64)
+            variance64 = np.var(X_arr, axis=reduce_axes, dtype=np.float64)
+            center = mean64.astype(np.float32)
+            raw_scale = np.sqrt(variance64).astype(np.float32)
+        scale = np.where(raw_scale <= self.eps, 1.0, raw_scale).astype(np.float32)
 
-        mean = mean64.astype(np.float32)
-        std = std64.astype(np.float32)
-        scale = np.where(std <= self.eps, 1.0, std).astype(np.float32)
-
-        if not np.isfinite(mean).all() or not np.isfinite(scale).all():
+        if not np.isfinite(center).all() or not np.isfinite(scale).all():
             raise ValueError("Fitted feature statistics must be finite.")
         if np.any(scale <= 0.0):
             raise ValueError("Fitted feature scales must be positive.")
 
-        self.mean_ = mean
+        self.mean_ = center
         self.scale_ = scale
         return self
 
@@ -118,11 +130,12 @@ class FeatureScaler:
         """Fit on X and return its standardized values."""
         return self.fit(X).transform(X)
 
-    def state_dict(self) -> dict[str, bool | float | list[float] | None]:
+    def state_dict(self) -> dict[str, bool | float | str | list[float] | None]:
         """Return a JSON-serializable representation of scaler state."""
         return {
             "enabled": self.enabled,
             "eps": self.eps,
+            "strategy": self.strategy,
             "mean": self.mean_.tolist() if self.mean_ is not None else None,
             "scale": self.scale_.tolist() if self.scale_ is not None else None,
         }
@@ -135,7 +148,8 @@ class FeatureScaler:
 
         enabled = state_dict.get("enabled", True)
         eps = state_dict.get("eps", 1e-8)
-        scaler = cls(enabled=enabled, eps=eps)
+        strategy = state_dict.get("strategy", "standard")
+        scaler = cls(enabled=enabled, eps=eps, strategy=strategy)
 
         mean_value = state_dict.get("mean")
         scale_value = state_dict.get("scale")

@@ -99,6 +99,25 @@ def test_feature_cache_key_includes_clip_and_extraction_settings(tmp_path):
     assert load_feature_sequence(video, cache_dir, clip, flow_config=changed_flow) is None
 
 
+
+def test_feature_cache_key_includes_roi_settings(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    original = feature_cache_path(video, cache_dir, clip)
+    changed = feature_cache_path(video, cache_dir, clip, roi_left=0.20)
+    assert original != changed
+    save_feature_sequence(sequence, video, cache_dir, clip)
+    assert load_feature_sequence(video, cache_dir, clip, roi_left=0.20) is None
+
+
+def test_feature_cache_key_includes_sampling_rate_but_not_window_geometry(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    original = feature_cache_path(video, cache_dir, clip, sample_fps=2.0)
+    assert original != feature_cache_path(video, cache_dir, clip, sample_fps=4.0)
+    # Window duration and stride are intentionally downstream of the raw
+    # feature cache; build_windows applies both on every invocation.
+    assert original == feature_cache_path(video, cache_dir, clip, sample_fps=2.0)
+
+
 def test_feature_cache_rejects_incompatible_version(tmp_path):
     video, clip, sequence, cache_dir = _fixture(tmp_path)
     path = save_feature_sequence(sequence, video, cache_dir, clip)

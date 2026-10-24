@@ -1,7 +1,6 @@
 """Window-level inference for trained AutoCut MTB-interest models.
 
-Inference returns the model's three class probabilities for each input window,
-along with the window timestamps. It does not classify windows with argmax,
+Inference returns one P probability for each input window, along with timestamps. It does not classify windows with argmax,
 apply candidate-selection thresholds, or merge/select segments.
 """
 
@@ -18,6 +17,7 @@ from autocut.data_models import FeatureWindows
 from autocut.ml.checkpoint import load_checkpoint, restore_model, validate_checkpoint
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
+from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, engineer_motion_features
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,7 @@ class InferenceResult:
 
     Attributes:
         timestamps: Window start/end times in seconds, shape (N, 2).
-        probabilities: Class probabilities in class-ID order (0, 1, 2),
-            shape (N, 3). Each row sums to approximately one.
+        probabilities: Probability of membership in P, shape (N,).
     """
 
     timestamps: np.ndarray
@@ -41,19 +40,19 @@ def infer_windows(
     batch_size: int = 256,
     device: str | torch.device = "cpu",
 ) -> InferenceResult:
-    """Predict class probabilities for precomputed feature windows.
+    """Predict P probabilities for precomputed feature windows.
 
     Args:
         checkpoint: Path to a saved AutoCut checkpoint, or an already-loaded
             checkpoint payload.
         windows: FeatureWindows produced by AutoCut's window builder. Input
-            features must use the canonical FEATURE_NAMES order.
+            features must use the canonical FEATURE_NAMES order; compact-feature
+            checkpoints derive their four engineered signals from these vectors.
         batch_size: Maximum number of windows evaluated in one model batch.
         device: PyTorch device on which to run inference.
 
     Returns:
-        InferenceResult with the input window timestamps and float32
-        probabilities ordered as class 0, class 1, class 2.
+        InferenceResult with timestamps and float32 P probabilities, shape (N,).
 
     Notes:
         If the checkpoint contains a feature mask, it is applied to the full
@@ -137,10 +136,13 @@ def infer_windows(
         )
 
     feature_names = payload.get("feature_names")
-    if feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
+    compact_features = feature_names is not None and list(feature_names) == list(ENGINEERED_FEATURE_NAMES)
+    if compact_features:
+        X = engineer_motion_features(X)
+    elif feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
         raise ValueError(
-            "Checkpoint feature_names do not match AutoCut's canonical "
-            "feature order."
+            "Checkpoint feature_names must match either the canonical feature "
+            "order or the four engineered motion signals."
         )
 
     feature_mask = payload.get("feature_mask")
@@ -148,7 +150,7 @@ def infer_windows(
         mask = np.asarray(feature_mask, dtype=bool)
         if mask.shape != (X.shape[2],):
             raise ValueError(
-                "Checkpoint feature_mask must match the full input feature count."
+                "Checkpoint feature_mask must match the supplied feature count."
             )
         X = X[..., mask]
 
@@ -183,19 +185,19 @@ def infer_windows(
         for start in range(0, X.shape[0], batch_size):
             batch = torch.from_numpy(X[start:start + batch_size]).to(device)
             logits = model(batch)
-            probabilities = torch.softmax(logits, dim=1)
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise RuntimeError("P/U model must return exactly one logit per window.")
+            probabilities = torch.sigmoid(logits[:, 0])
             prediction_batches.append(probabilities.cpu().numpy())
 
     probabilities = np.concatenate(prediction_batches, axis=0).astype(
         np.float32,
         copy=False,
     )
-    if probabilities.shape != (X.shape[0], 3):
-        raise RuntimeError(
-            "Model output must contain exactly three class probabilities."
-        )
+    if probabilities.shape != (X.shape[0],):
+        raise RuntimeError("Model output must contain exactly one P probability per window.")
     if not np.isfinite(probabilities).all():
-        raise RuntimeError("Inference produced non-finite class probabilities.")
+        raise RuntimeError("Inference produced non-finite P probabilities.")
 
     return InferenceResult(
         timestamps=timestamps.copy(),
