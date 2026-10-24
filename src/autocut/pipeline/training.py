@@ -23,6 +23,7 @@ from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence, DEFAULT_ROI_LEFT, DEFAULT_ROI_RIGHT, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_TOP, validate_roi
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows
+from ..motion.engineered import engineer_motion_features
 from ..ml.training import TrainingConfig, train_single_fold
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,8 @@ def _load_record_windows(
         stride=window_stride,
     )
     X, y = build_targets(windows, annotations)
+    # Keep the four unsmoothed engineered signals as the only model inputs.
+    X = engineer_motion_features(X)
     # build_targets drops uncovered windows, so the original window timestamp
     # array no longer aligns row-for-row with X. The validator checks only
     # timestamp count here; the target builder already selects those rows.
