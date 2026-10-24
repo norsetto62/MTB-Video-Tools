@@ -103,7 +103,7 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("Synthetic event lies outside the sequence.")
 
     with tempfile.TemporaryDirectory(prefix="autocut_synthetic_") as temporary:
-        workdir = Path(args.output_dir).expanduser() if args.output_dir else Path(temporary)
+        workdir = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path(temporary).resolve()
         workdir.mkdir(parents=True, exist_ok=True)
         train_X, train_y, _ = _make_split(
             seed=args.seed, duration=args.duration, fps=args.fps,
