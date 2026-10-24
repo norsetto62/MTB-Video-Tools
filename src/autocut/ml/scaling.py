@@ -27,6 +27,7 @@ class FeatureScaler:
 
     enabled: bool = True
     eps: float = 1e-8
+    strategy: str = "standard"
     mean_: np.ndarray | None = field(default=None, init=False, repr=False)
     scale_: np.ndarray | None = field(default=None, init=False, repr=False)
 
@@ -38,6 +39,8 @@ class FeatureScaler:
         if not math.isfinite(float(self.eps)) or float(self.eps) <= 0.0:
             raise ValueError("eps must be a finite positive number.")
         self.eps = float(self.eps)
+        if self.strategy not in {"standard", "robust"}:
+            raise ValueError("strategy must be 'standard' or 'robust'.")
 
     @staticmethod
     def _as_feature_array(X: np.ndarray, *, operation: str) -> np.ndarray:
@@ -75,20 +78,25 @@ class FeatureScaler:
             return self
 
         reduce_axes = (0, 1) if X_arr.ndim == 3 else (0,)
-        mean64 = np.mean(X_arr, axis=reduce_axes, dtype=np.float64)
-        variance64 = np.var(X_arr, axis=reduce_axes, dtype=np.float64)
-        std64 = np.sqrt(variance64)
+        if self.strategy == "robust":
+            median64 = np.median(X_arr, axis=reduce_axes)
+            q25 = np.percentile(X_arr, 25, axis=reduce_axes)
+            q75 = np.percentile(X_arr, 75, axis=reduce_axes)
+            center = median64.astype(np.float32)
+            raw_scale = (q75 - q25).astype(np.float32)
+        else:
+            mean64 = np.mean(X_arr, axis=reduce_axes, dtype=np.float64)
+            variance64 = np.var(X_arr, axis=reduce_axes, dtype=np.float64)
+            center = mean64.astype(np.float32)
+            raw_scale = np.sqrt(variance64).astype(np.float32)
+        scale = np.where(raw_scale <= self.eps, 1.0, raw_scale).astype(np.float32)
 
-        mean = mean64.astype(np.float32)
-        std = std64.astype(np.float32)
-        scale = np.where(std <= self.eps, 1.0, std).astype(np.float32)
-
-        if not np.isfinite(mean).all() or not np.isfinite(scale).all():
+        if not np.isfinite(center).all() or not np.isfinite(scale).all():
             raise ValueError("Fitted feature statistics must be finite.")
         if np.any(scale <= 0.0):
             raise ValueError("Fitted feature scales must be positive.")
 
-        self.mean_ = mean
+        self.mean_ = center
         self.scale_ = scale
         return self
 
@@ -123,6 +131,7 @@ class FeatureScaler:
         return {
             "enabled": self.enabled,
             "eps": self.eps,
+            "strategy": self.strategy,
             "mean": self.mean_.tolist() if self.mean_ is not None else None,
             "scale": self.scale_.tolist() if self.scale_ is not None else None,
         }
@@ -135,7 +144,8 @@ class FeatureScaler:
 
         enabled = state_dict.get("enabled", True)
         eps = state_dict.get("eps", 1e-8)
-        scaler = cls(enabled=enabled, eps=eps)
+        strategy = state_dict.get("strategy", "standard")
+        scaler = cls(enabled=enabled, eps=eps, strategy=strategy)
 
         mean_value = state_dict.get("mean")
         scale_value = state_dict.get("scale")
