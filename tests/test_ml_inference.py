@@ -11,6 +11,7 @@ from autocut.ml.inference import InferenceResult, infer_windows
 from autocut.ml.model import MTBClassifier
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
+from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES
 
 
 def _windows(seed=5, count=7, steps=8):
@@ -112,3 +113,23 @@ def test_inference_rejects_non_feature_windows_input():
 def test_inference_does_not_return_argmax_or_selection_fields():
     result = infer_windows(_checkpoint(), _windows())
     assert set(vars(result)) == {"timestamps", "probabilities"}
+
+
+
+def test_inference_derives_four_engineered_features_from_canonical_windows():
+    windows = _windows()
+    model = MTBClassifier(feature_dim=4, hidden_dim=4, classifier_mid_dim=5, dropout=0.0)
+    scaler = FeatureScaler(strategy="robust").fit(
+        np.random.default_rng(17).normal(size=(10, 8, 4)).astype(np.float32)
+    )
+    payload = build_checkpoint(
+        model,
+        scaler=scaler,
+        feature_names=ENGINEERED_FEATURE_NAMES,
+        data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0},
+    )
+
+    result = infer_windows(payload, windows)
+
+    assert result.probabilities.shape == (len(windows.X),)
+    assert np.isfinite(result.probabilities).all()
