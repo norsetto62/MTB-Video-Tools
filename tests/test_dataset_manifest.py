@@ -196,3 +196,40 @@ videos:
 def test_load_manifest_requires_manifest_file(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Dataset manifest not found"):
         load_manifest(tmp_path / "missing.yaml")
+
+
+
+def test_load_manifest_allows_annotation_free_video(tmp_path: Path) -> None:
+    video = tmp_path / "unlabeled.mp4"
+    video.touch()
+    manifest = _write_manifest(
+        tmp_path / "manifest.yaml",
+        """
+videos:
+  - id: unlabeled
+    group_id: train_extra
+    video: unlabeled.mp4
+""",
+    )
+
+    record = load_manifest(manifest, verify_files=True)[0]
+    assert record.video_path == video.resolve()
+    assert record.annotation_path is None
+
+
+def test_load_manifest_allows_explicit_null_annotation(tmp_path: Path) -> None:
+    video = tmp_path / "unlabeled.mp4"
+    video.touch()
+    manifest = _write_manifest(
+        tmp_path / "manifest.yaml",
+        """
+videos:
+  - id: unlabeled
+    group_id: train_extra
+    video: unlabeled.mp4
+    annotation: null
+""",
+    )
+
+    record = load_manifest(manifest, verify_files=True)[0]
+    assert record.annotation_path is None
