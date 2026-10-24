@@ -17,6 +17,7 @@ from .training import _combine_records, _experiment_slug, _data_values, _path, _
 from ..dataset.manifest import get_unique_groups, load_manifest
 from ..dataset.sequence import build_feature_sequence
 from ..dataset.windows import build_windows
+from ..motion.engineered import engineer_motion_features
 from ..annotations import load_training_annotations
 from ..data_models import Clip
 from ..selection.candidates_generation import CandidateGenerationConfig, generate_candidates
@@ -168,8 +169,9 @@ def _write_selection_diagnostics(
         roi_bottom=roi_bottom, roi_top=roi_top,
     )
     windows = build_windows(sequence, window=window_duration, stride=window_stride)
+    compact_windows = engineer_motion_features(windows.X)
     _predicted, probabilities = _predict(
-        model, scaler, windows.X, positive_threshold=positive_threshold
+        model, scaler, compact_windows, positive_threshold=positive_threshold
     )
 
     selection = _section(settings, "selection")
