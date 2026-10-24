@@ -34,6 +34,11 @@ def _predict_record(
     batch_size: int,
 ) -> dict[str, Any]:
     """Extract complete windows and predict P probability and binary P/U label."""
+    if record.annotation_path is None:
+        raise ValueError(
+            f"Manifest entry {record.id!r} has no annotations and cannot be used "
+            "as a labeled validation record."
+        )
     annotation_video, _ = load_training_annotations(record.annotation_path)
     if annotation_video.resolve() != record.video_path.resolve():
         raise ValueError(
