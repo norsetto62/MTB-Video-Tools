@@ -22,7 +22,7 @@ class DatasetRecord:
     id: str
     group_id: str
     video_path: Path
-    annotation_path: Path
+    annotation_path: Path | None
     manifest_path: Path
 
     @property
@@ -129,7 +129,7 @@ def load_manifest(
     entries = _read_entries(raw, manifest_path)
     records: list[DatasetRecord] = []
     seen_ids: set[str] = set()
-    required_fields = ("id", "group_id", "video", "annotation")
+    required_fields = ("id", "group_id", "video")
 
     for index, item in enumerate(entries):
         if not isinstance(item, Mapping):
@@ -174,20 +174,23 @@ def load_manifest(
             base=manifest_path.parent,
             prefer_cwd=prefer_cwd,
         )
-        annotation_path = _resolve_manifest_path(
-            item["annotation"],
-            field="annotation",
-            entry_id=entry_id,
-            base=manifest_path.parent,
-            prefer_cwd=prefer_cwd,
-        )
+        annotation_value = item.get("annotation")
+        annotation_path = None
+        if annotation_value is not None:
+            annotation_path = _resolve_manifest_path(
+                annotation_value,
+                field="annotation",
+                entry_id=entry_id,
+                base=manifest_path.parent,
+                prefer_cwd=prefer_cwd,
+            )
 
         if verify_files:
             if not video_path.is_file():
                 raise FileNotFoundError(
                     f"Video file not found for entry {entry_id!r}: {video_path}"
                 )
-            if not annotation_path.is_file():
+            if annotation_path is not None and not annotation_path.is_file():
                 raise FileNotFoundError(
                     f"Annotation file not found for entry {entry_id!r}: {annotation_path}"
                 )
