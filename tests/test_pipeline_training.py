@@ -65,7 +65,7 @@ def test_run_training_combines_groups_and_writes_checkpoint_and_json(tmp_path, m
     _manifest(manifest, tmp_path)
     captured = {}
 
-    def fake_combine(records, settings):
+    def fake_combine(records, settings, **kwargs):
         # Make it explicit that train and validation receive separate records.
         captured.setdefault("record_ids", []).append([r.id for r in records])
         count = 9 if records[0].group_id == "train" else 6
