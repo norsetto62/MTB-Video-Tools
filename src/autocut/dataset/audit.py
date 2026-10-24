@@ -111,7 +111,7 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
             "id": record.id,
             "group_id": record.group_id,
             "video": str(record.video_path),
-            "annotation": str(record.annotation_path),
+            "annotation": str(record.annotation_path) if record.annotation_path is not None else None,
         }
         for record in records
     ]
@@ -292,9 +292,28 @@ def audit_manifest(
         annotations: list[Any] = []
         annotation_path: Path | None = None
         try:
-            annotation_path = _resolve_path(item.get("annotation"), relative_to=manifest_path.parent)
-            entry["annotation"] = str(annotation_path)
-            parsed_video, annotations = load_training_annotations(annotation_path)
+            annotation_value = item.get("annotation")
+            if annotation_value is None:
+                entry["annotation"] = None
+                entry["annotation_status"] = "unannotated_training_data_candidate"
+                entry["warnings"].append(
+                    "No annotations supplied; this video can contribute unlabeled "
+                    "windows to training, but not to labeled validation."
+                )
+                if duration is not None:
+                    windows = _estimated_windows(duration, window_duration, window_stride)
+                    entry["window_estimate"] = {
+                        "total": windows,
+                        "pure_windows": 0,
+                        "conflicting_windows": 0,
+                        "uncovered_windows": windows,
+                    }
+                    total_windows += windows
+                annotations = []
+            else:
+                annotation_path = _resolve_path(annotation_value, relative_to=manifest_path.parent)
+                entry["annotation"] = str(annotation_path)
+                parsed_video, annotations = load_training_annotations(annotation_path)
             if video_path is not None and parsed_video.resolve() != video_path.resolve():
                 entry["warnings"].append(
                     "Video path in annotation file differs from the manifest video path: "
