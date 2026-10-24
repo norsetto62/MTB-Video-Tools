@@ -125,28 +125,30 @@ def _load_record_windows(
     record: DatasetRecord,
     settings: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extract annotated training windows for one manifest record."""
+    """Extract P/U windows; an absent annotation file means every window is U."""
     record_started = time.perf_counter()
     _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     paths = _section(settings, "paths")
     cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
-    logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
-    video_path, annotations = load_training_annotations(record.annotation_path)
-    if video_path.resolve() != record.video_path.resolve():
-        raise ValueError(
-            f"Manifest entry {record.id!r} points to {record.video_path}, but "
-            f"its annotation file declares {video_path}."
-        )
-    if not annotations:
-        raise ValueError(f"Manifest entry {record.id!r} has no training annotations.")
 
-    # The training annotation format covers the complete video timeline. A
-    # clip from 0 to the last annotation end keeps timestamps aligned with the
-    # absolute annotation times and lets VideoReader enforce the clip bounds.
+    annotations = None
+    if record.annotation_path is not None:
+        logger.info("Record %s: loading annotations from %s", record.id, record.annotation_path)
+        video_path, annotations = load_training_annotations(record.annotation_path)
+        if video_path.resolve() != record.video_path.resolve():
+            raise ValueError(
+                f"Manifest entry {record.id!r} points to {record.video_path}, but "
+                f"its annotation file declares {video_path}."
+            )
+        if not annotations:
+            raise ValueError(f"Manifest entry {record.id!r} has no training annotations.")
+    else:
+        logger.info("Record %s: no annotations; treating all windows as U", record.id)
+
     from ..video.probe import get_video_info
     logger.info("Record %s: probing video metadata", record.id)
     info = get_video_info(record.video_path)
-    clip_end = annotations[-1].end
+    clip_end = annotations[-1].end if annotations else info.duration
     duration_tolerance = 0.05
 
     if clip_end > info.duration + duration_tolerance:
@@ -154,7 +156,7 @@ def _load_record_windows(
             f"Annotation end ({clip_end:.3f}s) exceeds video duration "
             f"({info.duration:.3f}s) for manifest entry {record.id!r}."
         )
-    
+
     from ..data_models import Clip
     clip = Clip(video_name=record.id, start=0.0, end=min(clip_end, info.duration))
     logger.info(
@@ -177,12 +179,15 @@ def _load_record_windows(
         window=window_duration,
         stride=window_stride,
     )
-    X, y = build_targets(windows, annotations)
+    if annotations is None:
+        # Unannotated footage contributes to U only; do not infer negative labels.
+        X = windows.X
+        y = np.zeros(len(X), dtype=np.float32)
+    else:
+        X, y = build_targets(windows, annotations)
     # Keep the four unsmoothed engineered signals as the only model inputs.
     X = engineer_motion_features(X)
-    # build_targets drops uncovered windows, so the original window timestamp
-    # array no longer aligns row-for-row with X. The validator checks only
-    # timestamp count here; the target builder already selects those rows.
+    # build_targets drops uncovered windows, so timestamps need not align row-for-row.
     errors = validate_targets(X, np.zeros((len(y), 2), dtype=np.float64), y)
     if errors:
         raise ValueError(
@@ -203,11 +208,18 @@ def _load_record_windows(
 def _combine_records(
     records: tuple[DatasetRecord, ...],
     settings: Mapping[str, Any],
+    *,
+    allow_unannotated: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build and concatenate all labeled windows for selected records."""
+    """Build and concatenate P/U windows; optionally admit annotation-free U videos."""
     features: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     for index, record in enumerate(records, start=1):
+        if record.annotation_path is None and not allow_unannotated:
+            raise ValueError(
+                f"Manifest entry {record.id!r} has no annotations; "
+                "unannotated videos are allowed only in the training split."
+            )
         logger.info(
             "Preparing %s data: video %d/%d (%.0f%%): %s (group %s)",
             "split", index, len(records), 100.0 * index / len(records),
@@ -273,7 +285,7 @@ def run_training(
         experiment_name, len(train_records), len(val_records),
     )
     logger.info("Preparing training split: 0/%d videos", len(train_records))
-    train_X, train_y = _combine_records(train_records, settings)
+    train_X, train_y = _combine_records(train_records, settings, allow_unannotated=True)
     logger.info("Training data ready: %d labelled windows from %d videos", len(train_X), len(train_records))
     logger.info("Preparing validation split: 0/%d videos", len(val_records))
     val_X, val_y = _combine_records(val_records, settings)
@@ -289,10 +301,10 @@ def run_training(
         "window": window_duration,
         "stride": window_stride,
         "target_generation": {
-            "positive_set": "pure score-3 windows",
-            "unlabeled_set": "pure score-0/1/2 windows",
-            "mixed_windows": "discard",
-            "label_rule": "all overlapping annotations must agree",
+            "positive_set": "pure score-3 windows from annotated videos",
+            "unlabeled_set": "pure score-0/1/2 windows plus all windows from annotation-free training videos",
+            "mixed_windows": "discard for annotated videos",
+            "label_rule": "all overlapping annotations must agree; annotation-free videos contribute only U",
         },
         "pu_training": {
             "objective": "non-negative PU risk",
