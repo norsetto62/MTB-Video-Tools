@@ -33,6 +33,7 @@ class TrainingConfig:
     classifier_mid_dim: int = 64
     dropout: float = 0.4
     use_scaling: bool = True
+    scaler_strategy: str = "robust"
     patience: int = 10
     min_delta: float = 1e-4
     weight_decay: float = 1e-2
@@ -62,6 +63,8 @@ class TrainingConfig:
             raise ValueError("dropout must be finite and in the range [0, 1).")
         if not isinstance(self.use_scaling, bool):
             raise ValueError("use_scaling must be a bool.")
+        if self.scaler_strategy not in {"standard", "robust"}:
+            raise ValueError("scaler_strategy must be 'standard' or 'robust'.")
         if isinstance(self.positive_prior, bool) or not isinstance(self.positive_prior, (int, float)) or not math.isfinite(float(self.positive_prior)) or not 0 < float(self.positive_prior) < 1:
             raise ValueError("positive_prior must be finite and strictly between 0 and 1.")
         for name in ("lr", "weight_decay", "min_delta", "dropout", "positive_prior"):
@@ -173,7 +176,9 @@ def _fit(
     metadata: dict[str, Any] | None = None,
     early_stopping: bool = True,
 ) -> tuple[MTBClassifier, FeatureScaler, dict[str, Any]]:
-    train_X = _validate_windows(train_windows, name="train_windows")
+    train_raw = np.asarray(train_windows)
+    feature_dim = train_raw.shape[2] if train_raw.ndim == 3 and train_raw.shape[2] in (4, 54) else 54
+    train_X = _validate_windows(train_windows, name="train_windows", feature_dim=feature_dim)
     train_y = targets_to_classes(train_targets)
     if len(train_X) != len(train_y):
         raise ValueError("train_windows and train_targets must contain the same number of samples.")
@@ -181,7 +186,7 @@ def _fit(
     if (val_windows is None) != (val_targets is None):
         raise ValueError("val_windows and val_targets must be supplied together.")
     if val_windows is not None:
-        val_X = _validate_windows(val_windows, name="val_windows")
+        val_X = _validate_windows(val_windows, name="val_windows", feature_dim=feature_dim)
         val_y = targets_to_classes(val_targets)
         if len(val_X) != len(val_y):
             raise ValueError("val_windows and val_targets must contain the same number of samples.")
@@ -222,7 +227,7 @@ def _fit(
     if fold_video_id is not None and (not isinstance(fold_video_id, str) or not fold_video_id.strip()):
         raise ValueError("fold_video_id must be a non-empty string or None.")
 
-    scaler = FeatureScaler(enabled=config.use_scaling)
+    scaler = FeatureScaler(enabled=config.use_scaling, strategy=config.scaler_strategy)
     train_scaled = scaler.fit_transform(train_X)
     train_tensor = torch.from_numpy(np.ascontiguousarray(train_scaled, dtype=np.float32))
     train_label_tensor = torch.from_numpy(train_y)
@@ -306,7 +311,12 @@ def _fit(
     }
     if checkpoint_path is not None:
         save_checkpoint(
-            checkpoint_path, model, scaler=scaler, training_config=asdict(config),
+            checkpoint_path, model, scaler=scaler,
+            feature_names=(
+                ["vertical_flow_gradient", "lateral_flow_asymmetry", "expansion_index", "roll_index"]
+                if model.feature_dim == 4 else None
+            ),
+            training_config=asdict(config),
             data_config=data_config, epoch=best_epoch,
             best_metric=float(best_loss) if val_tensor is not None else None,
             metadata={
