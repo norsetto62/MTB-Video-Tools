@@ -1,8 +1,8 @@
 """Plot engineered optical-flow signals against MTB training annotations.
 
 Examples:
-    python tools/plot_motion_experiments.py annotations.txt --show
-    python tools/plot_motion_experiments.py annotations.txt --signals edge_residual,tunnel_vision --show
+    python tools/plot_motion_experiments.py annotations.txt
+    python tools/plot_motion_experiments.py annotations.txt --signals edge_residual,tunnel_vision
     python tools/plot_motion_experiments.py annotations.txt --edge-cells 0,0 0,2 --center-cell 1,1
     python tools/plot_motion_experiments.py --list-signals
 
@@ -195,6 +195,7 @@ def _annotation_label(score: int) -> str:
     return f"MTB {score}{suffix}"
 
 
+"""
 def plot_signals(
     timestamps: np.ndarray,
     signals: dict[str, np.ndarray],
@@ -207,7 +208,7 @@ def plot_signals(
     polyorder: int,
     show: bool,
 ) -> Path:
-    """Write stacked per-signal plots with annotation shading."""
+
     try:
         import matplotlib
         matplotlib.use("Agg", force=True)
@@ -276,7 +277,7 @@ def plot_signals(
         webbrowser.open(html_path.resolve().as_uri())
         print(f"Opened interactive plot: {html_path.resolve()}")
     return output_path
-
+"""
 
 def save_interactive_html(
     timestamps: np.ndarray,
@@ -302,7 +303,7 @@ def save_interactive_html(
 
     names = list(signals)
     figure = make_subplots(
-        rows=len(names), cols=1, shared_xaxes=True, vertical_spacing=0.025,
+        rows=len(names)+1, cols=1, shared_xaxes=True, vertical_spacing=0.025,
         subplot_titles=names,
     )
     for row, name in enumerate(names, start=1):
@@ -329,6 +330,23 @@ def save_interactive_html(
                 fillcolor=ANNOTATION_COLORS[annotation.score],
                 opacity=0.25, line_width=0, layer="below", row=row, col=1,
             )
+
+    Jindex = smoothed["vertical_flow_gradient"] * smoothed["lateral_flow_asymmetry"] * smoothed["expansion_index"] * smoothed["roll_index"]
+    figure.add_trace(
+        go.Scatter(
+            x=timestamps, y=Jindex, mode="lines",
+            line={"color": "#1FE056", "width": 1.2}, name="Combined",
+            hovertemplate="Time: %{x:.2f}s<br>Jindex: %{y:.6g}<extra></extra>",
+        ), row=len(names)+1, col=1,
+    )
+    figure.update_yaxes(row=len(names)+1, col=1, range=[-10.0, 10.0])
+    for annotation in annotations:
+        figure.add_vrect(
+            x0=annotation.start, x1=annotation.end,
+            fillcolor=ANNOTATION_COLORS[annotation.score],
+            opacity=0.25, line_width=0, layer="below", row=len(names)+1, col=1,
+        )
+
     for score, color in ANNOTATION_COLORS.items():
         figure.add_trace(
             go.Scatter(
@@ -337,6 +355,7 @@ def save_interactive_html(
                 name=_annotation_label(score), hoverinfo="skip",
             ), row=1, col=1,
         )
+
     figure.update_layout(
         title={"text": f"Motion engineering experiments — {video_name}", "x": 0.01},
         template="plotly_white", hovermode="x unified",
@@ -379,8 +398,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="PNG output path (default: data/plots/<annotation-stem>_motion_experiments.png).")
     parser.add_argument("--allow-extraction", action="store_true",
                         help="Allow expensive optical-flow extraction if the exact feature cache entry is missing.")
-    parser.add_argument("--show", action="store_true",
-                        help="Also open a zoomable Plotly HTML plot in the browser.")
     return parser
 
 
@@ -415,7 +432,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     settings = load_config(args.config)
     (
-        _manifest, sample_fps, processing_width, _window_duration, _window_stride,
+        _, sample_fps, processing_width, _, _,
         roi_left, roi_right, roi_bottom, roi_top,
     ) = _data_values(settings)
     paths = settings.get("paths", {})
@@ -468,13 +485,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_path = args.output or Path("data/plots") / (
         f"{args.annotations.stem}_motion_experiments.png"
     )
-    saved_path = plot_signals(
-        sequence.timestamps, signals, annotations,
-        video_name=video_path.name, output_path=output_path,
-        smooth=not args.no_smoothing,
+    smoothed = {
+        name: apply_savgol(values, args.savgol_window_length, args.savgol_polyorder)
+        for name, values in signals.items()
+    }
+    html_path = output_path.with_suffix(".html")
+    saved_path = save_interactive_html(
+        sequence.timestamps, signals, annotations, video_name=video_path.name,
+        output_path=html_path, smooth=args.no_smoothing, smoothed=smoothed,
         window_length=args.savgol_window_length, polyorder=args.savgol_polyorder,
-        show=args.show,
     )
+    import webbrowser
+    webbrowser.open(html_path.resolve().as_uri())
+    print(f"Opened interactive plot: {html_path.resolve()}")
     print(f"Saved motion experiment plot: {saved_path.resolve()}")
     print(f"Signals plotted: {', '.join(selected_names)}")
     print(f"Edge cells averaged: {args.edge_cells}; center cell: {args.center_cell}")
