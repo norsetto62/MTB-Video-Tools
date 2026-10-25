@@ -22,8 +22,8 @@ from ..config_loader import Config
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence, DEFAULT_ROI_LEFT, DEFAULT_ROI_RIGHT, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_TOP, validate_roi
 from ..dataset.targets import build_targets, validate_targets
-from ..dataset.windows import build_windows
-from ..motion.engineered import engineer_motion_features
+from ..dataset.windows import build_windows_from_features
+from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
 from ..ml.training import TrainingConfig, train_single_fold
 
 logger = logging.getLogger(__name__)
@@ -174,10 +174,10 @@ def _load_record_windows(
         roi_bottom=roi_bottom, roi_top=roi_top,
     )
     logger.info("Record %s: extracted %d feature rows; building windows", record.id, len(sequence.features))
-    windows = build_windows(
-        sequence,
-        window=window_duration,
-        stride=window_stride,
+    model_sequence = engineer_motion_sequence(sequence.features)
+    windows = build_windows_from_features(
+        model_sequence, sequence.timestamps,
+        window=window_duration, stride=window_stride,
     )
     if annotations is None:
         # Unannotated footage contributes to U only; do not infer negative labels.
@@ -185,8 +185,6 @@ def _load_record_windows(
         y = np.zeros(len(X), dtype=np.float32)
     else:
         X, y = build_targets(windows, annotations)
-    # Keep the four unsmoothed engineered signals as the only model inputs.
-    X = engineer_motion_features(X)
     # build_targets drops uncovered windows, so timestamps need not align row-for-row.
     errors = validate_targets(X, np.zeros((len(y), 2), dtype=np.float64), y)
     if errors:
@@ -300,6 +298,16 @@ def run_training(
         "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
+        "feature_names": list(MODEL_FEATURE_NAMES),
+        "feature_transform": {
+            "spike_compression_threshold": 5.0,
+            "spike_compression_slope": 0.2,
+            "savgol_window_length": 9,
+            "savgol_polyorder": 2,
+            "savgol_signals": ["u", "v", "center_residual"],
+            "savgol_applied_before_windowing": True,
+            "center_residual": "hypot(grid_1_1_u - flow_u, grid_1_1_v - flow_v)",
+        },
         "target_generation": {
             "positive_set": "pure score-3 windows from annotated videos",
             "unlabeled_set": "pure score-0/1/2 windows plus all windows from annotation-free training videos",
