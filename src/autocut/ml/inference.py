@@ -96,8 +96,8 @@ def infer_windows(
     )
     if X.shape[2] != expected_input_features:
         raise ValueError(
-            f"windows.X must contain {expected_input_features} features for this checkpoint; "
-            f"got {X.shape[2]}."
+            f"windows.X must contain {expected_input_features} features for this checkpoint "
+            f"(canonical features for canonical checkpoints); got {X.shape[2]}."
         )
 
     try:
