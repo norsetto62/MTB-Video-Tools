@@ -1,8 +1,5 @@
 """Generate fixed-size temporal windows from feature sequences."""
-
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import numpy as np
 
@@ -10,156 +7,74 @@ from ..data_models import FeatureSequence, FeatureWindows
 
 
 def build_windows(
-    sequence: FeatureSequence,
+    sequence: FeatureSequence, *, window: float, stride: float,
+) -> FeatureWindows:
+    """Window a canonical feature sequence using the standard temporal grid."""
+    return build_windows_from_features(
+        sequence.features, sequence.timestamps, window=window, stride=stride
+    )
+
+
+def build_windows_from_features(
+    features: np.ndarray,
+    timestamps: np.ndarray,
     *,
     window: float,
     stride: float,
 ) -> FeatureWindows:
-    """Generate fixed-size temporal windows.
+    """Window any continuous (T,F) feature array before/after model transforms.
 
-    Feature timestamps represent the END of each frame-to-frame
-    optical-flow interval.
-
-    For example, at 2 FPS:
-
-        timestamp=0.5 -> flow over [0.0, 0.5)
-        timestamp=1.0 -> flow over [0.5, 1.0)
-
-    Therefore, if the first feature timestamp is 0.5 and ``dt`` is
-    0.5, the represented flow interval begins at 0.0.
-
-    Windows are placed on a canonical temporal grid derived from the
-    flow sampling interval. Window times are therefore not taken from
-    floating-point arithmetic on individual feature timestamps.
-
-    Args:
-        sequence: Time-ordered feature sequence.
-        window: Window duration in seconds.
-        stride: Distance between consecutive window starts in seconds.
-
-    Returns:
-        FeatureWindows containing:
-
-        - ``X`` with shape ``(N, samples_per_window, n_features)``
-        - ``timestamps`` with shape ``(N, 2)``, containing
-          ``[start, end]`` for each window.
-
-    Raises:
-        ValueError: If the temporal geometry is invalid or the feature
-            sequence is too short to produce a complete window.
+    Filtering and other sequence-level transforms should be applied to the
+    entire sequence before calling this function, not independently per window.
     """
-    if window <= 0:
+    if not np.isfinite(window) or window <= 0:
         raise ValueError("window must be greater than zero.")
-
-    if stride <= 0:
+    if not np.isfinite(stride) or stride <= 0:
         raise ValueError("stride must be greater than zero.")
+    try:
+        features = np.asarray(features, dtype=np.float32)
+        timestamps = np.asarray(timestamps, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("features and timestamps must be numeric arrays.") from exc
+    if features.ndim != 2 or features.shape[0] < 2 or features.shape[1] < 1:
+        raise ValueError("features must have shape (T,F) with T >= 2 and F >= 1.")
+    if timestamps.ndim != 1 or len(timestamps) != len(features):
+        raise ValueError("timestamps must be 1D and match the feature sequence length.")
+    if not np.isfinite(features).all() or not np.isfinite(timestamps).all():
+        raise ValueError("features and timestamps must contain only finite values.")
+    if not np.all(np.diff(timestamps) > 0):
+        raise ValueError("timestamps must be strictly increasing.")
 
-    timestamps = sequence.timestamps
-    features = sequence.features
-
-    if len(timestamps) != len(features):
-        raise ValueError(
-            "timestamps and feature matrix have different lengths."
-        )
-
-    if len(timestamps) < 2:
-        raise ValueError(
-            "at least two feature timestamps are required "
-            "to determine the flow sampling interval."
-        )
-
-    # Feature timestamps represent the END of each flow interval.
-    # Derive dt from the actual timestamps rather than assuming FPS.
     dt = float(np.median(np.diff(timestamps)))
-
     if dt <= 0:
         raise ValueError("invalid feature sampling interval.")
-
-    window_samples_float = window / dt
-    stride_samples_float = stride / dt
-
-    samples_per_window = int(round(window_samples_float))
-    samples_per_stride = int(round(stride_samples_float))
-
-    # Do not silently change the requested temporal geometry by
-    # rounding window or stride to a different number of samples.
-    if not np.isclose(
-        window_samples_float,
-        samples_per_window,
-        rtol=0.0,
-        atol=1e-6,
-    ):
-        raise ValueError(
-            f"window={window:.6f}s is not an integer multiple "
-            f"of feature dt={dt:.6f}s."
-        )
-
-    if not np.isclose(
-        stride_samples_float,
-        samples_per_stride,
-        rtol=0.0,
-        atol=1e-6,
-    ):
-        raise ValueError(
-            f"stride={stride:.6f}s is not an integer multiple "
-            f"of feature dt={dt:.6f}s."
-        )
-
+    window_samples_float, stride_samples_float = window / dt, stride / dt
+    samples_per_window, samples_per_stride = int(round(window_samples_float)), int(round(stride_samples_float))
+    if not np.isclose(window_samples_float, samples_per_window, rtol=0.0, atol=1e-6):
+        raise ValueError(f"window={window:.6f}s is not an integer multiple of feature dt={dt:.6f}s.")
+    if not np.isclose(stride_samples_float, samples_per_stride, rtol=0.0, atol=1e-6):
+        raise ValueError(f"stride={stride:.6f}s is not an integer multiple of feature dt={dt:.6f}s.")
     if samples_per_window < 2:
-        raise ValueError(
-            f"window={window:.3f}s is too short "
-            f"for feature dt={dt:.6f}s."
-        )
+        raise ValueError(f"window={window:.3f}s is too short for feature dt={dt:.6f}s.")
 
-    # The first feature represents the interval immediately preceding
-    # its timestamp. Therefore N feature rows represent:
-    #
-    #     [first_timestamp - dt, last_timestamp)
-    #
     flow_start = float(timestamps[0] - dt)
-    flow_end = float(timestamps[-1])
-
-    represented_duration = flow_end - flow_start
-
+    represented_duration = float(timestamps[-1] - flow_start)
     max_start_offset = represented_duration - window
-
     if max_start_offset < -1e-9:
-        raise ValueError(
-            f"feature duration={represented_duration:.6f}s is shorter "
-            f"than window={window:.6f}s."
-        )
-
-    # Number of complete windows on the canonical stride grid.
+        raise ValueError(f"feature duration={represented_duration:.6f}s is shorter than window={window:.6f}s.")
     n_windows = int(np.floor((max_start_offset + 1e-9) / stride)) + 1
-
-    windows: list[np.ndarray] = []
-    window_timestamps: list[tuple[float, float]] = []
-
+    windows, window_timestamps = [], []
     for window_number in range(n_windows):
         index = window_number * samples_per_stride
-
-        windows.append(
-            features[index:index + samples_per_window]
-        )
-
-        # The first flow row represents [flow_start, flow_start + dt).
-        # Therefore row i starts at flow_start + i * dt.
-        window_start = flow_start + index * dt
-        window_end = window_start + window
-
-        window_timestamps.append((window_start, window_end))
-
-    X = np.stack(windows).astype(
-        np.float32,
-        copy=False,
-    )
-
-    timestamps_array = np.asarray(
-        window_timestamps,
-        dtype=np.float64,
-    )
-
+        end_index = index + samples_per_window
+        if end_index > len(features):
+            break
+        windows.append(features[index:end_index])
+        start = flow_start + index * dt
+        window_timestamps.append((start, start + window))
+    if not windows:
+        raise ValueError("feature sequence is too short to produce a complete window.")
     return FeatureWindows(
-        X=X,
-        timestamps=timestamps_array,
+        X=np.stack(windows).astype(np.float32, copy=False),
+        timestamps=np.asarray(window_timestamps, dtype=np.float64),
     )
