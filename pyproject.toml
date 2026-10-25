@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python",
     "librosa",
     "PyYAML",
+    "scipy",
 ]
 
 [tool.setuptools.packages.find]
@@ -27,7 +28,6 @@ ml = [
 plot = [
     "matplotlib",
     "plotly",
-    "scipy",
 ]
 hpo = [
     "optuna>=3.0.0",
