@@ -18,6 +18,7 @@ import torch
 from autocut.ml.checkpoint import save_checkpoint
 from autocut.ml.model import MTBClassifier
 from autocut.ml.scaling import FeatureScaler
+from autocut.motion.engineered import MODEL_FEATURE_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ def _fit(
     early_stopping: bool = True,
 ) -> tuple[MTBClassifier, FeatureScaler, dict[str, Any]]:
     train_raw = np.asarray(train_windows)
-    feature_dim = train_raw.shape[2] if train_raw.ndim == 3 and train_raw.shape[2] in (4, 54) else 54
+    feature_dim = train_raw.shape[2] if train_raw.ndim == 3 and train_raw.shape[2] in (4, 7, 54) else 54
     train_X = _validate_windows(train_windows, name="train_windows", feature_dim=feature_dim)
     train_y = targets_to_classes(train_targets)
     if len(train_X) != len(train_y):
@@ -313,8 +314,13 @@ def _fit(
         save_checkpoint(
             checkpoint_path, model, scaler=scaler,
             feature_names=(
-                ["vertical_flow_gradient", "lateral_flow_asymmetry", "expansion_index", "roll_index"]
-                if model.feature_dim == 4 else None
+                list(data_config["feature_names"])
+                if data_config is not None and "feature_names" in data_config
+                else (
+                    ["vertical_flow_gradient", "lateral_flow_asymmetry", "expansion_index", "roll_index"]
+                    if model.feature_dim == 4
+                    else (list(MODEL_FEATURE_NAMES) if model.feature_dim == 7 else None)
+                )
             ),
             training_config=asdict(config),
             data_config=data_config, epoch=best_epoch,
