@@ -301,6 +301,15 @@ def save_interactive_html(
             "python -m pip install -e '.[plot]'"
         ) from exc
 
+    compressed = {
+        name: np.sign(values) * np.where(
+            np.abs(values) <= 5.0,
+            np.abs(values),
+            5.0 + 0.2 * (np.abs(values) - 5.0),
+        )
+        for name, values in signals.items()
+    }
+
     names = list(signals)
     figure = make_subplots(
         rows=len(names)+1, cols=1, shared_xaxes=True, vertical_spacing=0.025,
@@ -324,13 +333,21 @@ def save_interactive_html(
                     hovertemplate="Time: %{x:.2f}s<br>Raw: %{y:.6g}<extra></extra>",
                 ), row=row, col=1,
             )
+        figure.add_trace(
+            go.Scatter(
+                x=timestamps, y=compressed[name], mode="lines",
+                line={"color": "#1FE056", "width": 1.2}, name="Compressed",
+                hovertemplate="Time: %{x:.2f}s<br>Jindex: %{y:.6g}<extra></extra>"  ,
+            ), row=row, col=1,
+        )
+
         for annotation in annotations:
             figure.add_vrect(
                 x0=annotation.start, x1=annotation.end,
                 fillcolor=ANNOTATION_COLORS[annotation.score],
                 opacity=0.25, line_width=0, layer="below", row=row, col=1,
             )
-
+    """
     Jindex = smoothed["vertical_flow_gradient"] * smoothed["lateral_flow_asymmetry"] * smoothed["expansion_index"] * smoothed["roll_index"]
     figure.add_trace(
         go.Scatter(
@@ -339,6 +356,7 @@ def save_interactive_html(
             hovertemplate="Time: %{x:.2f}s<br>Jindex: %{y:.6g}<extra></extra>",
         ), row=len(names)+1, col=1,
     )
+    """
     figure.update_yaxes(row=len(names)+1, col=1, range=[-10.0, 10.0])
     for annotation in annotations:
         figure.add_vrect(
