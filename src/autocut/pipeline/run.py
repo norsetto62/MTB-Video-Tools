@@ -21,6 +21,7 @@ from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
 from ..dataset.windows import build_windows
 from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows, InferenceResult
+from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
 from ..ml.checkpoint import load_checkpoint, validate_checkpoint
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
@@ -50,6 +51,8 @@ def _extract_windows(
     start: float,
     end: float,
     settings: Config,
+    *,
+    feature_names: list[str] | tuple[str, ...] | None = None,
 ) -> FeatureWindows | None:
     """Use the canonical dataset sequence builder, then construct windows."""
     from ..dataset.sequence import build_feature_sequence
@@ -78,6 +81,18 @@ def _extract_windows(
             features=sequence.features,
             timestamps=np.asarray(sequence.timestamps - start, dtype=np.float64),
         )
+        # Seven-signal checkpoints require the transform over the continuous
+        # sequence before overlapping windows are formed (especially Savitzky-Golay).
+        if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES):
+            transformed = engineer_motion_sequence(sequence.features)
+            from ..dataset.windows import build_windows_from_features
+
+            return build_windows_from_features(
+                transformed,
+                sequence.timestamps,
+                window=settings.features.window_duration,
+                stride=settings.features.window_stride,
+            )
         return build_windows(
             sequence,
             window=settings.features.window_duration,
@@ -366,6 +381,7 @@ def run_pipeline(
         else:
             raise TypeError("checkpoint must be a path or a checkpoint mapping.")
         data_config = payload.get("data_config", {})
+        checkpoint_feature_names = payload.get("feature_names")
         trained_roi = data_config.get("roi") if isinstance(data_config, Mapping) else None
         if not isinstance(trained_roi, Mapping):
             raise ValueError(
@@ -378,7 +394,10 @@ def run_pipeline(
             "data.roi_bottom": trained_roi["bottom"],
             "data.roi_top": trained_roi["top"],
         })
-        windows = _extract_windows(Path(video_name), start, end, settings)
+        windows = _extract_windows(
+            Path(video_name), start, end, settings,
+            feature_names=checkpoint_feature_names,
+        )
         if windows is None:
             inference_summaries.append({
                 "video": video_name,
