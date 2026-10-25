@@ -13,11 +13,12 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from autocut.data_models import FeatureWindows
+from autocut.data_models import FeatureSequence, FeatureWindows
 from autocut.ml.checkpoint import load_checkpoint, restore_model, validate_checkpoint
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
-from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, engineer_motion_features
+from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, engineer_motion_features, engineer_motion_sequence
+from autocut.dataset.windows import build_windows_from_features
 
 
 @dataclass(frozen=True)
@@ -87,9 +88,15 @@ def infer_windows(
         raise ValueError("windows.X must not have empty dimensions.")
     if not np.isfinite(X).all():
         raise ValueError("windows.X must contain only finite values.")
-    if X.shape[2] != len(FEATURE_NAMES):
+    feature_names = payload.get("feature_names")
+    expected_input_features = (
+        len(MODEL_FEATURE_NAMES)
+        if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
+        else len(FEATURE_NAMES)
+    )
+    if X.shape[2] != expected_input_features:
         raise ValueError(
-            f"windows.X must contain {len(FEATURE_NAMES)} canonical features; "
+            f"windows.X must contain {expected_input_features} features for this checkpoint; "
             f"got {X.shape[2]}."
         )
 
@@ -135,14 +142,14 @@ def infer_windows(
             f"{window_duration:g}-second window."
         )
 
-    feature_names = payload.get("feature_names")
     compact_features = feature_names is not None and list(feature_names) == list(ENGINEERED_FEATURE_NAMES)
+    seven_features = feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
     if compact_features:
         X = engineer_motion_features(X)
-    elif feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
+    elif not seven_features and feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
         raise ValueError(
-            "Checkpoint feature_names must match either the canonical feature "
-            "order or the four engineered motion signals."
+            "Checkpoint feature_names must match canonical features, the legacy "
+            "four engineered signals, or the seven-signal sequence transform."
         )
 
     feature_mask = payload.get("feature_mask")
@@ -202,4 +209,45 @@ def infer_windows(
     return InferenceResult(
         timestamps=timestamps.copy(),
         probabilities=probabilities,
+    )
+
+
+
+def infer_sequence(
+    checkpoint: str | Path | Mapping[str, Any],
+    sequence: FeatureSequence,
+    *,
+    window: float | None = None,
+    stride: float | None = None,
+    batch_size: int = 256,
+    device: str | torch.device = "cpu",
+) -> InferenceResult:
+    """Transform a full canonical sequence, window it, and infer consistently.
+
+    Use this entry point for seven-signal checkpoints because Savitzky-Golay
+    filtering must run over the continuous sequence before overlapping windows
+    are created. Legacy canonical/four-signal checkpoints remain supported.
+    """
+    if not isinstance(sequence, FeatureSequence):
+        raise TypeError("sequence must be a FeatureSequence instance.")
+    if isinstance(checkpoint, (str, Path)):
+        payload = load_checkpoint(checkpoint, map_location="cpu")
+    elif isinstance(checkpoint, Mapping):
+        payload = validate_checkpoint(dict(checkpoint))
+    else:
+        raise TypeError("checkpoint must be a path or a checkpoint mapping.")
+    data_config = payload.get("data_config", {})
+    duration = float(data_config["window"] if window is None else window)
+    step = float(data_config.get("stride", duration) if stride is None else stride)
+    feature_names = payload.get("feature_names")
+    if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES):
+        transformed = engineer_motion_sequence(sequence.features)
+        windows = build_windows_from_features(
+            transformed, sequence.timestamps, window=duration, stride=step
+        )
+    else:
+        from autocut.dataset.windows import build_windows
+        windows = build_windows(sequence, window=duration, stride=step)
+    return infer_windows(
+        payload, windows, batch_size=batch_size, device=device
     )
