@@ -386,6 +386,16 @@ def run_lovo(
         "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
+        "feature_names": list(MODEL_FEATURE_NAMES),
+        "feature_transform": {
+            "spike_compression_threshold": 5.0,
+            "spike_compression_slope": 0.2,
+            "savgol_window_length": 9,
+            "savgol_polyorder": 2,
+            "savgol_signals": ["u", "v", "center_residual"],
+            "savgol_applied_before_windowing": True,
+            "center_residual": "hypot(grid_1_1_u - flow_u, grid_1_1_v - flow_v)",
+        },
         "pu_training": {
             "objective": "non-negative PU risk",
             "positive_prior": training_config.positive_prior,
