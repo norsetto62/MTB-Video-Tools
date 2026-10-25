@@ -16,8 +16,9 @@ from .training import _data_values, _path, _section
 from ..data_models import Clip
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
-from ..dataset.windows import build_windows
-from ..motion.engineered import ENGINEERED_FEATURE_NAMES, engineer_motion_features
+from ..dataset.windows import build_windows, build_windows_from_features
+from ..motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, engineer_motion_features, engineer_motion_sequence
+from ..motion.features import FEATURE_NAMES
 from ..ml.checkpoint import load_checkpoint, restore_model
 from ..ml.scaling import FeatureScaler
 
@@ -79,10 +80,20 @@ def _predict_record(
         roi_bottom=roi_bottom,
         roi_top=roi_top,
     )
-    windows = build_windows(sequence, window=window, stride=stride)
-    X = windows.X
-    if checkpoint.get("feature_names") == list(ENGINEERED_FEATURE_NAMES):
-        X = engineer_motion_features(X)
+    feature_names = checkpoint.get("feature_names")
+    if feature_names == list(MODEL_FEATURE_NAMES):
+        model_sequence = engineer_motion_sequence(sequence.features)
+        windows = build_windows_from_features(
+            model_sequence, sequence.timestamps, window=window, stride=stride
+        )
+        X = windows.X
+    else:
+        windows = build_windows(sequence, window=window, stride=stride)
+        X = windows.X
+        if feature_names == list(ENGINEERED_FEATURE_NAMES):
+            X = engineer_motion_features(X)
+        elif feature_names is not None and feature_names != list(FEATURE_NAMES):
+            raise ValueError(f"Unsupported checkpoint feature schema: {feature_names!r}.")
 
     feature_mask = checkpoint.get("feature_mask")
     if feature_mask is not None:
