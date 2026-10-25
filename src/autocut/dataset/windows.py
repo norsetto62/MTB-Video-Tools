@@ -10,6 +10,11 @@ def build_windows(
     sequence: FeatureSequence, *, window: float, stride: float,
 ) -> FeatureWindows:
     """Window a canonical feature sequence using the standard temporal grid."""
+    if len(sequence.timestamps) < 2:
+        raise ValueError(
+            "at least two feature timestamps are required "
+            "to determine the flow sampling interval."
+        )
     return build_windows_from_features(
         sequence.features, sequence.timestamps, window=window, stride=stride
     )
