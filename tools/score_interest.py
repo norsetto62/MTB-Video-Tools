@@ -1,12 +1,14 @@
 """Compute interpretable MTB interest scores from cached optical-flow features.
 
-Example:
+Examples:
     python tools/score_interest.py data/annotations/mentorella.txt --start 300 --end 350
-    python tools/score_interest.py data/annotations/mentorella.txt --window-sizes 2 4 6 8
+    python tools/score_interest.py data/videos/mentorella.mp4 --window-sizes 4 6 8
 
 The tool is exploratory: it does not change training features or model behavior.
-It reuses the canonical feature sequence/cache and writes CSV + interactive HTML
-under data/plots by default.
+It accepts either a video file or an annotation TXT file. Annotations are optional
+and are only overlaid in the HTML; they do not affect score calculation. It reuses
+the canonical feature sequence/cache and writes CSV + interactive HTML under
+data/plots by default.
 """
 from __future__ import annotations
 
@@ -272,7 +274,8 @@ def _write_html(path: Path, rows_by_window: dict[float, list[dict[str, float]]],
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("annotations", type=Path, help="Training annotation file for the target video.")
+    parser.add_argument("source", type=Path,
+                        help="Video file to score, or an annotation TXT file that identifies a video.")
     parser.add_argument("--config", type=Path, default=Path("config/train.yaml"))
     parser.add_argument("--start", type=float, help="Optional start time in seconds.")
     parser.add_argument("--end", type=float, help="Optional end time in seconds.")
@@ -297,19 +300,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("window sizes and stride must be greater than zero.")
     if args.gate_low is not None and args.gate_high is None or args.gate_high is not None and args.gate_low is None:
         raise ValueError("--gate-low and --gate-high must be supplied together.")
-    if not args.annotations.is_file():
-        raise FileNotFoundError(f"Annotation file not found: {args.annotations}")
+    if not args.source.is_file():
+        raise FileNotFoundError(f"Input file not found: {args.source}")
 
-    video_path, annotations = load_training_annotations(args.annotations)
-    if not annotations:
-        raise ValueError("Annotation file contains no intervals.")
+    # Annotations are optional context for the plot, not an input to the scorer.
+    # TXT inputs retain the existing annotation-file workflow; other files are
+    # treated as videos and can be scored without labels.
+    if args.source.suffix.lower() == ".txt":
+        video_path, annotations = load_training_annotations(args.source)
+        if not video_path.is_file():
+            raise FileNotFoundError(f"Video referenced by annotation file not found: {video_path}")
+    else:
+        video_path = args.source
+        annotations = []
     settings = load_config(args.config)
     (_, sample_fps, processing_width, _, _, roi_left, roi_right, roi_bottom, roi_top) = _data_values(settings)
     paths = settings.get("paths", {})
     cache_dir = Path(paths.get("cache_dir", "data/cache")).expanduser()
     info = get_video_info(video_path)
     clip_start = max(0.0, args.start if args.start is not None else 0.0)
-    clip_end = min(float(info.duration), args.end if args.end is not None else max(a.end for a in annotations))
+    default_end = max((a.end for a in annotations), default=float(info.duration))
+    clip_end = min(float(info.duration), args.end if args.end is not None else default_end)
     if clip_end <= clip_start:
         raise ValueError("Requested interval does not overlap the video.")
     clip = Clip(video_name=video_path.stem, start=clip_start, end=clip_end)
@@ -345,11 +356,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for window, rows in rows_by_window.items():
-        stem = f"{args.annotations.stem}_interest_{window:g}s"
+        stem = f"{video_path.stem}_interest_{window:g}s"
         csv_path = args.output_dir / f"{stem}.csv"
         _write_csv(csv_path, rows)
         print(f"Saved {csv_path}")
-    html_path = args.output_dir / f"{args.annotations.stem}_interest_comparison.html"
+    html_path = args.output_dir / f"{video_path.stem}_interest_comparison.html"
     _write_html(html_path, rows_by_window, annotations, video_path.name)
     print(f"Saved {html_path}")
     return 0
