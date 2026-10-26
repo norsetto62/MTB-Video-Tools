@@ -266,7 +266,8 @@ def _write_html(path: Path, rows_by_window: dict[float, list[dict[str, float]]],
             fig.add_vrect(x0=ann.start, x1=ann.end, fillcolor=colors.get(int(ann.score), "#CCCCCC"),
                           opacity=0.15, line_width=0, layer="below", row=row_idx, col=1)
     fig.update_layout(title=f"Interest score channels — {video_name}", template="plotly_white",
-                      hovermode="x unified", height=1250,\n                      margin={"t": 110, "b": 70, "l": 75, "r": 35})
+                      hovermode="x unified", height=1250,
+                      margin={"t": 110, "b": 70, "l": 75, "r": 35})
     fig.update_xaxes(title_text="Video time (seconds)")
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(path, include_plotlyjs="cdn", full_html=True)
