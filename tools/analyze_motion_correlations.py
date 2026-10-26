@@ -83,6 +83,7 @@ def save_heatmaps(
     figure, axes = plt.subplots(
         1, 2,
         figsize=(max(13, len(names) * 1.25), max(6, len(names) * 0.8)),
+        constrained_layout=True,
     )
     for ax, matrix, title in (
         (axes[0], pearson, "Pearson (linear association)"),
@@ -97,9 +98,8 @@ def save_heatmaps(
                 value = matrix[row, col]
                 label = "n/a" if not np.isfinite(value) else f"{value:.2f}"
                 ax.text(col, row, label, ha="center", va="center", fontsize=8)
-    figure.colorbar(image, ax=axes, shrink=0.8, label="Correlation")
+    figure.colorbar(image, ax=axes, shrink=0.8, pad=0.04, label="Correlation")
     figure.suptitle("Motion feature correlations", x=0.02, ha="left", fontweight="bold")
-    figure.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, dpi=160, bbox_inches="tight")
     if show:
