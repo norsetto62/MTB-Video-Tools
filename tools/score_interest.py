@@ -30,7 +30,61 @@ def _column(name: str) -> int:
     try:
         return FEATURE_NAMES.index(name)
     except ValueError as exc:
-        raise RuntimeError(f"Required feature {name!r} is missing from canonical schema.") from exc
+        raise RuntimeError(f"Required canonical feature {name!r} is missing from the schema.") from exc
+
+
+def _derive_raw_signals(features: np.ndarray, *, epsilon: float = 1e-5) -> dict[str, np.ndarray]:
+    """Derive engineered signals from the canonical 54-column feature matrix."""
+    features = np.asarray(features, dtype=np.float64)
+    if features.ndim != 2 or features.shape[1] != len(FEATURE_NAMES):
+        raise ValueError(
+            f"Expected a 2D feature array with {len(FEATURE_NAMES)} columns; "
+            f"got shape {features.shape}."
+        )
+    if not np.isfinite(features).all():
+        raise ValueError("Feature array contains non-finite values.")
+
+    def col(name: str) -> np.ndarray:
+        return features[:, _column(name)]
+
+    vectors: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+    magnitudes: dict[tuple[int, int], np.ndarray] = {}
+    angles: list[np.ndarray] = []
+    residuals: dict[tuple[int, int], np.ndarray] = {}
+    global_u, global_v = col("flow_u"), col("flow_v")
+    for row in range(3):
+        for column in range(3):
+            u = col(f"grid_{row}_{column}_u")
+            v = col(f"grid_{row}_{column}_v")
+            vectors[(row, column)] = (u, v)
+            magnitudes[(row, column)] = np.hypot(u, v)
+            angles.append(np.arctan2(v, u))
+            residuals[(row, column)] = np.hypot(u - global_u, v - global_v)
+
+    top = np.mean(np.stack([magnitudes[(0, c)] for c in range(3)]), axis=0)
+    bottom = np.mean(np.stack([magnitudes[(2, c)] for c in range(3)]), axis=0)
+    left = np.mean(np.stack([magnitudes[(r, 0)] for r in range(3)]), axis=0)
+    right = np.mean(np.stack([magnitudes[(r, 2)] for r in range(3)]), axis=0)
+    center = magnitudes[(1, 1)]
+    peripheral = np.mean(np.stack([
+        magnitudes[(r, c)] for r in range(3) for c in range(3)
+        if (r, c) != (1, 1)
+    ]), axis=0)
+    mean_cos = np.mean(np.stack([np.cos(a) for a in angles]), axis=0)
+    mean_sin = np.mean(np.stack([np.sin(a) for a in angles]), axis=0)
+
+    return {
+        "directional_turbulence": 1.0 - np.hypot(mean_cos, mean_sin),
+        "lateral_flow_asymmetry": (right - left) / (center + epsilon),
+        "roll_index": (
+            magnitudes[(0, 0)] + magnitudes[(2, 2)]
+            - magnitudes[(0, 2)] - magnitudes[(2, 0)]
+        ) / (center + epsilon),
+        "vertical_flow_gradient": (top - bottom) / (center + epsilon),
+        "expansion_index": (peripheral - center) / (center + epsilon),
+        "global_flow_magnitude": np.hypot(global_u, global_v),
+        "center_residual": residuals[(1, 1)],
+    }
 
 
 def rolling_median(values: np.ndarray, timestamps: np.ndarray, duration: float) -> np.ndarray:
@@ -108,10 +162,7 @@ def derive_interest_channels(
         raise ValueError("Feature array contains non-finite values.")
 
     # Smooth the source channels before any temporal derivative.
-    names = ("directional_turbulence", "lateral_flow_asymmetry", "roll_index",
-             "vertical_flow_gradient", "expansion_index", "global_flow_magnitude",
-             "center_residual")
-    raw = {name: features[:, _column(name)] for name in names}
+    raw = _derive_raw_signals(features)
     smoothed = {name: rolling_median(value, timestamps, smoothing_seconds)
                 for name, value in raw.items()}
 
