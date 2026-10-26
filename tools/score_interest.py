@@ -254,7 +254,7 @@ def _write_html(path: Path, rows_by_window: dict[float, list[dict[str, float]]],
         raise ImportError("HTML plotting requires Plotly: pip install plotly") from exc
     channel_names = ("Score_Tech", "Score_Maneuver", "Gate_Motion", "Score_Final")
     fig = make_subplots(rows=len(channel_names), cols=1, shared_xaxes=True,
-                        subplot_titles=channel_names, vertical_spacing=0.04)
+                        subplot_titles=channel_names, vertical_spacing=0.075)
     colors = {0: "#8A8A8A", 1: "#B0D7D7", 2: "#E69F00", 3: "#D55E00"}
     for row_idx, channel in enumerate(channel_names, start=1):
         for window, rows in rows_by_window.items():
@@ -266,7 +266,7 @@ def _write_html(path: Path, rows_by_window: dict[float, list[dict[str, float]]],
             fig.add_vrect(x0=ann.start, x1=ann.end, fillcolor=colors.get(int(ann.score), "#CCCCCC"),
                           opacity=0.15, line_width=0, layer="below", row=row_idx, col=1)
     fig.update_layout(title=f"Interest score channels — {video_name}", template="plotly_white",
-                      hovermode="x unified", height=1000)
+                      hovermode="x unified", height=1250,\n                      margin={"t": 110, "b": 70, "l": 75, "r": 35})
     fig.update_xaxes(title_text="Video time (seconds)")
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(path, include_plotlyjs="cdn", full_html=True)
