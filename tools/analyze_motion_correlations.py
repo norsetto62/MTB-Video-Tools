@@ -5,7 +5,7 @@ an exact feature-cache entry by default and refuses to trigger optical-flow
 extraction unless --allow-extraction is explicitly supplied.
 
 Example:
-    python tools/analyze_motion_correlations.py data/annotations/Ascoli.txt
+    python tools/analyze_motion_correlations.py path/to/video.mp4
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from typing import Sequence
 import numpy as np
 from scipy.stats import spearmanr
 
-from autocut.annotations import load_training_annotations
 from autocut.config_loader import load_config
 from autocut.data_models import Clip
 from autocut.dataset.feature_cache import load_feature_sequence
@@ -81,7 +80,10 @@ def save_heatmaps(
             "Plotting requires matplotlib. Install with: python -m pip install -e '.[plot]'"
         ) from exc
 
-    figure, axes = plt.subplots(1, 2, figsize=(max(13, len(names) * 1.25), max(6, len(names) * 0.8)))
+    figure, axes = plt.subplots(
+        1, 2,
+        figsize=(max(13, len(names) * 1.25), max(6, len(names) * 0.8)),
+    )
     for ax, matrix, title in (
         (axes[0], pearson, "Pearson (linear association)"),
         (axes[1], spearman, "Spearman (monotonic association)"),
@@ -109,13 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Calculate Pearson and Spearman correlations for engineered motion signals."
     )
-    parser.add_argument("annotations", type=Path, help="Annotation TXT used to identify the video and interval.")
+    parser.add_argument("video", type=Path, help="Source video to analyze (no annotations are used).")
     parser.add_argument("--config", type=Path, default=Path("config/train.yaml"),
                         help="Config containing canonical extraction/cache settings.")
     parser.add_argument("--signals", default=",".join(DEFAULT_SIGNALS),
                         help="Comma-separated signal names, or 'all'.")
     parser.add_argument("--output", type=Path,
-                        help="Output PNG path (default: data/plots/<annotation-stem>_correlations.png).")
+                        help="Output PNG path (default: data/plots/<video-stem>_correlations.png).")
     parser.add_argument("--allow-extraction", action="store_true",
                         help="Allow expensive optical-flow extraction on an exact cache miss.")
     parser.add_argument("--show", action="store_true", help="Open the plot interactively.")
@@ -124,23 +126,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.annotations.is_file():
-        raise FileNotFoundError(f"Annotation file not found: {args.annotations}")
-
-    video_path, annotations = load_training_annotations(args.annotations)
-    if not annotations:
-        raise ValueError(f"No annotation intervals found in {args.annotations}")
+    video_path = args.video.expanduser().resolve()
+    if not video_path.is_file():
+        raise FileNotFoundError(f"Video not found: {video_path}")
 
     settings = load_config(args.config)
     (_, sample_fps, processing_width, _, _, roi_left, roi_right,
      roi_bottom, roi_top) = _data_values(settings)
     cache_dir = Path(settings.get("paths", {}).get("cache_dir", "data/cache")).expanduser()
     video_info = get_video_info(video_path)
-    clip = Clip(
-        video_name=video_path.stem,
-        start=0.0,
-        end=min(float(annotations[-1].end), float(video_info.duration)),
-    )
+    clip = Clip(video_name=video_path.stem, start=0.0, end=float(video_info.duration))
+
     sequence = load_feature_sequence(
         video_path, cache_dir, clip,
         sample_fps=sample_fps, processing_width=processing_width,
@@ -150,7 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if sequence is None:
         if not args.allow_extraction:
             raise RuntimeError(
-                "No exact feature-cache entry matches this video, interval, sampling, width, and ROI. "
+                "No exact full-video feature-cache entry matches this video, sampling, width, and ROI. "
                 "No extraction was started. Add --allow-extraction to compute and cache the features."
             )
         print("Cache miss: extracting optical-flow features because --allow-extraction was set.")
@@ -178,16 +174,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected = {name: available[name] for name in requested}
 
     names, pearson, spearman = correlation_matrices(selected)
-    output = args.output or Path("data/plots") / f"{args.annotations.stem}_correlations.png"
+    output = args.output or Path("data/plots") / f"{video_path.stem}_correlations.png"
     save_heatmaps(names, pearson, spearman, output, show=args.show)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    np.savetxt(output.with_name(output.stem + "_pearson.csv"), pearson,
-               delimiter=",", header=",".join(names), comments="", fmt="%.6f")
-    np.savetxt(output.with_name(output.stem + "_spearman.csv"), spearman,
-               delimiter=",", header=",".join(names), comments="", fmt="%.6f")
+    pearson_path = output.with_name(output.stem + "_pearson.csv")
+    spearman_path = output.with_name(output.stem + "_spearman.csv")
+    np.savetxt(pearson_path, pearson, delimiter=",",
+               header=",".join(names), comments="", fmt="%.6f")
+    np.savetxt(spearman_path, spearman, delimiter=",",
+               header=",".join(names), comments="", fmt="%.6f")
     print(f"Saved correlation heatmaps: {output.resolve()}")
-    print(f"Saved matrices: {output.with_name(output.stem + '_pearson.csv').resolve()} and "
-          f"{output.with_name(output.stem + '_spearman.csv').resolve()}")
+    print(f"Saved matrices: {pearson_path.resolve()} and {spearman_path.resolve()}")
     print(f"Samples: {len(sequence.features)}; signals: {', '.join(names)}")
     return 0
 
