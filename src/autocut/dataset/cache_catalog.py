@@ -185,3 +185,98 @@ def list_cache_entries(cache_dir: str | Path) -> list[dict[str, Any]]:
             "SELECT * FROM cache_entries ORDER BY source_path, clip_start, cache_path"
         ).fetchall()
     return [dict(row) for row in rows]
+
+def check_cache_compatibility(
+    metadata: dict[str, Any],
+    *,
+    video_path: str | Path,
+    clip_start: float,
+    clip_end: float,
+    sample_fps: float,
+    processing_width: int,
+    flow_config: dict[str, Any],
+    roi: dict[str, float],
+    feature_names: list[str],
+    cache_version: int,
+    array_format_version: int,
+    feature_schema_version: int,
+    source_sha256: str | None = None,
+    timestamp_start: float | None = None,
+    timestamp_end: float | None = None,
+    timestamps: np.ndarray | None = None,
+    tolerance: float = 1e-6,
+) -> dict[str, Any]:
+    """Evaluate reuse against an explicit extraction contract.
+
+    This function only checks metadata and supplied timestamps; it never changes
+    cache files or extracts source video. Interval reuse requires the stored
+    clip to contain the requested interval and, when timestamps are supplied,
+    the requested sampling lattice to align with the stored sequence.
+    """
+    reasons: list[str] = []
+    source = Path(video_path).expanduser().resolve()
+    try:
+        stat = source.stat()
+    except OSError as exc:
+        return {"compatible": False, "reasons": [f"source_unavailable: {exc}"]}
+
+    expected = {
+        "cache_version": cache_version,
+        "array_format_version": array_format_version,
+        "feature_schema_version": feature_schema_version,
+        "feature_names": feature_names,
+        "source_path": str(source),
+        "source_size_bytes": stat.st_size,
+        "source_mtime_ns": stat.st_mtime_ns,
+        "sample_fps": float(sample_fps),
+        "processing_width": int(processing_width),
+        "roi": roi,
+        "flow_config": flow_config,
+    }
+    for field, value in expected.items():
+        actual = metadata.get(field)
+        if field in {"sample_fps"}:
+            equal = isinstance(actual, (int, float)) and abs(float(actual) - float(value)) <= tolerance
+        else:
+            equal = actual == value
+        if not equal:
+            reasons.append(f"{field}_mismatch")
+
+    mode = metadata.get("source_fingerprint_mode", "metadata")
+    if mode == "sha256":
+        if not source_sha256:
+            reasons.append("source_sha256_not_verified")
+        elif metadata.get("source_sha256") != source_sha256:
+            reasons.append("source_sha256_mismatch")
+    elif mode != "metadata":
+        reasons.append("unknown_source_fingerprint_mode")
+
+    stored_clip = metadata.get("clip")
+    if not isinstance(stored_clip, dict):
+        reasons.append("clip_metadata_missing")
+    else:
+        try:
+            stored_start = float(stored_clip["start"])
+            stored_end = float(stored_clip["end"])
+            if stored_start > clip_start + tolerance or stored_end < clip_end - tolerance:
+                reasons.append("requested_interval_not_covered")
+        except (KeyError, TypeError, ValueError):
+            reasons.append("clip_metadata_invalid")
+
+    if timestamps is not None:
+        values = np.asarray(timestamps)
+        if values.ndim != 1 or values.size < 2 or not np.isfinite(values).all():
+            reasons.append("timestamps_invalid")
+        else:
+            step = 1.0 / float(sample_fps)
+            if not np.all(np.diff(values) > 0):
+                reasons.append("timestamps_not_increasing")
+            elif not np.allclose(np.diff(values), step, rtol=0.0, atol=tolerance):
+                reasons.append("sampling_grid_mismatch")
+            if timestamp_start is not None and abs(float(values[0]) - timestamp_start) > tolerance:
+                reasons.append("timestamp_start_mismatch")
+            if timestamp_end is not None and abs(float(values[-1]) - timestamp_end) > tolerance:
+                reasons.append("timestamp_end_mismatch")
+
+    return {"compatible": not reasons, "reasons": reasons}
+
