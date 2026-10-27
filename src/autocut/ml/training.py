@@ -473,6 +473,7 @@ def train_lightgbm(
         callbacks.extend([
             lgb.early_stopping(config.early_stopping_rounds, first_metric_only=True, verbose=False),
             lgb.record_evaluation(evals_result),
+            lgb.log_evaluation(period=10),
         ])
     else:
         train_dataset = lgb.Dataset(
