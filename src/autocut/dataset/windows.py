@@ -83,3 +83,55 @@ def build_windows_from_features(
         X=np.stack(windows).astype(np.float32, copy=False),
         timestamps=np.asarray(window_timestamps, dtype=np.float64),
     )
+
+
+# ---------------------------------------------------------------------------
+# LightGBM tabular representation
+# ---------------------------------------------------------------------------
+
+LIGHTGBM_WINDOW_STATISTICS = ("mean", "max", "std", "median", "q90", "min")
+
+
+def aggregate_lightgbm_windows(windows: FeatureWindows) -> FeatureWindows:
+    """Aggregate (N,T,8) signal windows into an (N,48) tabular matrix.
+
+    Columns are grouped by signal, with statistics in the fixed order
+    mean, max, population standard deviation (ddof=0), median, 90th percentile,
+    min. Window timestamps are preserved unchanged.
+    """
+    values = np.asarray(windows.X, dtype=np.float32)
+    timestamps = np.asarray(windows.timestamps, dtype=np.float64)
+    if values.ndim != 3 or values.shape[0] == 0 or values.shape[1] == 0:
+        raise ValueError("windows.X must have shape (N,T,F) with N,T >= 1.")
+    if values.shape[2] != 8:
+        raise ValueError(f"LightGBM aggregation requires 8 signals; got {values.shape[2]}.")
+    if timestamps.shape != (values.shape[0], 2):
+        raise ValueError("window timestamps must have shape (N,2).")
+    if not np.isfinite(values).all() or not np.isfinite(timestamps).all():
+        raise ValueError("windows and timestamps must contain only finite values.")
+
+    stats = (
+        np.mean(values, axis=1),
+        np.max(values, axis=1),
+        np.std(values, axis=1, ddof=0),
+        np.median(values, axis=1),
+        np.percentile(values, 90, axis=1),
+        np.min(values, axis=1),
+    )
+    # (N,F,stats) -> (N,F*stats), keeping each signal's statistics adjacent.
+    matrix = np.stack(stats, axis=2).reshape(values.shape[0], 8 * 6)
+    return FeatureWindows(X=matrix.astype(np.float32, copy=False), timestamps=timestamps.copy())
+
+
+def build_lightgbm_windows_from_features(
+    features: np.ndarray,
+    timestamps: np.ndarray,
+    *,
+    window: float,
+    stride: float,
+) -> FeatureWindows:
+    """Build 48-column LightGBM rows from a continuous (T,8) signal sequence."""
+    temporal = build_windows_from_features(
+        features, timestamps, window=window, stride=stride
+    )
+    return aggregate_lightgbm_windows(temporal)
