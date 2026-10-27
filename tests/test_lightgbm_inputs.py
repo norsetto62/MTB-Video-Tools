@@ -54,6 +54,18 @@ def test_lightgbm_signals_use_global_net_flow_and_relative_center_residual():
     assert result[0, 6] == pytest.approx(5.0)  # center vector residual: (3,4)
 
 
+
+def test_tunnel_vision_uses_the_two_experimental_top_corner_residuals():
+    vectors = np.zeros((1, 9, 2), dtype=np.float32)
+    vectors[0, 0] = (3.0, 0.0)
+    vectors[0, 2] = (5.0, 0.0)
+    vectors[0, 4] = (1.0, 0.0)
+    result = engineer_lightgbm_sequence(_canonical(vectors))
+    # global flow is zero, so corner residuals are 3 and 5; center residual is 1.
+    assert result[0, 6] == pytest.approx(1.0)
+    assert result[0, 7] == pytest.approx(4.0 / (1.0 + 1e-5), rel=1e-6)
+
+
 def test_lightgbm_window_aggregation_has_48_columns_in_stable_order():
     # Two windows, three timesteps, two signals repeated across signal slots.
     temporal = np.zeros((2, 3, 8), dtype=np.float32)
