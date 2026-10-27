@@ -59,6 +59,19 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
     return manifest, records, captured
 
 
+def test_legacy_multiclass_yaml_is_migrated_to_lambdarank():
+    config = pipeline._lightgbm_config({
+        "lightgbm": {
+            "objective": "multiclass",
+            "num_class": 4,
+            "num_iterations": 17,
+        }
+    })
+    assert config.objective == "lambdarank"
+    assert config.num_iterations == 17
+    assert config.to_params()["metric"] == "ndcg"
+
+
 def test_single_model_uses_yaml_groups_for_validation_then_refits_all_data(tmp_path, monkeypatch):
     manifest, records, captured = _fake_dataset(monkeypatch, tmp_path)
     checkpoint = tmp_path / "models" / "single.json"
