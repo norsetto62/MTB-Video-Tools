@@ -155,13 +155,15 @@ During the refactor, existing behavior should be preserved wherever it is part o
 
 ## Single-model LightGBM training
 
-Train one four-class MTB 0..3 LightGBM model using the configured group split
-in `data.train_groups` and `data.validation_groups`. The validation groups are
-held out from the initial fit, and validation `multi_logloss` is recorded at
-each iteration to drive early stopping and select the best iteration. The
-production checkpoint is then refit on all annotated manifest videos for that
-number of iterations, including the validation videos. It uses the canonical
-feature cache and writes a LightGBM JSON checkpoint.
+Train a LightGBM LambdaRank model that orders annotated windows by their
+ordinal relevance grades (0–3). Each video is one ranking query: LightGBM gets
+a group-size array describing the consecutive rows for each video. The
+configured `data.train_groups` and `data.validation_groups` are kept separate
+for iteration selection. Validation NDCG is recorded at the configured cutoffs
+(default `ndcg@10`) and drives early stopping. The production ranker is then
+refit on all annotated manifest videos for the selected number of iterations,
+including validation videos. It uses the canonical feature cache and writes a
+LightGBM JSON checkpoint containing raw ranking scores, not class probabilities.
 
 ```powershell
 python -m autocut lightgbm-train
@@ -175,10 +177,12 @@ python -m autocut lightgbm-train data/manifest/annotations_manifest.yaml --confi
 
 The default checkpoint is `models/lightgbm/model.json`, overridable with
 `--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
-All four annotation classes must be represented in the configured training split
-and in the final all-data refit; the command stops with a clear error if any
-class is missing. The summary includes the selected iteration, validation loss
-history, configured group/video IDs, checkpoint path, and row counts.
+Ranking does not require every grade in every split, but at least one
+training video must contain multiple relevance grades so that preference pairs
+exist. The summary includes the selected iteration, validation NDCG history,
+configured group/video IDs, query sizes, checkpoint path, and row counts.
+Older YAML settings `objective: multiclass` and `num_class: 4` are migrated to
+the ranking defaults by the training configuration loader.
 
 ## Feature-cache cleanup
 
