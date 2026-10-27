@@ -242,7 +242,7 @@ def run_lightgbm_train_from_manifest(
     """Validate on configured held-out groups, then refit one final model.
 
     data.train_groups and data.validation_groups define a disjoint group-level
-    split. Validation loss selects the iteration count; the final checkpoint
+    split. Validation NDCG selects the iteration count; the final checkpoint
     is then refit on all annotated manifest videos using that iteration count.
     """
     if not isinstance(settings, Mapping):
@@ -313,7 +313,7 @@ def run_lightgbm_train_from_manifest(
     if len(val_y) == 0:
         raise ValueError("The configured validation groups produced no labeled windows.")
 
-    # This first fit is strictly group-held-out. Its loss curve and best
+    # This first fit is strictly group-held-out. Its NDCG history and best
     # iteration determine how long the final all-data refit should run.
     _, validation_summary = train_lightgbm(
         train_X,
