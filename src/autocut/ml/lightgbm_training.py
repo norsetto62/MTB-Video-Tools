@@ -16,7 +16,7 @@ import numpy as np
 
 from autocut.data_models import FeatureWindows
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-from autocut.ml.model import LightGBMConfig, LightGBMClassifier
+from autocut.ml.model import LightGBMConfig, LightGBMRanker
 from autocut.ml.training import train_lightgbm
 
 
@@ -101,6 +101,60 @@ def _combine(
     return np.concatenate(feature_parts, axis=0), np.concatenate(target_parts, axis=0)
 
 
+def _combine_with_group_sizes(
+    video_data: Mapping[str, LightGBMVideoData],
+    video_ids: Sequence[str],
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """Combine videos in order and preserve each video as a ranking query."""
+    X, y = _combine(video_data, video_ids)
+    group_sizes = [
+        int(len(video_data[video_id].targets))
+        for video_id in video_ids
+        if len(video_data[video_id].targets) > 0
+    ]
+    return X, y, group_sizes
+
+
+def _ranking_metrics(
+    y_true: np.ndarray,
+    scores: np.ndarray,
+    group_sizes: Sequence[int],
+    *,
+    cutoffs: Sequence[int],
+) -> dict[str, Any]:
+    """Calculate mean per-video NDCG, the ranking metric used for training."""
+    def dcg(relevance: np.ndarray, k: int) -> float:
+        rel = relevance[:k].astype(np.float64)
+        if not len(rel):
+            return 0.0
+        gains = np.exp2(rel) - 1.0
+        discounts = np.log2(np.arange(2, len(rel) + 2, dtype=np.float64))
+        return float(np.sum(gains / discounts))
+
+    results: dict[str, Any] = {"validation_rows": int(len(y_true)), "queries": int(len(group_sizes))}
+    offset = 0
+    by_cutoff: dict[str, float | None] = {}
+    for cutoff in cutoffs:
+        query_values: list[float] = []
+        offset = 0
+        for size in group_sizes:
+            labels = y_true[offset:offset + size]
+            pred = scores[offset:offset + size]
+            offset += size
+            if size < 1 or len(labels) != size:
+                continue
+            order = np.argsort(-pred, kind="stable")
+            ideal = np.sort(labels)[::-1]
+            ideal_dcg = dcg(ideal, cutoff)
+            if ideal_dcg > 0:
+                query_values.append(dcg(labels[order], cutoff) / ideal_dcg)
+        by_cutoff[str(int(cutoff))] = (
+            float(np.mean(query_values)) if query_values else None
+        )
+    results["ndcg_at"] = by_cutoff
+    return results
+
+
 def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, Any]:
     labels = np.arange(4, dtype=np.int64)
     confusion = np.zeros((4, 4), dtype=np.int64)
@@ -136,7 +190,7 @@ def train_lightgbm_group_fold(
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
     require_all_training_classes: bool = True,
-) -> tuple[LightGBMClassifier, LightGBMGroupFoldResult]:
+) -> tuple[LightGBMRanker, LightGBMGroupFoldResult]:
     """Train one fold with every video in held_out_group reserved for validation.
 
     No window-level random split is performed. By default, training must
@@ -179,9 +233,10 @@ def train_lightgbm_group_fold(
         },
         metadata=metadata,
     )
-    probabilities = model.predict_proba(val_X)
-    predictions = np.argmax(probabilities, axis=1).astype(np.int64)
-    summary["validation_metrics"] = _metrics(val_y, predictions)
+    ranking_scores = model.predict(val_X)
+    summary["validation_metrics"] = _ranking_metrics(
+        val_y, ranking_scores, val_group_sizes, cutoffs=config.ndcg_eval_at if config else (10,)
+    )
     summary["held_out_group"] = held_out_group
     summary["train_video_ids"] = list(train_ids)
     summary["validation_video_ids"] = list(val_ids)
