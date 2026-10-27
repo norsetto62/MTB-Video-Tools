@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,21 @@ def _connect(path: Path) -> sqlite3.Connection:
     )
     connection.commit()
     return connection
+
+
+@contextmanager
+def _connection(path: Path):
+    """Commit/rollback catalog work and always close the SQLite handle.
+
+    sqlite3.Connection's context manager does not close the connection; that
+    can keep the database locked on Windows when callers rebuild/delete it.
+    """
+    connection = _connect(path)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def _read_entry(path: Path) -> dict[str, Any]:
@@ -144,7 +160,7 @@ def index_cache_file(cache_dir: str | Path, cache_file: str | Path) -> bool:
     entry = _read_entry(path)
     placeholders = ", ".join("?" for _ in _COLUMNS)
     updates = ", ".join(f"{column}=excluded.{column}" for column in _COLUMNS if column != "cache_path")
-    with _connect(catalog_path(root)) as connection:
+    with _connection(catalog_path(root)) as connection:
         connection.execute(
             f"INSERT INTO cache_entries ({', '.join(_COLUMNS)}) VALUES ({placeholders}) "
             f"ON CONFLICT(cache_path) DO UPDATE SET {updates}",
@@ -182,7 +198,7 @@ def index_existing_cache(cache_dir: str | Path) -> dict[str, int]:
     # Prune stale rows only after all discovered files have been indexed.
     # Delete row-by-row to avoid SQLite's bound-variable limit for large caches.
     discovered = {str(path.resolve()) for path in files}
-    with _connect(catalog) as connection:
+    with _connection(catalog) as connection:
         existing = connection.execute(
             "SELECT cache_path FROM cache_entries"
         ).fetchall()
@@ -205,7 +221,7 @@ def list_cache_entries(cache_dir: str | Path) -> list[dict[str, Any]]:
     path = catalog_path(cache_dir)
     if not path.is_file():
         return []
-    with _connect(path) as connection:
+    with _connection(path) as connection:
         rows = connection.execute(
             "SELECT * FROM cache_entries ORDER BY source_path, clip_start, cache_path"
         ).fetchall()
