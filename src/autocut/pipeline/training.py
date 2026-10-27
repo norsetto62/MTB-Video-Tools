@@ -20,6 +20,7 @@ import numpy as np
 from ..annotations import load_training_annotations
 from ..config_loader import Config
 from ..dataset.manifest import DatasetRecord, load_manifest
+from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.sequence import build_feature_sequence, DEFAULT_ROI_LEFT, DEFAULT_ROI_RIGHT, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_TOP, validate_roi
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows_from_features
@@ -129,7 +130,7 @@ def _load_record_windows(
     record_started = time.perf_counter()
     _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     paths = _section(settings, "paths")
-    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
+    cache_dir = feature_cache_dir(settings)
 
     annotations = None
     if record.annotation_path is not None:
