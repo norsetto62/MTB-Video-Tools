@@ -32,6 +32,7 @@ from ..ml.lightgbm_training import (
     LightGBMGroupFoldResult,
     LightGBMVideoData,
     _combine,
+    _combine_with_group_sizes,
     train_lightgbm_lovo,
 )
 from ..ml.training import train_lightgbm
@@ -298,8 +299,8 @@ def run_lightgbm_train_from_manifest(
 
     if config is None:
         config = _lightgbm_config(settings)
-    train_X, train_y = _combine(prepared, train_ids)
-    val_X, val_y = _combine(prepared, validation_ids)
+    train_X, train_y, train_group_sizes = _combine_with_group_sizes(prepared, train_ids)
+    val_X, val_y, val_group_sizes = _combine_with_group_sizes(prepared, validation_ids)
     if not any(
         len(np.unique(train_y[offset:offset + size])) > 1
         for offset, size in _group_offsets(train_group_sizes)
@@ -313,14 +314,16 @@ def run_lightgbm_train_from_manifest(
     _, validation_summary = train_lightgbm(
         train_X,
         train_y,
+        train_group_sizes=train_group_sizes,
         val_X=val_X,
         val_y=val_y,
+        val_group_sizes=val_group_sizes,
         config=config,
         data_config={
             **data_config,
             "manifest": str(Path(manifest_path).expanduser().resolve()),
             "feature_cache_dir": str(feature_cache_dir(settings)),
-            "target_policy": "annotated-duration-majority; ties to higher class",
+            "target_policy": "ordinal relevance grades 0..3 from annotated-duration-majority; ties to higher class",
         },
         metadata={
             "training_strategy": "configured_group_validation",
@@ -373,6 +376,7 @@ def run_lightgbm_train_from_manifest(
     _, summary = train_lightgbm(
         all_X,
         all_y,
+        train_group_sizes=all_group_sizes,
         config=final_config,
         checkpoint_path=destination,
         data_config=training_config,
