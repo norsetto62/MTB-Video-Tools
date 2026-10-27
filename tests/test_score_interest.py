@@ -1,9 +1,29 @@
 import numpy as np
 import pytest
 
-from autocut.motion.features import FEATURE_NAMES
-from tools.score_interest import aggregate_windows, derive_interest_channels, robust_unit_scale, rolling_median
+import importlib.util
+from pathlib import Path
 
+from autocut.motion.features import FEATURE_NAMES
+
+
+# The plotting helper is intentionally a standalone script in tools/, not a
+# Python package. Load it by file path rather than importing a tools package.
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "tools"
+    / "score_interest.py"
+)
+SPEC = importlib.util.spec_from_file_location("score_interest", SCRIPT_PATH)
+if SPEC is None or SPEC.loader is None:
+    raise ImportError(f"Could not load plotting helper from {SCRIPT_PATH}")
+PLOT_HELPER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(PLOT_HELPER)
+
+rolling_median = PLOT_HELPER.rolling_median
+robust_unit_scale = PLOT_HELPER.robust_unit_scale
+aggregate_windows = PLOT_HELPER.aggregate_windows
+derive_interest_channels = PLOT_HELPER.derive_interest_channels
 
 def test_rolling_median_uses_time_axis_and_preserves_constant_signal():
     t = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
