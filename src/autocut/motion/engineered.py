@@ -224,11 +224,8 @@ def engineer_lightgbm_sequence(X: np.ndarray) -> np.ndarray:
         grid_v - flow_v[:, None, None],
     )
     center_residual = residuals[:, 1, 1]
-    edge_residual = np.mean(
-        residuals[:, [0, 0, 0, 1, 1, 2, 2, 2],
-                  [0, 1, 2, 0, 2, 0, 1, 2]],
-        axis=1,
-    )
+    # Match the experiments' default edge_cells=((0, 0), (0, 2)).
+    edge_residual = np.mean(residuals[:, [0, 0], [0, 2]], axis=1)
     angles = np.arctan2(grid_v, grid_u)
     mean_cos = np.mean(np.cos(angles), axis=(1, 2))
     mean_sin = np.mean(np.sin(angles), axis=(1, 2))
