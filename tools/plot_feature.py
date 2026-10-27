@@ -344,7 +344,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         roi_bottom,
         roi_top,
     ) = _data_values(settings)
-    paths = settings.get("paths", {})
     cache_dir = feature_cache_dir(settings)
     video_info = get_video_info(video_path)
     # Match training's exact cache identity: the extraction clip ends at the
