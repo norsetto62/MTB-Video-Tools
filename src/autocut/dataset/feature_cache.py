@@ -188,6 +188,16 @@ def save_feature_sequence(
         except OSError:
             pass
         raise
+
+    # Keep the catalog synchronized with every successful cache write. Catalog
+    # failures must not invalidate an atomically-written NPZ; lookup can rebuild
+    # the entry on the next read.
+    try:
+        from .cache_catalog import index_cache_file
+
+        index_cache_file(target.parent, target)
+    except Exception as exc:  # catalog is a rebuildable optimization
+        logger.warning("Could not index feature cache %s: %s", target, exc)
     return target
 
 
@@ -242,6 +252,15 @@ def load_feature_sequence(
             source_fingerprint_mode=source_fingerprint_mode,
         )
         target = Path(cache_dir) / f"{key}.npz"
+        from .cache_catalog import lookup_cache_file, remove_cache_entry
+
+        catalog_valid = lookup_cache_file(cache_dir, target)
+        if catalog_valid is False:
+            if not target.is_file():
+                remove_cache_entry(cache_dir, target)
+            return None
+        # True means catalog structure is current, not that the NPZ digest or
+        # requested extraction identity is trusted. Keep full checks below.
         with np.load(target, allow_pickle=False) as archive:
             if set(archive.files) != {"metadata", "features", "timestamps"}:
                 return None
