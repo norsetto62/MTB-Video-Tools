@@ -197,7 +197,6 @@ def run_lightgbm_lovo_from_manifest(
     *,
     checkpoint_dir: str | Path | None = None,
     config: LightGBMConfig | None = None,
-    require_all_training_classes: bool = True,
 ) -> tuple[LightGBMGroupFoldResult, ...]:
     """Prepare data from manifest/cache/video sources and run grouped LOVO."""
     prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
@@ -222,7 +221,6 @@ def run_lightgbm_lovo_from_manifest(
             "target_policy": "ordinal relevance grades 0..3 from annotated-duration-majority; ties to higher class",
             "ranking_query_policy": "each video is one independent ranking query",
         },
-        require_all_training_classes=require_all_training_classes,
     )
 
 
