@@ -64,13 +64,19 @@ def _positive_int(value: Any, name: str) -> int:
 
 def _lightgbm_config(settings: Mapping[str, Any]) -> LightGBMConfig:
     """Read LightGBM options from the dedicated lightgbm config section."""
-    section = _section(settings, "lightgbm")
+    section = dict(_section(settings, "lightgbm"))
+    # Migrate the previous multiclass YAML defaults to LambdaRank. These
+    # settings are obsolete in ranking mode and must not reach LightGBM.
+    if section.get("objective") == "multiclass":
+        section["objective"] = "lambdarank"
+    if section.get("num_class") == 4:
+        section.pop("num_class")
     allowed = set(LightGBMConfig.__dataclass_fields__)
     unknown = sorted(set(section) - allowed)
     if unknown:
         raise ValueError(f"Unknown lightgbm configuration key(s): {unknown}.")
     try:
-        return LightGBMConfig(**dict(section))
+        return LightGBMConfig(**section)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Invalid lightgbm configuration: {exc}") from exc
 
