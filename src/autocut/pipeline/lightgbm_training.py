@@ -212,11 +212,19 @@ def run_lightgbm_lovo_from_manifest(
             **data_config,
             "manifest": str(Path(manifest_path).expanduser().resolve()),
             "feature_cache_dir": str(feature_cache_dir(settings)),
-            "target_policy": "annotated-duration-majority; ties to higher class",
+            "target_policy": "ordinal relevance grades 0..3 from annotated-duration-majority; ties to higher class",
+            "ranking_query_policy": "each video is one independent ranking query",
         },
         require_all_training_classes=require_all_training_classes,
     )
 
+
+
+def _group_offsets(group_sizes):
+    offset = 0
+    for size in group_sizes:
+        yield offset, size
+        offset += size
 
 
 def run_lightgbm_train_from_manifest(
@@ -292,13 +300,11 @@ def run_lightgbm_train_from_manifest(
         config = _lightgbm_config(settings)
     train_X, train_y = _combine(prepared, train_ids)
     val_X, val_y = _combine(prepared, validation_ids)
-    present = set(np.unique(train_y).tolist())
-    missing = sorted(set(range(4)) - present)
-    if missing:
-        raise ValueError(
-            "LightGBM training split requires examples of all MTB classes 0, 1, 2, and 3; "
-            f"missing class(es): {missing}."
-        )
+    if not any(
+        len(np.unique(train_y[offset:offset + size])) > 1
+        for offset, size in _group_offsets(train_group_sizes)
+    ):
+        raise ValueError("LambdaRank training requires at least one video with multiple relevance grades.")
     if len(val_y) == 0:
         raise ValueError("The configured validation groups produced no labeled windows.")
 
@@ -331,14 +337,12 @@ def run_lightgbm_train_from_manifest(
     # Refit the production checkpoint on all annotated videos, including the
     # validation group, for the selected number of boosting iterations.
     all_ids = sorted(prepared)
-    all_X, all_y = _combine(prepared, all_ids)
-    all_present = set(np.unique(all_y).tolist())
-    all_missing = sorted(set(range(4)) - all_present)
-    if all_missing:
-        raise ValueError(
-            "Final all-data LightGBM refit requires examples of all MTB classes "
-            f"0, 1, 2, and 3; missing class(es): {all_missing}."
-        )
+    all_X, all_y, all_group_sizes = _combine_with_group_sizes(prepared, all_ids)
+    if not any(
+        len(np.unique(all_y[offset:offset + size])) > 1
+        for offset, size in _group_offsets(all_group_sizes)
+    ):
+        raise ValueError("LambdaRank final refit requires at least one video with multiple relevance grades.")
     if checkpoint_path is None:
         experiment = _section(settings, "experiment")
         checkpoint_path = experiment.get(
@@ -354,8 +358,10 @@ def run_lightgbm_train_from_manifest(
         **data_config,
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "feature_cache_dir": str(feature_cache_dir(settings)),
-        "target_policy": "annotated-duration-majority; ties to higher class",
+        "target_policy": "ordinal relevance grades 0..3 from annotated-duration-majority; ties to higher class",
+        "ranking_query_policy": "each video is one independent ranking query",
         "group_by_video": dict(sorted(group_by_video.items())),
+        "training_group_sizes": all_group_sizes,
         "training_video_ids": all_ids,
         "validation_selection": {
             "train_groups": list(train_groups),
