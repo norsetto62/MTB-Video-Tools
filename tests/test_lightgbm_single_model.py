@@ -20,6 +20,11 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
     group_by_video = {record.id: record.group_id for record in records}
     data_config = {"sampling_fps": 2.0, "window": 4.0, "stride": 2.0}
     captured = {"train_calls": []}
+    labels_by_video = {
+        "video-a": np.asarray(train_labels if train_labels is not None else [0, 1, 2, 3], dtype=np.int32),
+        "video-b": np.asarray([0, 1], dtype=np.int32),
+        "video-c": np.asarray([0, 1, 2, 3], dtype=np.int32),
+    }
 
     monkeypatch.setattr(pipeline, "load_manifest", lambda *args, **kwargs: records)
 
@@ -30,25 +35,26 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
     def fake_combine(data, video_ids):
         ids = tuple(video_ids)
         captured.setdefault("combine", []).append(ids)
-        if ids == ("video-a",):
-            labels = np.asarray(train_labels if train_labels is not None else [0, 1, 2, 3], dtype=np.int32)
-        elif ids == ("video-b",):
-            labels = np.asarray([0, 1], dtype=np.int32)
-        else:
-            labels = np.asarray([0, 1, 2, 3] * len(ids), dtype=np.int32)
+        labels = np.concatenate([labels_by_video[video_id] for video_id in ids])
         return np.zeros((len(labels), 48), dtype=np.float32), labels
+
+    def fake_combine_with_group_sizes(data, video_ids):
+        ids = tuple(video_ids)
+        X, y = fake_combine(data, ids)
+        return X, y, [len(labels_by_video[video_id]) for video_id in ids]
 
     def fake_train(X, y, **kwargs):
         captured["train_calls"].append((X, y, kwargs))
         if kwargs.get("val_X") is not None:
             return object(), {
                 "best_iteration": 7,
-                "evaluation_history": {"train": {"multi_logloss": [1.0]}, "validation": {"multi_logloss": [1.2]}},
+                "evaluation_history": {"train": {"ndcg@10": [0.7]}, "validation": {"ndcg@10": [0.8]}},
             }
         return object(), {"best_iteration": 7, "training_rows": len(X), "checkpoint_path": str(kwargs["checkpoint_path"])}
 
     monkeypatch.setattr(pipeline, "prepare_lightgbm_manifest_data", fake_prepare)
     monkeypatch.setattr(pipeline, "_combine", fake_combine)
+    monkeypatch.setattr(pipeline, "_combine_with_group_sizes", fake_combine_with_group_sizes)
     monkeypatch.setattr(pipeline, "train_lightgbm", fake_train)
     return manifest, records, captured
 
@@ -81,7 +87,7 @@ def test_single_model_uses_yaml_groups_for_validation_then_refits_all_data(tmp_p
     assert refit_call["checkpoint_path"] == checkpoint
     assert result["validation_selection"]["validation_groups"] == ["validation"]
     assert result["validation_selection"]["best_iteration"] == 7
-    assert result["validation_selection"]["evaluation_history"]["validation"]["multi_logloss"] == [1.2]
+    assert result["validation_selection"]["evaluation_history"]["validation"]["ndcg@10"] == [0.8]
     assert result["training_video_ids"] == ["video-a", "video-b", "video-c"]
 
 
@@ -97,11 +103,11 @@ def test_single_model_rejects_overlapping_configured_groups(tmp_path, monkeypatc
     assert "prepare" not in captured
 
 
-def test_single_model_rejects_missing_training_class(tmp_path, monkeypatch):
+def test_single_model_rejects_training_video_without_relevance_pairs(tmp_path, monkeypatch):
     manifest, _, captured = _fake_dataset(
-        monkeypatch, tmp_path, train_labels=[0, 1, 3]
+        monkeypatch, tmp_path, train_labels=[1, 1, 1, 1]
     )
-    with pytest.raises(ValueError, match=r"missing class\(es\): \[2\]"):
+    with pytest.raises(ValueError, match="multiple relevance grades"):
         pipeline.run_lightgbm_train_from_manifest(
             manifest,
             {"data": {"train_groups": ["train"], "validation_groups": ["validation"]}},
