@@ -153,6 +153,48 @@ pytest
 
 During the refactor, existing behavior should be preserved wherever it is part of the established pipeline. Tests are therefore an important part of the migration from the legacy implementation.
 
+## Feature-cache cleanup
+
+The SQLite feature-cache catalog is a rebuildable index; NPZ files are the stored
+feature data. Rebuilding the catalog does not delete or rewrite NPZ files.
+Deleting NPZs requires an explicit keep manifest produced after a successful
+cache-regeneration run.
+
+Create a UTF-8 JSON array containing the NPZ filenames (relative to the canonical
+cache directory) that the completed run confirmed should be retained, for
+example:
+
+```json
+[
+  "a1b2...cache-key.npz",
+  "c3d4...cache-key.npz"
+]
+```
+
+Review the proposed deletion list first (dry-run is the default):
+
+```powershell
+python -m autocut.dataset.cache_cleanup --cache-dir data/cache/features --keep-manifest data/cache/feature-cache-keep.json
+```
+
+Only after reviewing the report, apply cleanup explicitly:
+
+```powershell
+python -m autocut.dataset.cache_cleanup --cache-dir data/cache/features --keep-manifest data/cache/feature-cache-keep.json --apply
+```
+
+The command validates every keep-manifest file before deleting anything, refuses
+paths outside the cache directory and invalid/missing keep entries, deletes only
+NPZs excluded from the manifest, and then rebuilds/reconciles the SQLite catalog.
+It does not rewrite surviving NPZs or manually delete SQLite/WAL/SHM files.
+Do not run cleanup while extraction/regeneration is in progress.
+
+Run the focused tests with:
+
+```powershell
+pytest tests/test_cache_cleanup.py tests/test_cache_catalog.py
+```
+
 ## Legacy implementation
 
 The `legacy` Git branch contains the pre-refactor implementation.
