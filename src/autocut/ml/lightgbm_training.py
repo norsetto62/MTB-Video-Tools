@@ -162,32 +162,6 @@ def _ranking_metrics(
     return results
 
 
-def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, Any]:
-    labels = np.arange(4, dtype=np.int64)
-    confusion = np.zeros((4, 4), dtype=np.int64)
-    for actual, predicted in zip(y_true, y_pred):
-        confusion[int(actual), int(predicted)] += 1
-    support = confusion.sum(axis=1)
-    correct = np.diag(confusion)
-    recall = np.divide(correct, support, out=np.zeros(4, dtype=np.float64), where=support > 0)
-    precision_support = confusion.sum(axis=0)
-    precision = np.divide(
-        correct, precision_support, out=np.zeros(4, dtype=np.float64), where=precision_support > 0
-    )
-    f1 = np.divide(
-        2.0 * precision * recall, precision + recall,
-        out=np.zeros(4, dtype=np.float64), where=(precision + recall) > 0,
-    )
-    return {
-        "validation_rows": int(len(y_true)),
-        "accuracy": float(np.mean(y_true == y_pred)) if len(y_true) else None,
-        "macro_f1": float(np.mean(f1)),
-        "per_class_recall": {str(int(label)): float(recall[label]) for label in labels},
-        "per_class_support": {str(int(label)): int(support[label]) for label in labels},
-        "confusion_matrix": confusion.tolist(),
-    }
-
-
 def train_lightgbm_group_fold(
     video_data: Mapping[str, LightGBMVideoData],
     group_by_video: Mapping[str, str],
