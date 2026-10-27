@@ -16,6 +16,7 @@ import torch
 from .training import _combine_records, _experiment_slug, _data_values, _path, _section, _training_config
 from ..dataset.manifest import get_unique_groups, load_manifest
 from ..dataset.sequence import build_feature_sequence
+from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.windows import build_windows, build_windows_from_features
 from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
 from ..annotations import load_training_annotations
@@ -141,7 +142,7 @@ def _write_selection_diagnostics(
 
     _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     paths = _section(settings, "paths")
-    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
+    cache_dir = feature_cache_dir(settings)
     declared_video, annotations = load_training_annotations(record.annotation_path)
     if declared_video.resolve() != record.video_path.resolve():
         raise ValueError(
