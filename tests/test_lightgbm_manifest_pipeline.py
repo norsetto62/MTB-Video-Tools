@@ -142,4 +142,4 @@ def test_manifest_runner_passes_prepared_data_to_grouped_lovo(tmp_path, monkeypa
     assert calls["groups"] == groups
     assert calls["config"] is config
     assert calls["data_config"]["window"] == 4.0
-    assert calls["data_config"]["target_policy"].startswith("annotated-duration-majority")
+    assert calls["data_config"]["target_policy"].startswith("ordinal relevance grades 0..3")
