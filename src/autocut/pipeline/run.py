@@ -496,7 +496,7 @@ def run_pipeline(
             timeline,
             music_directive.path,
             config=audio_config,
-            cache_dir=settings.paths.cache_dir / "audio",
+            cache_dir=audio_cache_dir(settings),
             analysis=audio_analysis,
         )
 
