@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -7,109 +8,117 @@ from autocut.ml.model import LightGBMConfig
 from autocut.pipeline import lightgbm_training as pipeline
 
 
-def test_single_model_training_uses_all_manifest_data_and_saves_checkpoint(tmp_path, monkeypatch):
+def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text("videos: []\n", encoding="utf-8")
-    checkpoint = tmp_path / "models" / "single.json"
-    prepared = {"video-a": object(), "video-b": object()}
-    group_by_video = {"video-a": "ascoli", "video-b": "castelli"}
+    records = (
+        SimpleNamespace(id="video-a", group_id="train"),
+        SimpleNamespace(id="video-b", group_id="validation"),
+        SimpleNamespace(id="video-c", group_id="other"),
+    )
+    prepared = {record.id: object() for record in records}
+    group_by_video = {record.id: record.group_id for record in records}
     data_config = {"sampling_fps": 2.0, "window": 4.0, "stride": 2.0}
-    config = LightGBMConfig(num_iterations=10, early_stopping_rounds=2)
-    captured = {}
+    captured = {"train_calls": []}
 
-    def fake_prepare(path, settings, *, require_multiple_groups=True):
-        captured["prepare"] = (path, settings, require_multiple_groups)
+    monkeypatch.setattr(pipeline, "load_manifest", lambda *args, **kwargs: records)
+
+    def fake_prepare(path, settings, *, records=None, require_multiple_groups=True):
+        captured["prepare"] = (tuple(records), require_multiple_groups)
         return prepared, group_by_video, data_config
 
-    train_X = np.zeros((8, 48), dtype=np.float32)
-    train_y = np.repeat(np.arange(4, dtype=np.int32), 2)
-
     def fake_combine(data, video_ids):
-        captured["combine"] = (data, video_ids)
-        return train_X, train_y
+        ids = tuple(video_ids)
+        captured.setdefault("combine", []).append(ids)
+        if ids == ("video-a",):
+            labels = np.asarray(train_labels if train_labels is not None else [0, 1, 2, 3], dtype=np.int32)
+        elif ids == ("video-b",):
+            labels = np.asarray([0, 1], dtype=np.int32)
+        else:
+            labels = np.asarray([0, 1, 2, 3] * len(ids), dtype=np.int32)
+        return np.zeros((len(labels), 48), dtype=np.float32), labels
 
     def fake_train(X, y, **kwargs):
-        captured["train"] = (X, y, kwargs)
-        return object(), {"training_rows": len(X), "checkpoint_path": str(kwargs["checkpoint_path"])}
+        captured["train_calls"].append((X, y, kwargs))
+        if kwargs.get("val_X") is not None:
+            return object(), {
+                "best_iteration": 7,
+                "evaluation_history": {"train": {"multi_logloss": [1.0]}, "validation": {"multi_logloss": [1.2]}},
+            }
+        return object(), {"best_iteration": 7, "training_rows": len(X), "checkpoint_path": str(kwargs["checkpoint_path"])}
 
     monkeypatch.setattr(pipeline, "prepare_lightgbm_manifest_data", fake_prepare)
     monkeypatch.setattr(pipeline, "_combine", fake_combine)
     monkeypatch.setattr(pipeline, "train_lightgbm", fake_train)
+    return manifest, records, captured
+
+
+def test_single_model_uses_yaml_groups_for_validation_then_refits_all_data(tmp_path, monkeypatch):
+    manifest, records, captured = _fake_dataset(monkeypatch, tmp_path)
+    checkpoint = tmp_path / "models" / "single.json"
+    config = LightGBMConfig(num_iterations=10, early_stopping_rounds=2)
+    settings = {
+        "data": {"train_groups": ["train"], "validation_groups": ["validation"]},
+        "experiment": {},
+    }
 
     result = pipeline.run_lightgbm_train_from_manifest(
-        manifest, {"experiment": {}}, checkpoint_path=checkpoint, config=config
+        manifest, settings, checkpoint_path=checkpoint, config=config
     )
 
-    assert captured["prepare"] == (manifest, {"experiment": {}}, False)
-    assert captured["combine"] == (prepared, ["video-a", "video-b"])
-    X, y, kwargs = captured["train"]
-    assert X is train_X
-    assert y is train_y
-    assert kwargs["config"] is config
-    assert kwargs["checkpoint_path"] == checkpoint
-    assert kwargs["data_config"]["manifest"] == str(manifest.resolve())
-    assert kwargs["data_config"]["group_by_video"] == group_by_video
-    assert kwargs["metadata"]["training_strategy"] == "single_model_all_annotated_videos"
-    assert result["training_rows"] == 8
+    assert captured["prepare"] == (records, False)
+    assert captured["combine"] == [
+        ("video-a",), ("video-b",), ("video-a", "video-b", "video-c")
+    ]
+    assert len(captured["train_calls"]) == 2
+    _, _, validation_call = captured["train_calls"][0]
+    assert validation_call["val_X"] is not None
+    assert validation_call["val_y"] is not None
+    assert validation_call["config"] is config
+    _, _, refit_call = captured["train_calls"][1]
+    assert refit_call["val_X"] is None
+    assert refit_call["config"].num_iterations == 7
+    assert refit_call["checkpoint_path"] == checkpoint
+    assert result["validation_selection"]["validation_groups"] == ["validation"]
+    assert result["validation_selection"]["best_iteration"] == 7
+    assert result["validation_selection"]["evaluation_history"]["validation"]["multi_logloss"] == [1.2]
+    assert result["training_video_ids"] == ["video-a", "video-b", "video-c"]
 
 
-def test_single_model_training_rejects_missing_annotation_class(tmp_path, monkeypatch):
-    manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\n", encoding="utf-8")
-    monkeypatch.setattr(
-        pipeline,
-        "prepare_lightgbm_manifest_data",
-        lambda *args, **kwargs: (
-            {"video-a": object()},
-            {"video-a": "ascoli"},
-            {"sampling_fps": 2.0},
-        ),
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "_combine",
-        lambda data, ids: (
-            np.zeros((3, 48), dtype=np.float32),
-            np.array([0, 1, 3], dtype=np.int32),
-        ),
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "train_lightgbm",
-        lambda *args, **kwargs: pytest.fail("trainer must not run when a class is missing"),
-    )
-
-    with pytest.raises(ValueError, match=r"missing class\(es\): \[2\]"):
+def test_single_model_rejects_overlapping_configured_groups(tmp_path, monkeypatch):
+    manifest, _, captured = _fake_dataset(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="must be disjoint"):
         pipeline.run_lightgbm_train_from_manifest(
-            manifest, {}, checkpoint_path=tmp_path / "model.json",
+            manifest,
+            {"data": {"train_groups": ["train"], "validation_groups": ["train"]}},
+            checkpoint_path=tmp_path / "model.json",
             config=LightGBMConfig(num_iterations=10, early_stopping_rounds=2),
         )
+    assert "prepare" not in captured
 
 
-def test_single_model_training_rejects_checkpoint_directory(tmp_path, monkeypatch):
-    manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\n", encoding="utf-8")
+def test_single_model_rejects_missing_training_class(tmp_path, monkeypatch):
+    manifest, _, captured = _fake_dataset(
+        monkeypatch, tmp_path, train_labels=[0, 1, 3]
+    )
+    with pytest.raises(ValueError, match=r"missing class\(es\): \[2\]"):
+        pipeline.run_lightgbm_train_from_manifest(
+            manifest,
+            {"data": {"train_groups": ["train"], "validation_groups": ["validation"]}},
+            checkpoint_path=tmp_path / "model.json",
+            config=LightGBMConfig(num_iterations=10, early_stopping_rounds=2),
+        )
+    assert captured["train_calls"] == []
+
+
+def test_single_model_rejects_checkpoint_directory(tmp_path, monkeypatch):
+    manifest, _, _ = _fake_dataset(monkeypatch, tmp_path)
     destination = tmp_path / "existing-directory"
     destination.mkdir()
-    monkeypatch.setattr(
-        pipeline,
-        "prepare_lightgbm_manifest_data",
-        lambda *args, **kwargs: (
-            {"video-a": object()},
-            {"video-a": "ascoli"},
-            {"sampling_fps": 2.0},
-        ),
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "_combine",
-        lambda data, ids: (
-            np.zeros((4, 48), dtype=np.float32),
-            np.arange(4, dtype=np.int32),
-        ),
-    )
     with pytest.raises(ValueError, match="checkpoint path is a directory"):
         pipeline.run_lightgbm_train_from_manifest(
-            manifest, {}, checkpoint_path=destination,
+            manifest,
+            {"data": {"train_groups": ["train"], "validation_groups": ["validation"]}},
+            checkpoint_path=destination,
             config=LightGBMConfig(num_iterations=10, early_stopping_rounds=2),
         )
