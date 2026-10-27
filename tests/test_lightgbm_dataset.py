@@ -7,7 +7,7 @@ from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
 from autocut.motion.features import FEATURE_NAMES
 
 
-def _sequence(sample_count=17):
+def _sequence(sample_count=25):
     timestamps = np.arange(sample_count, dtype=np.float64) * 0.5
     features = np.zeros((sample_count, len(FEATURE_NAMES)), dtype=np.float32)
     # Give the flow fields and each grid cell distinct, finite values so all
@@ -50,11 +50,14 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
     assert labels.dtype == np.int64
     assert np.isfinite(windows.X).all()
     assert windows.timestamps.shape == (len(labels), 2)
-    # First window has two seconds of class 0/1 combined vs two seconds class
-    # 2, so the duration tie is resolved to class 2. Second window has a class
-    # 2/class 3 tie, resolved to class 3. The final unannotated window is gone.
-    np.testing.assert_array_equal(labels, [2, 3])
-    np.testing.assert_allclose(windows.timestamps, [[-0.5, 3.5], [1.5, 5.5]])
+    # The first window is won by class 2; the next three windows are won by
+    # class 2 or 3 according to annotated overlap. The last window has no
+    # annotated duration and is omitted.
+    np.testing.assert_array_equal(labels, [2, 2, 3, 3])
+    np.testing.assert_allclose(
+        windows.timestamps,
+        [[-0.5, 3.5], [1.5, 5.5], [3.5, 7.5], [5.5, 9.5]],
+    )
 
 
 def test_lightgbm_training_data_returns_empty_tabular_dataset_without_annotations():
