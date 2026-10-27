@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, replace
 import logging
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
@@ -383,7 +383,7 @@ def train_fixed_epochs(
 # Four-class LightGBM training for the 48-column tabular representation.
 # ---------------------------------------------------------------------------
 
-from autocut.ml.model import LightGBMClassifier, LightGBMConfig
+from autocut.ml.model import LightGBMConfig, LightGBMRanker
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
 from autocut.ml.checkpoint import save_lightgbm_checkpoint
 
