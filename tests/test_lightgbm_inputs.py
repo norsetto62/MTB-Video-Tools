@@ -4,7 +4,10 @@ import pytest
 
 from autocut.data_models import Annotation, FeatureWindows
 from autocut.dataset.targets import build_majority_vote_targets
-from autocut.dataset.windows import aggregate_lightgbm_windows
+from autocut.dataset.windows import (
+    LIGHTGBM_TABULAR_FEATURE_NAMES,
+    aggregate_lightgbm_windows,
+)
 from autocut.motion.engineered import LIGHTGBM_FEATURE_NAMES, engineer_lightgbm_sequence
 from autocut.motion.features import FEATURE_NAMES
 
@@ -60,6 +63,12 @@ def test_lightgbm_window_aggregation_has_48_columns_in_stable_order():
     timestamps = np.array([[0.0, 3.0], [1.0, 4.0]], dtype=np.float64)
     result = aggregate_lightgbm_windows(FeatureWindows(temporal, timestamps))
     assert result.X.shape == (2, 48)
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 48
+    assert LIGHTGBM_TABULAR_FEATURE_NAMES[:6] == (
+        "vertical_flow_gradient_mean", "vertical_flow_gradient_max",
+        "vertical_flow_gradient_std", "vertical_flow_gradient_median",
+        "vertical_flow_gradient_q90", "vertical_flow_gradient_min",
+    )
     assert result.X.dtype == np.float32
     # Signal 0: mean, max, population std, median, q90, min.
     np.testing.assert_allclose(
