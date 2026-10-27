@@ -5,6 +5,7 @@ import numpy as np
 from autocut.data_models import Clip, FeatureSequence
 from autocut.dataset.cache_catalog import (
     catalog_path,
+    index_existing_cache,
     list_cache_entries,
     lookup_cache_file,
 )
@@ -61,3 +62,40 @@ def test_lookup_reindexes_file_when_stat_changes(tmp_path):
     assert lookup_cache_file(cache_dir, cache_file) is False
     entry = list_cache_entries(cache_dir)[0]
     assert entry["valid"] == 0
+
+
+
+def test_full_rebuild_removes_catalog_rows_for_deleted_npz(tmp_path):
+    video, cache_dir, clip, sequence = _fixture(tmp_path)
+    first = save_feature_sequence(sequence, video, cache_dir, clip)
+    second_clip = Clip(video_name="ride", start=3.0, end=5.0)
+    second = save_feature_sequence(sequence, video, cache_dir, second_clip)
+    assert len(list_cache_entries(cache_dir)) == 2
+
+    second.unlink()
+    counts = index_existing_cache(cache_dir)
+
+    assert counts == {"found": 1, "valid": 1, "invalid": 0}
+    entries = list_cache_entries(cache_dir)
+    assert [entry["cache_path"] for entry in entries] == [str(first.resolve())]
+
+
+def test_full_rebuild_reconstructs_catalog_from_npz_files(tmp_path):
+    video, cache_dir, clip, sequence = _fixture(tmp_path)
+    cache_file = save_feature_sequence(sequence, video, cache_dir, clip)
+    catalog = catalog_path(cache_dir)
+
+    # Remove the index database; the NPZ must be sufficient to reconstruct it.
+    catalog.unlink()
+    for suffix in ("-wal", "-shm"):
+        sidecar = catalog.with_name(catalog.name + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+
+    counts = index_existing_cache(cache_dir)
+
+    assert counts == {"found": 1, "valid": 1, "invalid": 0}
+    entries = list_cache_entries(cache_dir)
+    assert len(entries) == 1
+    assert entries[0]["cache_path"] == str(cache_file.resolve())
+    assert entries[0]["valid"] == 1
