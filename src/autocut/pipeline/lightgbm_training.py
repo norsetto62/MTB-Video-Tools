@@ -226,25 +226,118 @@ def run_lightgbm_train_from_manifest(
     checkpoint_path: str | Path | None = None,
     config: LightGBMConfig | None = None,
 ) -> dict[str, Any]:
-    """Train one final four-class model on all annotated manifest videos.
+    """Validate on configured held-out groups, then refit one final model.
 
-    This is the simple production-refit path: it uses the same cached feature
-    extraction, engineered signals, 48-column windows, and duration-weighted
-    majority-vote targets as LightGBM LOVO, but does not reserve a validation
-    group or run early stopping.
+    data.train_groups and data.validation_groups define a disjoint group-level
+    split. Validation loss selects the iteration count; the final checkpoint
+    is then refit on all annotated manifest videos using that iteration count.
     """
+    if not isinstance(settings, Mapping):
+        raise ValueError("settings must be a configuration mapping.")
+    data = _section(settings, "data")
+
+    def configured_groups(key: str) -> tuple[str, ...]:
+        value = data.get(key)
+        if not isinstance(value, (tuple, list)) or not value:
+            raise ValueError(f"data.{key} must be a non-empty list of group IDs.")
+        groups: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"data.{key} must contain non-empty string group IDs.")
+            group = item.strip()
+            if group in groups:
+                raise ValueError(f"data.{key} contains duplicate group ID {group!r}.")
+            groups.append(group)
+        return tuple(groups)
+
+    train_groups = configured_groups("train_groups")
+    validation_groups = configured_groups("validation_groups")
+    overlap = set(train_groups) & set(validation_groups)
+    if overlap:
+        raise ValueError(
+            "Training and validation groups must be disjoint; overlap: "
+            + ", ".join(sorted(overlap))
+        )
+
+    manifest_records = load_manifest(manifest_path, verify_files=True)
+    known_groups = {record.group_id for record in manifest_records}
+    unknown = (set(train_groups) | set(validation_groups)) - known_groups
+    if unknown:
+        raise ValueError(
+            "Configured group ID(s) not found in the manifest: "
+            + ", ".join(sorted(unknown))
+        )
+    train_records = tuple(r for r in manifest_records if r.group_id in train_groups)
+    validation_records = tuple(r for r in manifest_records if r.group_id in validation_groups)
+    if not train_records:
+        raise ValueError("No manifest records match data.train_groups.")
+    if not validation_records:
+        raise ValueError("No manifest records match data.validation_groups.")
+
     prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
-        manifest_path, settings, require_multiple_groups=False
+        manifest_path, settings, records=manifest_records, require_multiple_groups=False
     )
+    train_ids = sorted(
+        video_id for video_id in prepared if group_by_video[video_id] in train_groups
+    )
+    validation_ids = sorted(
+        video_id for video_id in prepared if group_by_video[video_id] in validation_groups
+    )
+    if not train_ids:
+        raise ValueError("No annotated videos were prepared from data.train_groups.")
+    if not validation_ids:
+        raise ValueError("No annotated videos were prepared from data.validation_groups.")
+
     if config is None:
         config = _lightgbm_config(settings)
-    train_X, train_y = _combine(prepared, sorted(prepared))
+    train_X, train_y = _combine(prepared, train_ids)
+    val_X, val_y = _combine(prepared, validation_ids)
     present = set(np.unique(train_y).tolist())
     missing = sorted(set(range(4)) - present)
     if missing:
         raise ValueError(
-            "Single-model LightGBM training requires examples of all MTB classes "
-            f"0, 1, 2, and 3; missing class(es): {missing}."
+            "LightGBM training split requires examples of all MTB classes 0, 1, 2, and 3; "
+            f"missing class(es): {missing}."
+        )
+    if len(val_y) == 0:
+        raise ValueError("The configured validation groups produced no labeled windows.")
+
+    # This first fit is strictly group-held-out. Its loss curve and best
+    # iteration determine how long the final all-data refit should run.
+    _, validation_summary = train_lightgbm(
+        train_X,
+        train_y,
+        val_X=val_X,
+        val_y=val_y,
+        config=config,
+        data_config={
+            **data_config,
+            "manifest": str(Path(manifest_path).expanduser().resolve()),
+            "feature_cache_dir": str(feature_cache_dir(settings)),
+            "target_policy": "annotated-duration-majority; ties to higher class",
+        },
+        metadata={
+            "training_strategy": "configured_group_validation",
+            "train_groups": list(train_groups),
+            "validation_groups": list(validation_groups),
+            "training_video_ids": train_ids,
+            "validation_video_ids": validation_ids,
+        },
+    )
+    best_iteration = int(validation_summary["best_iteration"])
+    if best_iteration <= 0:
+        raise ValueError(f"Validation training returned invalid best_iteration={best_iteration}.")
+
+    # Refit the production checkpoint on all annotated videos, including the
+    # validation group, for the selected number of boosting iterations.
+    all_ids = sorted(prepared)
+    all_X, all_y = _combine(prepared, all_ids)
+    all_present = set(np.unique(all_y).tolist())
+    all_missing = sorted(set(range(4)) - all_present)
+    if all_missing:
+        raise ValueError(
+            "Final all-data LightGBM refit requires examples of all MTB classes "
+            f"0, 1, 2, and 3; missing class(es): {all_missing}."
         )
     if checkpoint_path is None:
         experiment = _section(settings, "experiment")
@@ -254,24 +347,50 @@ def run_lightgbm_train_from_manifest(
     destination = Path(checkpoint_path).expanduser()
     if destination.exists() and destination.is_dir():
         raise ValueError(f"LightGBM checkpoint path is a directory: {destination}")
+
+    from dataclasses import replace
+    final_config = replace(config, num_iterations=best_iteration)
     training_config = {
         **data_config,
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "feature_cache_dir": str(feature_cache_dir(settings)),
         "target_policy": "annotated-duration-majority; ties to higher class",
         "group_by_video": dict(sorted(group_by_video.items())),
-        "training_video_ids": sorted(prepared),
+        "training_video_ids": all_ids,
+        "validation_selection": {
+            "train_groups": list(train_groups),
+            "validation_groups": list(validation_groups),
+            "best_iteration": best_iteration,
+            "evaluation_history": validation_summary.get("evaluation_history", {}),
+        },
     }
     _, summary = train_lightgbm(
-        train_X,
-        train_y,
-        config=config,
+        all_X,
+        all_y,
+        config=final_config,
         checkpoint_path=destination,
         data_config=training_config,
         metadata={
-            "training_strategy": "single_model_all_annotated_videos",
-            "training_video_ids": sorted(prepared),
+            "training_strategy": "configured_group_validation_then_all_data_refit",
+            "training_video_ids": all_ids,
             "training_group_ids": sorted(set(group_by_video.values())),
+            "validation_groups_for_iteration_selection": list(validation_groups),
+            "validation_training_rows": int(len(train_X)),
+            "validation_rows": int(len(val_X)),
+            "best_iteration_from_validation": best_iteration,
         },
     )
+    summary["validation_selection"] = {
+        "train_groups": list(train_groups),
+        "validation_groups": list(validation_groups),
+        "training_video_ids": train_ids,
+        "validation_video_ids": validation_ids,
+        "training_rows": int(len(train_X)),
+        "validation_rows": int(len(val_X)),
+        "best_iteration": best_iteration,
+        "evaluation_history": validation_summary.get("evaluation_history", {}),
+        "early_stopping_rounds": config.early_stopping_rounds,
+    }
+    summary["training_video_ids"] = all_ids
+    summary["training_group_ids"] = sorted(set(group_by_video.values()))
     return summary
