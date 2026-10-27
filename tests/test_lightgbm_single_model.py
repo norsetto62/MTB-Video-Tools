@@ -76,7 +76,7 @@ def test_single_model_uses_yaml_groups_for_validation_then_refits_all_data(tmp_p
     assert validation_call["val_y"] is not None
     assert validation_call["config"] is config
     _, _, refit_call = captured["train_calls"][1]
-    assert refit_call["val_X"] is None
+    assert refit_call.get("val_X") is None
     assert refit_call["config"].num_iterations == 7
     assert refit_call["checkpoint_path"] == checkpoint
     assert result["validation_selection"]["validation_groups"] == ["validation"]
