@@ -159,11 +159,17 @@ Train a LightGBM LambdaRank model that orders annotated windows by their
 ordinal relevance grades (0–3). Each video is one ranking query: LightGBM gets
 a group-size array describing the consecutive rows for each video. The
 configured `data.train_groups` and `data.validation_groups` are kept separate
-for iteration selection. Validation NDCG is recorded at the configured cutoffs
-(default `ndcg@10`) and drives early stopping. The production ranker is then
-refit on all annotated manifest videos for the selected number of iterations,
-including validation videos. It uses the canonical feature cache and writes a
-LightGBM JSON checkpoint containing raw ranking scores, not class probabilities.
+for iteration selection. Before annotation filtering, each video's 48-column
+window features are independently z-score normalized across all windows in that
+video (population standard deviation, ddof=0; constant columns become zero).
+The same transformation is applied to all windows of a video during ranking
+inference. This makes features relative to each video's own distribution; it
+does not guarantee immunity to camera or terrain changes. Validation NDCG is
+recorded at the configured cutoffs (default `ndcg@10`) and drives early stopping.
+The production ranker is then refit on all annotated manifest videos for the
+selected number of iterations, including validation videos. It uses the
+canonical feature cache and writes a LightGBM JSON checkpoint containing raw
+ranking scores, not class probabilities.
 
 ```powershell
 python -m autocut lightgbm-train
