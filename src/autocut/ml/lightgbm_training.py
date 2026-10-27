@@ -115,6 +115,13 @@ def _combine_with_group_sizes(
     return X, y, group_sizes
 
 
+def _group_offsets(group_sizes: Sequence[int]):
+    offset = 0
+    for size in group_sizes:
+        yield offset, size
+        offset += size
+
+
 def _ranking_metrics(
     y_true: np.ndarray,
     scores: np.ndarray,
@@ -189,7 +196,7 @@ def train_lightgbm_group_fold(
     config: LightGBMConfig | None = None,
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
-    require_all_training_classes: bool = True,
+    require_all_training_classes: bool = False,
 ) -> tuple[LightGBMRanker, LightGBMGroupFoldResult]:
     """Train one fold with every video in held_out_group reserved for validation.
 
@@ -202,17 +209,17 @@ def train_lightgbm_group_fold(
         raise ValueError(f"Unknown held-out group {held_out_group!r}; available groups: {groups}.")
     train_ids = tuple(sorted(video_id for video_id in video_data if group_by_video[video_id] != held_out_group))
     val_ids = tuple(sorted(video_id for video_id in video_data if group_by_video[video_id] == held_out_group))
-    train_X, train_y = _combine(video_data, train_ids)
-    val_X, val_y = _combine(video_data, val_ids)
+    train_X, train_y, train_group_sizes = _combine_with_group_sizes(video_data, train_ids)
+    val_X, val_y, val_group_sizes = _combine_with_group_sizes(video_data, val_ids)
     if len(train_y) == 0 or len(val_y) == 0:
         raise ValueError("Both training and held-out group must contain labeled windows.")
-    if require_all_training_classes:
-        present = set(np.unique(train_y).tolist())
-        missing = sorted(set(range(4)) - present)
-        if missing:
-            raise ValueError(
-                f"Training fold excluding group {held_out_group!r} is missing MTB class(es) {missing}."
-            )
+    if not any(
+        len(np.unique(train_y[offset:offset + size])) > 1
+        for offset, size in _group_offsets(train_group_sizes)
+    ):
+        raise ValueError(
+            f"Training fold excluding group {held_out_group!r} has no video with multiple relevance grades."
+        )
     metadata = {
         "validation_strategy": "leave_one_group_out",
         "held_out_group": held_out_group,
@@ -223,8 +230,10 @@ def train_lightgbm_group_fold(
     model, summary = train_lightgbm(
         train_X,
         train_y,
+        train_group_sizes=train_group_sizes,
         val_X=val_X,
         val_y=val_y,
+        val_group_sizes=val_group_sizes,
         config=config,
         checkpoint_path=checkpoint_path,
         data_config={
