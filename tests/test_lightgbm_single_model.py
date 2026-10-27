@@ -9,7 +9,7 @@ from autocut.pipeline import lightgbm_training as pipeline
 
 def test_single_model_training_uses_all_manifest_data_and_saves_checkpoint(tmp_path, monkeypatch):
     manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\\n", encoding="utf-8")
+    manifest.write_text("videos: []\n", encoding="utf-8")
     checkpoint = tmp_path / "models" / "single.json"
     prepared = {"video-a": object(), "video-b": object()}
     group_by_video = {"video-a": "ascoli", "video-b": "castelli"}
@@ -55,7 +55,7 @@ def test_single_model_training_uses_all_manifest_data_and_saves_checkpoint(tmp_p
 
 def test_single_model_training_rejects_missing_annotation_class(tmp_path, monkeypatch):
     manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\\n", encoding="utf-8")
+    manifest.write_text("videos: []\n", encoding="utf-8")
     monkeypatch.setattr(
         pipeline,
         "prepare_lightgbm_manifest_data",
@@ -88,7 +88,7 @@ def test_single_model_training_rejects_missing_annotation_class(tmp_path, monkey
 
 def test_single_model_training_rejects_checkpoint_directory(tmp_path, monkeypatch):
     manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\\n", encoding="utf-8")
+    manifest.write_text("videos: []\n", encoding="utf-8")
     destination = tmp_path / "existing-directory"
     destination.mkdir()
     monkeypatch.setattr(
