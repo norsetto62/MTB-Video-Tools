@@ -353,7 +353,7 @@ def run_lightgbm_train_from_manifest(
     if checkpoint_path is None:
         experiment = _section(settings, "experiment")
         checkpoint_path = experiment.get(
-            "lightgbm_model_path", "models/lightgbm/model.json"
+            "lightgbm_model_path", "models/lightgbm/ranker.json"
         )
     destination = Path(checkpoint_path).expanduser()
     if destination.exists() and destination.is_dir():
