@@ -72,7 +72,10 @@ def _validate_inputs(
         group_id = group_by_video[video_id]
         if not isinstance(group_id, str) or not group_id.strip():
             raise ValueError(f"Video {video_id!r} has an empty group ID.")
-    groups = tuple(sorted(set(group_by_video.values())))
+    group_values = list(group_by_video.values())
+    if any(not isinstance(group_id, str) or not group_id.strip() for group_id in group_values):
+        raise ValueError("Group IDs must be non-empty strings.")
+    groups = tuple(sorted(set(group_values)))
     if len(groups) < 2:
         raise ValueError("At least two distinct groups are required for grouped validation.")
     return groups
@@ -162,7 +165,6 @@ def train_lightgbm_group_fold(
             "for the current LightGBM validation contract."
         )
 
-    safe_group = re.sub(r"[^A-Za-z0-9_.-]+", "_", held_out_group).strip("._") or "group"
     metadata = {
         "validation_strategy": "leave_one_group_out",
         "held_out_group": held_out_group,
