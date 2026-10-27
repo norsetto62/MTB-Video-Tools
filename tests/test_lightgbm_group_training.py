@@ -93,3 +93,19 @@ def test_video_data_rejects_misaligned_labels():
     ts = np.zeros((3, 2), dtype=np.float64)
     with pytest.raises(ValueError, match="aligned"):
         LightGBMVideoData(FeatureWindows(X, ts), np.array([0, 1]))
+
+
+
+def test_group_fold_allows_a_single_class_in_the_held_out_group():
+    videos = {
+        "training_video": _video_data(10, [0, 1, 2, 3] * 4),
+        "validation_video": _video_data(11, [2] * 8),
+    }
+    groups = {"training_video": "training", "validation_video": "validation"}
+    _, result = train_lightgbm_group_fold(
+        videos, groups, held_out_group="validation", config=_config()
+    )
+    metrics = result.summary["validation_metrics"]
+    assert metrics["validation_rows"] == 8
+    assert metrics["per_class_support"]["2"] == 8
+    assert metrics["per_class_support"]["0"] == 0
