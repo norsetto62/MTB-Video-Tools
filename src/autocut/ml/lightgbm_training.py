@@ -22,7 +22,7 @@ from autocut.ml.training import train_lightgbm
 
 @dataclass(frozen=True)
 class LightGBMVideoData:
-    """Prepared tabular data for one video, with labels aligned to its rows."""
+    """Prepared tabular data for one video, with relevance grades aligned to rows."""
 
     windows: FeatureWindows
     targets: np.ndarray
@@ -39,7 +39,7 @@ class LightGBMVideoData:
         if not np.isfinite(X).all():
             raise ValueError("windows.X must contain only finite values.")
         if not np.isfinite(y).all() or not np.isin(y, [0, 1, 2, 3]).all():
-            raise ValueError("targets must contain only finite MTB classes 0, 1, 2, or 3.")
+            raise ValueError("targets must contain only finite relevance grades 0, 1, 2, or 3.")
 
 
 @dataclass(frozen=True)
@@ -173,9 +173,8 @@ def train_lightgbm_group_fold(
 ) -> tuple[LightGBMRanker, LightGBMGroupFoldResult]:
     """Train one fold with every video in held_out_group reserved for validation.
 
-    No window-level random split is performed. By default, training must
-    contain examples of all four MTB classes; this prevents a fold from
-    silently producing a nominal four-class model that never saw a class.
+    No window-level random split is performed. Each video is a ranking query,
+    and ordinal relevance grades are compared only within each query.
     """
     groups = _validate_inputs(video_data, group_by_video)
     if held_out_group not in groups:
@@ -239,7 +238,7 @@ def train_lightgbm_lovo(
     checkpoint_dir: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
 ) -> tuple[LightGBMGroupFoldResult, ...]:
-    """Run deterministic leave-one-group-out validation across all groups."""
+    """Run deterministic leave-one-group-out ranking validation across all groups."""
     groups = _validate_inputs(video_data, group_by_video)
     results: list[LightGBMGroupFoldResult] = []
     for group_id in groups:
