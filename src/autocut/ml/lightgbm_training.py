@@ -1,0 +1,228 @@
+"""Group-aware training and validation orchestration for LightGBM.
+
+Input data is prepared per video by autocut.dataset.lightgbm. This module
+combines those per-video datasets and performs validation only across whole
+groups, preventing overlapping windows from the same group leaking between
+training and validation.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+from pathlib import Path
+from typing import Mapping, Sequence, Any
+
+import numpy as np
+
+from autocut.data_models import FeatureWindows
+from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+from autocut.ml.model import LightGBMConfig, LightGBMClassifier
+from autocut.ml.training import train_lightgbm
+
+
+@dataclass(frozen=True)
+class LightGBMVideoData:
+    """Prepared tabular data for one video, with labels aligned to its rows."""
+
+    windows: FeatureWindows
+    targets: np.ndarray
+
+    def __post_init__(self) -> None:
+        X = np.asarray(self.windows.X)
+        y = np.asarray(self.targets)
+        if X.ndim != 2 or X.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
+            raise ValueError(
+                f"windows.X must have shape (N, {len(LIGHTGBM_TABULAR_FEATURE_NAMES)})."
+            )
+        if y.ndim != 1 or len(y) != len(X):
+            raise ValueError("targets must be a 1D vector aligned with windows.X.")
+        if not np.isfinite(X).all():
+            raise ValueError("windows.X must contain only finite values.")
+        if not np.isfinite(y).all() or not np.isin(y, [0, 1, 2, 3]).all():
+            raise ValueError("targets must contain only finite MTB classes 0, 1, 2, or 3.")
+
+
+@dataclass(frozen=True)
+class LightGBMGroupFoldResult:
+    """Training outcome and held-out metrics for one group fold."""
+
+    held_out_group: str
+    train_video_ids: tuple[str, ...]
+    validation_video_ids: tuple[str, ...]
+    summary: dict[str, Any]
+
+
+def _validate_inputs(
+    video_data: Mapping[str, LightGBMVideoData],
+    group_by_video: Mapping[str, str],
+) -> tuple[str, ...]:
+    if not video_data:
+        raise ValueError("video_data must contain at least one video.")
+    missing = sorted(set(video_data) - set(group_by_video))
+    if missing:
+        raise ValueError(f"Missing group IDs for video(s): {missing}.")
+    extras = sorted(set(group_by_video) - set(video_data))
+    if extras:
+        raise ValueError(f"group_by_video contains unknown video ID(s): {extras}.")
+    for video_id, item in video_data.items():
+        if not isinstance(video_id, str) or not video_id.strip():
+            raise ValueError("Video IDs must be non-empty strings.")
+        if not isinstance(item, LightGBMVideoData):
+            raise TypeError(f"video_data[{video_id!r}] must be LightGBMVideoData.")
+        group_id = group_by_video[video_id]
+        if not isinstance(group_id, str) or not group_id.strip():
+            raise ValueError(f"Video {video_id!r} has an empty group ID.")
+    groups = tuple(sorted(set(group_by_video.values())))
+    if len(groups) < 2:
+        raise ValueError("At least two distinct groups are required for grouped validation.")
+    return groups
+
+
+def _combine(
+    video_data: Mapping[str, LightGBMVideoData],
+    video_ids: Sequence[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    feature_parts: list[np.ndarray] = []
+    target_parts: list[np.ndarray] = []
+    for video_id in video_ids:
+        item = video_data[video_id]
+        if len(item.targets) == 0:
+            continue
+        feature_parts.append(np.asarray(item.windows.X, dtype=np.float32))
+        target_parts.append(np.asarray(item.targets, dtype=np.int32))
+    if not feature_parts:
+        return (
+            np.empty((0, len(LIGHTGBM_TABULAR_FEATURE_NAMES)), dtype=np.float32),
+            np.empty((0,), dtype=np.int32),
+        )
+    return np.concatenate(feature_parts, axis=0), np.concatenate(target_parts, axis=0)
+
+
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, Any]:
+    labels = np.arange(4, dtype=np.int64)
+    confusion = np.zeros((4, 4), dtype=np.int64)
+    for actual, predicted in zip(y_true, y_pred):
+        confusion[int(actual), int(predicted)] += 1
+    support = confusion.sum(axis=1)
+    correct = np.diag(confusion)
+    recall = np.divide(correct, support, out=np.zeros(4, dtype=np.float64), where=support > 0)
+    precision_support = confusion.sum(axis=0)
+    precision = np.divide(
+        correct, precision_support, out=np.zeros(4, dtype=np.float64), where=precision_support > 0
+    )
+    f1 = np.divide(
+        2.0 * precision * recall, precision + recall,
+        out=np.zeros(4, dtype=np.float64), where=(precision + recall) > 0,
+    )
+    return {
+        "validation_rows": int(len(y_true)),
+        "accuracy": float(np.mean(y_true == y_pred)) if len(y_true) else None,
+        "macro_f1": float(np.mean(f1)),
+        "per_class_recall": {str(int(label)): float(recall[label]) for label in labels},
+        "per_class_support": {str(int(label)): int(support[label]) for label in labels},
+        "confusion_matrix": confusion.tolist(),
+    }
+
+
+def train_lightgbm_group_fold(
+    video_data: Mapping[str, LightGBMVideoData],
+    group_by_video: Mapping[str, str],
+    *,
+    held_out_group: str,
+    config: LightGBMConfig | None = None,
+    checkpoint_path: str | Path | None = None,
+    data_config: dict[str, Any] | None = None,
+    require_all_training_classes: bool = True,
+) -> tuple[LightGBMClassifier, LightGBMGroupFoldResult]:
+    """Train one fold with every video in held_out_group reserved for validation.
+
+    No window-level random split is performed. By default, training must
+    contain examples of all four MTB classes; this prevents a fold from
+    silently producing a nominal four-class model that never saw a class.
+    """
+    groups = _validate_inputs(video_data, group_by_video)
+    if held_out_group not in groups:
+        raise ValueError(f"Unknown held-out group {held_out_group!r}; available groups: {groups}.")
+    train_ids = tuple(sorted(video_id for video_id in video_data if group_by_video[video_id] != held_out_group))
+    val_ids = tuple(sorted(video_id for video_id in video_data if group_by_video[video_id] == held_out_group))
+    train_X, train_y = _combine(video_data, train_ids)
+    val_X, val_y = _combine(video_data, val_ids)
+    if len(train_y) == 0 or len(val_y) == 0:
+        raise ValueError("Both training and held-out group must contain labeled windows.")
+    if require_all_training_classes:
+        present = set(np.unique(train_y).tolist())
+        missing = sorted(set(range(4)) - present)
+        if missing:
+            raise ValueError(
+                f"Training fold excluding group {held_out_group!r} is missing MTB class(es) {missing}."
+            )
+    if len(np.unique(val_y)) < 2:
+        raise ValueError(
+            f"Held-out group {held_out_group!r} must contain at least two classes "
+            "for the current LightGBM validation contract."
+        )
+
+    safe_group = re.sub(r"[^A-Za-z0-9_.-]+", "_", held_out_group).strip("._") or "group"
+    metadata = {
+        "validation_strategy": "leave_one_group_out",
+        "held_out_group": held_out_group,
+        "train_video_ids": list(train_ids),
+        "validation_video_ids": list(val_ids),
+        "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+    }
+    model, summary = train_lightgbm(
+        train_X,
+        train_y,
+        val_X=val_X,
+        val_y=val_y,
+        config=config,
+        checkpoint_path=checkpoint_path,
+        data_config={
+            **(data_config or {}),
+            "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+        },
+        metadata=metadata,
+    )
+    probabilities = model.predict_proba(val_X)
+    predictions = np.argmax(probabilities, axis=1).astype(np.int64)
+    summary["validation_metrics"] = _metrics(val_y, predictions)
+    summary["held_out_group"] = held_out_group
+    summary["train_video_ids"] = list(train_ids)
+    summary["validation_video_ids"] = list(val_ids)
+    result = LightGBMGroupFoldResult(
+        held_out_group=held_out_group,
+        train_video_ids=train_ids,
+        validation_video_ids=val_ids,
+        summary=summary,
+    )
+    return model, result
+
+
+def train_lightgbm_lovo(
+    video_data: Mapping[str, LightGBMVideoData],
+    group_by_video: Mapping[str, str],
+    *,
+    config: LightGBMConfig | None = None,
+    checkpoint_dir: str | Path | None = None,
+    data_config: dict[str, Any] | None = None,
+    require_all_training_classes: bool = True,
+) -> tuple[LightGBMGroupFoldResult, ...]:
+    """Run deterministic leave-one-group-out validation across all groups."""
+    groups = _validate_inputs(video_data, group_by_video)
+    results: list[LightGBMGroupFoldResult] = []
+    for group_id in groups:
+        path = None
+        if checkpoint_dir is not None:
+            safe_group = re.sub(r"[^A-Za-z0-9_.-]+", "_", group_id).strip("._") or "group"
+            path = Path(checkpoint_dir) / f"lightgbm_lovo_{safe_group}.json"
+        _, result = train_lightgbm_group_fold(
+            video_data,
+            group_by_video,
+            held_out_group=group_id,
+            config=config,
+            checkpoint_path=path,
+            data_config=data_config,
+            require_all_training_classes=require_all_training_classes,
+        )
+        results.append(result)
+    return tuple(results)
