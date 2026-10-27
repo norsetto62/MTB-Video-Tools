@@ -76,8 +76,7 @@ class MTBClassifier(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# LightGBM multiclass model configuration. The legacy P/U neural model above
-# remains available until production pipelines are migrated.
+# LightGBM learning-to-rank model configuration.
 # ---------------------------------------------------------------------------
 
 from dataclasses import asdict, dataclass
@@ -86,11 +85,10 @@ import math
 
 @dataclass(frozen=True)
 class LightGBMConfig:
-    """Validated parameters for four-class LightGBM training."""
+    """Validated parameters for LambdaRank over per-video window queries."""
 
-    objective: str = "multiclass"
+    objective: str = "lambdarank"
     task: str = "train"
-    num_class: int = 4
     num_leaves: int = 31
     learning_rate: float = 0.03
     max_depth: int = 6
@@ -103,16 +101,15 @@ class LightGBMConfig:
     lambda_l2: float = 0.1
     min_split_gain: float = 0.0
     early_stopping_rounds: int = 100
+    ndcg_eval_at: tuple[int, ...] = (10,)
     random_seed: int = 42
     verbosity: int = -1
 
     def __post_init__(self) -> None:
-        if self.objective != "multiclass":
-            raise ValueError("objective must be 'multiclass'.")
+        if self.objective != "lambdarank":
+            raise ValueError("objective must be 'lambdarank'.")
         if self.task not in {"train", "predict"}:
             raise ValueError("task must be 'train' or 'predict'.")
-        if self.num_class != 4:
-            raise ValueError("num_class must be 4 for annotation classes 0, 1, 2, 3.")
         for name in (
             "num_leaves", "max_depth", "min_data_in_leaf",
             "num_iterations", "bagging_frequency", "early_stopping_rounds",
@@ -139,19 +136,57 @@ class LightGBMConfig:
             raise ValueError("bagging_fraction must be in (0, 1].")
         if self.lambda_l1 < 0 or self.lambda_l2 < 0 or self.min_split_gain < 0:
             raise ValueError("Regularization and min_split_gain must be non-negative.")
+        try:
+            cutoffs = tuple(self.ndcg_eval_at)
+        except TypeError as exc:
+            raise ValueError("ndcg_eval_at must be a non-empty sequence of positive integers.") from exc
+        if not cutoffs or any(
+            isinstance(k, bool) or not isinstance(k, int) or k <= 0 for k in cutoffs
+        ) or len(set(cutoffs)) != len(cutoffs):
+            raise ValueError("ndcg_eval_at must contain unique positive integers.")
+        object.__setattr__(self, "ndcg_eval_at", cutoffs)
 
     def to_params(self) -> dict[str, object]:
-        """Return LightGBM parameter names accepted by lightgbm.train()."""
+        """Return LightGBM LambdaRank parameters."""
         params = asdict(self)
         params.pop("early_stopping_rounds")
         params.pop("task")
-        params["metric"] = "multi_logloss"
+        params.pop("ndcg_eval_at")
+        params["metric"] = "ndcg"
+        params["ndcg_eval_at"] = list(self.ndcg_eval_at)
         params["verbosity"] = self.verbosity
         return params
 
 
+class LightGBMRanker:
+    """Typed wrapper that returns one raw ranking score per feature row."""
+
+    def __init__(self, booster: object, *, feature_names: tuple[str, ...] | list[str] | None = None) -> None:
+        if not callable(getattr(booster, "predict", None)):
+            raise TypeError("booster must provide LightGBM's predict method.")
+        self.booster = booster
+        self.feature_names = tuple(feature_names or ())
+        self.feature_dim = len(self.feature_names) if self.feature_names else int(
+            getattr(booster, "num_feature")()
+        )
+
+    def predict(self, X):
+        """Return finite raw ranking scores with shape (N,)."""
+        import numpy as np
+
+        values = np.asarray(X, dtype=np.float32)
+        if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] != self.feature_dim:
+            raise ValueError(f"X must have shape (N, {self.feature_dim}) with N > 0.")
+        if not np.isfinite(values).all():
+            raise ValueError("X must contain only finite values.")
+        scores = np.asarray(self.booster.predict(values), dtype=np.float64).reshape(-1)
+        if scores.shape != (len(values),) or not np.isfinite(scores).all():
+            raise ValueError("LightGBM ranker must return one finite score per row.")
+        return scores.astype(np.float32, copy=False)
+
+
 class LightGBMClassifier:
-    """Small typed wrapper around a trained LightGBM Booster."""
+    """Compatibility wrapper for legacy four-class LightGBM checkpoints."""
 
     def __init__(self, booster: object, *, feature_names: tuple[str, ...] | list[str] | None = None) -> None:
         if not callable(getattr(booster, "predict", None)):
