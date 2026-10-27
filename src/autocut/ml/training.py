@@ -377,3 +377,132 @@ def train_fixed_epochs(
         checkpoint_path=checkpoint_path, data_config=data_config,
         metadata=metadata, early_stopping=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Four-class LightGBM training for the 48-column tabular representation.
+# ---------------------------------------------------------------------------
+
+from autocut.ml.model import LightGBMClassifier, LightGBMConfig
+from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+from autocut.ml.checkpoint import save_lightgbm_checkpoint
+
+
+def _validate_lightgbm_data(X: np.ndarray, y: np.ndarray, *, name: str) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        features = np.asarray(X, dtype=np.float32)
+        labels_raw = np.asarray(y)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} features and labels must be numeric arrays.") from exc
+    if features.ndim != 2 or features.shape[0] == 0 or features.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError(f"{name} X must have shape (N, {len(LIGHTGBM_TABULAR_FEATURE_NAMES)}).")
+    if labels_raw.ndim != 1 or labels_raw.size != len(features):
+        raise ValueError(f"{name} y must be a 1D vector matching X rows.")
+    if not np.isfinite(features).all():
+        raise ValueError(f"{name} X must contain only finite values.")
+    try:
+        numeric_labels = np.asarray(labels_raw, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} labels must be numeric classes 0..3.") from exc
+    if not np.isfinite(numeric_labels).all() or not np.isin(numeric_labels, [0, 1, 2, 3]).all():
+        raise ValueError(f"{name} labels must contain only integer classes 0, 1, 2, or 3.")
+    labels = numeric_labels.astype(np.int32)
+    if np.unique(labels).size < 2:
+        raise ValueError(f"{name} must contain at least two distinct classes.")
+    return features, labels
+
+
+def train_lightgbm(
+    train_X: np.ndarray,
+    train_y: np.ndarray,
+    *,
+    val_X: np.ndarray | None = None,
+    val_y: np.ndarray | None = None,
+    config: LightGBMConfig | None = None,
+    checkpoint_path: str | Path | None = None,
+    data_config: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[LightGBMClassifier, dict[str, Any]]:
+    """Train a four-class LightGBM model on pre-aggregated 48-column rows.
+
+    Supply validation data from held-out video groups to enable early stopping.
+    No feature scaling is fitted or applied: the saved checkpoint records the
+    exact feature schema and LightGBM configuration.
+    """
+    try:
+        import lightgbm as lgb
+    except ImportError as exc:
+        raise ImportError(
+            "LightGBM is required for this training path. Install it with pip install -e .[ml]."
+        ) from exc
+    config = config or LightGBMConfig()
+    if not isinstance(config, LightGBMConfig):
+        raise TypeError("config must be a LightGBMConfig.")
+    if config.task != "train":
+        raise ValueError("LightGBMConfig.task must be 'train' for train_lightgbm().")
+    train_features, train_labels = _validate_lightgbm_data(train_X, train_y, name="training")
+    if (val_X is None) != (val_y is None):
+        raise ValueError("val_X and val_y must be supplied together.")
+    valid_sets = None
+    valid_names = None
+    callbacks = []
+    evals_result: dict[str, Any] = {}
+    valid_labels = None
+    if val_X is not None:
+        valid_features, valid_labels = _validate_lightgbm_data(val_X, val_y, name="validation")
+        if valid_features.shape[1] != train_features.shape[1]:
+            raise ValueError("Training and validation feature dimensions must match.")
+        train_dataset = lgb.Dataset(
+            train_features, label=train_labels,
+            feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES), free_raw_data=False,
+        )
+        valid_dataset = lgb.Dataset(
+            valid_features, label=valid_labels,
+            feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+            reference=train_dataset, free_raw_data=False,
+        )
+        valid_sets, valid_names = [train_dataset, valid_dataset], ["train", "validation"]
+        callbacks.extend([
+            lgb.early_stopping(config.early_stopping_rounds, first_metric_only=True, verbose=False),
+            lgb.record_evaluation(evals_result),
+        ])
+    else:
+        train_dataset = lgb.Dataset(
+            train_features, label=train_labels,
+            feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES), free_raw_data=False,
+        )
+    booster = lgb.train(
+        config.to_params(),
+        train_dataset,
+        num_boost_round=config.num_iterations,
+        valid_sets=valid_sets,
+        valid_names=valid_names,
+        callbacks=callbacks,
+    )
+    model = LightGBMClassifier(booster, feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
+    best_iteration = int(booster.best_iteration or config.num_iterations)
+    summary: dict[str, Any] = {
+        "best_iteration": best_iteration,
+        "configured_max_iterations": config.num_iterations,
+        "early_stopping_rounds": config.early_stopping_rounds if val_X is not None else None,
+        "classes_present_in_training": sorted(int(x) for x in np.unique(train_labels)),
+        "classes_present_in_validation": (
+            sorted(int(x) for x in np.unique(valid_labels)) if val_X is not None else None
+        ),
+        "evaluation_history": evals_result,
+        "feature_count": len(LIGHTGBM_TABULAR_FEATURE_NAMES),
+        "training_rows": int(len(train_features)),
+        "validation_rows": int(len(val_X)) if val_X is not None else 0,
+    }
+    if checkpoint_path is not None:
+        payload = save_lightgbm_checkpoint(
+            checkpoint_path,
+            model,
+            feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES,
+            training_config=config.__dict__,
+            data_config=data_config,
+            metadata={**(metadata or {}), **summary},
+        )
+        summary["checkpoint_path"] = str(checkpoint_path)
+        summary["checkpoint_version"] = payload["checkpoint_version"]
+    return model, summary
