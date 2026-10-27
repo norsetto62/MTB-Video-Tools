@@ -170,7 +170,6 @@ def train_lightgbm_group_fold(
     config: LightGBMConfig | None = None,
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
-    require_all_training_classes: bool = False,
 ) -> tuple[LightGBMRanker, LightGBMGroupFoldResult]:
     """Train one fold with every video in held_out_group reserved for validation.
 
@@ -239,7 +238,6 @@ def train_lightgbm_lovo(
     config: LightGBMConfig | None = None,
     checkpoint_dir: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
-    require_all_training_classes: bool = True,
 ) -> tuple[LightGBMGroupFoldResult, ...]:
     """Run deterministic leave-one-group-out validation across all groups."""
     groups = _validate_inputs(video_data, group_by_video)
@@ -256,7 +254,6 @@ def train_lightgbm_lovo(
             config=config,
             checkpoint_path=path,
             data_config=data_config,
-            require_all_training_classes=require_all_training_classes,
         )
         results.append(result)
     return tuple(results)
