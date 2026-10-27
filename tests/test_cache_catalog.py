@@ -69,7 +69,12 @@ def test_full_rebuild_removes_catalog_rows_for_deleted_npz(tmp_path):
     video, cache_dir, clip, sequence = _fixture(tmp_path)
     first = save_feature_sequence(sequence, video, cache_dir, clip)
     second_clip = Clip(video_name="ride", start=3.0, end=5.0)
-    second = save_feature_sequence(sequence, video, cache_dir, second_clip)
+    # The second cache entry must contain timestamps inside its own clip.
+    second_sequence = FeatureSequence(
+        features=np.ones((3, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.asarray([3.5, 4.0, 4.5], dtype=np.float64),
+    )
+    second = save_feature_sequence(second_sequence, video, cache_dir, second_clip)
     assert len(list_cache_entries(cache_dir)) == 2
 
     second.unlink()
