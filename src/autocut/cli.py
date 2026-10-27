@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lightgbm_train = subparsers.add_parser(
         "lightgbm-train",
-        help="Train one four-class LightGBM model on all annotated manifest videos.",
+        help="Train one LambdaRank model to rank annotated windows.",
     )
     lightgbm_train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lightgbm_train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lightgbm_lovo = subparsers.add_parser(
         "lightgbm-lovo",
-        help="Train and validate the four-class LightGBM model by manifest group.",
+        help="Train and validate a LambdaRank model by manifest group.",
     )
     lightgbm_lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lightgbm_lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
