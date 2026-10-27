@@ -147,3 +147,38 @@ class LightGBMConfig:
         params["metric"] = "multi_logloss"
         params["verbosity"] = self.verbosity
         return params
+
+
+class LightGBMClassifier:
+    """Small typed wrapper around a trained LightGBM Booster."""
+
+    def __init__(self, booster: object, *, feature_names: tuple[str, ...] | list[str] | None = None) -> None:
+        if not callable(getattr(booster, "predict", None)):
+            raise TypeError("booster must provide LightGBM's predict method.")
+        self.booster = booster
+        self.feature_names = tuple(feature_names or ())
+        self.num_classes = 4
+        self.feature_dim = len(self.feature_names) if self.feature_names else int(
+            getattr(booster, "num_feature")()
+        )
+
+    def predict_proba(self, X):
+        """Return a finite (N, 4) matrix of class probabilities."""
+        import numpy as np
+
+        values = np.asarray(X, dtype=np.float32)
+        if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] != self.feature_dim:
+            raise ValueError(f"X must have shape (N, {self.feature_dim}) with N > 0.")
+        if not np.isfinite(values).all():
+            raise ValueError("X must contain only finite values.")
+        probabilities = np.asarray(self.booster.predict(values), dtype=np.float64)
+        if probabilities.ndim == 1 and probabilities.size == len(values) * 4:
+            probabilities = probabilities.reshape(len(values), 4)
+        if probabilities.shape != (len(values), 4):
+            raise ValueError(f"LightGBM booster must return shape (N, 4); got {probabilities.shape}.")
+        if not np.isfinite(probabilities).all():
+            raise ValueError("LightGBM produced non-finite probabilities.")
+        row_sums = probabilities.sum(axis=1)
+        if np.any(probabilities < -1e-8) or not np.allclose(row_sums, 1.0, atol=1e-5):
+            raise ValueError("LightGBM predictions are not valid class probabilities.")
+        return probabilities.astype(np.float32, copy=False)
