@@ -260,6 +260,10 @@ def infer_sequence(
 from autocut.ml.checkpoint import load_lightgbm_checkpoint
 from autocut.ml.model import LightGBMClassifier, LightGBMRanker
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+from autocut.dataset.normalization import (
+    LIGHTGBM_FEATURE_NORMALIZATION,
+    normalize_per_video_features,
+)
 
 
 @dataclass(frozen=True)
@@ -325,6 +329,11 @@ def infer_lightgbm_ranking_windows(
         raise ValueError("Every window end timestamp must be after its start.")
     if len(timestamps) > 1 and np.any(np.diff(timestamps[:, 0]) <= 0):
         raise ValueError("Window start timestamps must be strictly increasing.")
+    # New ranker checkpoints explicitly opt into per-video normalization.
+    # Older checkpoints without this metadata retain their original behavior.
+    data_config = payload.get("data_config") or {}
+    if data_config.get("feature_normalization") == LIGHTGBM_FEATURE_NORMALIZATION:
+        X = normalize_per_video_features(X)
     model = LightGBMRanker(payload["_booster"], feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     scores = model.predict(X)
     return LightGBMRankingInferenceResult(timestamps=timestamps.copy(), scores=scores)
