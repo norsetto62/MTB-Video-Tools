@@ -1,0 +1,213 @@
+"""Manifest-to-LightGBM training pipeline.
+
+This is a separate four-class path. It reuses the canonical manifest, NPZ
+feature cache, video feature extractor, annotation parser, and LightGBM
+dataset/training APIs without changing the legacy P/U pipeline.
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from ..annotations import load_training_annotations
+from ..config_loader import Config
+from ..data_models import Clip
+from ..dataset.cache_paths import feature_cache_dir
+from ..dataset.lightgbm import build_lightgbm_training_data
+from ..dataset.manifest import DatasetRecord, load_manifest
+from ..dataset.sequence import (
+    DEFAULT_PROCESSING_WIDTH,
+    DEFAULT_ROI_BOTTOM,
+    DEFAULT_ROI_LEFT,
+    DEFAULT_ROI_RIGHT,
+    DEFAULT_ROI_TOP,
+    DEFAULT_SAMPLE_FPS,
+    build_feature_sequence,
+    validate_roi,
+)
+from ..ml.lightgbm_training import (
+    LightGBMGroupFoldResult,
+    LightGBMVideoData,
+    train_lightgbm_lovo,
+)
+from ..ml.model import LightGBMConfig
+from ..video.probe import get_video_info
+
+
+def _section(settings: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    section = settings.get(name, {})
+    if not isinstance(section, Mapping):
+        raise ValueError(f"Configuration section {name!r} must be a mapping.")
+    return section
+
+
+def _positive_float(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite positive number.")
+    value = float(value)
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number.")
+    return value
+
+
+def _positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _lightgbm_config(settings: Mapping[str, Any]) -> LightGBMConfig:
+    """Read LightGBM options from the dedicated lightgbm config section."""
+    section = _section(settings, "lightgbm")
+    allowed = set(LightGBMConfig.__dataclass_fields__)
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown lightgbm configuration key(s): {unknown}.")
+    try:
+        return LightGBMConfig(**dict(section))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid lightgbm configuration: {exc}") from exc
+
+
+def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
+    data = _section(settings, "data")
+    sample_fps = _positive_float(
+        data.get("sampling_fps", DEFAULT_SAMPLE_FPS), "data.sampling_fps"
+    )
+    processing_width = _positive_int(
+        data.get("processing_width", DEFAULT_PROCESSING_WIDTH), "data.processing_width"
+    )
+    window = _positive_float(data.get("window_duration", 4.0), "data.window_duration")
+    stride = _positive_float(data.get("window_stride", 2.0), "data.window_stride")
+    roi = validate_roi(
+        data.get("roi_left", DEFAULT_ROI_LEFT),
+        data.get("roi_right", DEFAULT_ROI_RIGHT),
+        data.get("roi_bottom", DEFAULT_ROI_BOTTOM),
+        data.get("roi_top", DEFAULT_ROI_TOP),
+    )
+    return {
+        "sampling_fps": sample_fps,
+        "processing_width": processing_width,
+        "window": window,
+        "stride": stride,
+        "roi_left": roi[0],
+        "roi_right": roi[1],
+        "roi_bottom": roi[2],
+        "roi_top": roi[3],
+    }
+
+
+def prepare_lightgbm_manifest_data(
+    manifest_path: str | Path,
+    settings: Mapping[str, Any],
+    *,
+    records: tuple[DatasetRecord, ...] | None = None,
+) -> tuple[dict[str, LightGBMVideoData], dict[str, str], dict[str, Any]]:
+    """Load/reuse per-video cached features and build labeled 48-column rows.
+
+    Each manifest record must have an annotation file because this is a
+    supervised MTB 0..3 workflow. Existing NPZ feature caches are only read
+    through build_feature_sequence; cache misses are extracted and written by
+    the canonical cache implementation.
+    """
+    if not isinstance(settings, Mapping):
+        raise ValueError("settings must be a configuration mapping.")
+    manifest = Path(manifest_path).expanduser()
+    if records is None:
+        records = load_manifest(manifest, verify_files=True)
+    data = _section(settings, "data")
+    params = _data_config(settings)
+    cache_dir = feature_cache_dir(settings)
+    prepared: dict[str, LightGBMVideoData] = {}
+    group_by_video: dict[str, str] = {}
+
+    for record in records:
+        if record.annotation_path is None:
+            raise ValueError(
+                f"Manifest entry {record.id!r} has no annotation file; "
+                "four-class LightGBM training requires MTB 0..3 annotations."
+            )
+        declared_video, annotations = load_training_annotations(record.annotation_path)
+        if declared_video.resolve() != record.video_path.resolve():
+            raise ValueError(
+                f"Manifest entry {record.id!r} points to {record.video_path}, but "
+                f"its annotation file declares {declared_video}."
+            )
+        if not annotations:
+            raise ValueError(f"Manifest entry {record.id!r} has no MTB annotations.")
+
+        video_info = get_video_info(record.video_path)
+        timeline_end = float(annotations[-1].end)
+        if timeline_end > float(video_info.duration) + 0.05:
+            raise ValueError(
+                f"Annotation end ({timeline_end:.3f}s) exceeds video duration "
+                f"({video_info.duration:.3f}s) for {record.id!r}."
+            )
+        timeline_end = min(timeline_end, float(video_info.duration))
+        clip = Clip(video_name=record.id, start=0.0, end=timeline_end)
+        sequence = build_feature_sequence(
+            record.video_path,
+            clip,
+            sample_fps=params["sampling_fps"],
+            processing_width=params["processing_width"],
+            cache_dir=cache_dir,
+            roi_left=params["roi_left"],
+            roi_right=params["roi_right"],
+            roi_bottom=params["roi_bottom"],
+            roi_top=params["roi_top"],
+        )
+        windows, targets = build_lightgbm_training_data(
+            sequence,
+            annotations,
+            window=params["window"],
+            stride=params["stride"],
+        )
+        if len(targets) == 0:
+            raise ValueError(
+                f"Manifest entry {record.id!r} produced no windows with annotated duration."
+            )
+        if not np.isfinite(windows.X).all():
+            raise ValueError(f"Manifest entry {record.id!r} produced non-finite LightGBM features.")
+        prepared[record.id] = LightGBMVideoData(windows=windows, targets=targets)
+        group_by_video[record.id] = record.group_id
+
+    if len({group_by_video[video_id] for video_id in prepared}) < 2:
+        raise ValueError("At least two annotated manifest groups are required for LOVO validation.")
+    return prepared, group_by_video, params
+
+
+def run_lightgbm_lovo_from_manifest(
+    manifest_path: str | Path,
+    settings: Mapping[str, Any],
+    *,
+    checkpoint_dir: str | Path | None = None,
+    config: LightGBMConfig | None = None,
+    require_all_training_classes: bool = True,
+) -> tuple[LightGBMGroupFoldResult, ...]:
+    """Prepare data from manifest/cache/video sources and run grouped LOVO."""
+    prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
+        manifest_path, settings
+    )
+    if config is None:
+        config = _lightgbm_config(settings)
+    if checkpoint_dir is None:
+        experiment = _section(settings, "experiment")
+        checkpoint_dir = experiment.get(
+            "lightgbm_checkpoint_dir", "models/lightgbm_lovo"
+        )
+    return train_lightgbm_lovo(
+        prepared,
+        group_by_video,
+        config=config,
+        checkpoint_dir=checkpoint_dir,
+        data_config={
+            **data_config,
+            "manifest": str(Path(manifest_path).expanduser().resolve()),
+            "feature_cache_dir": str(feature_cache_dir(settings)),
+            "target_policy": "annotated-duration-majority; ties to higher class",
+        },
+        require_all_training_classes=require_all_training_classes,
+    )
