@@ -388,7 +388,13 @@ from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
 from autocut.ml.checkpoint import save_lightgbm_checkpoint
 
 
-def _validate_lightgbm_data(X: np.ndarray, y: np.ndarray, *, name: str) -> tuple[np.ndarray, np.ndarray]:
+def _validate_lightgbm_data(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    name: str,
+    require_multiple_classes: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
     try:
         features = np.asarray(X, dtype=np.float32)
         labels_raw = np.asarray(y)
@@ -407,7 +413,7 @@ def _validate_lightgbm_data(X: np.ndarray, y: np.ndarray, *, name: str) -> tuple
     if not np.isfinite(numeric_labels).all() or not np.isin(numeric_labels, [0, 1, 2, 3]).all():
         raise ValueError(f"{name} labels must contain only integer classes 0, 1, 2, or 3.")
     labels = numeric_labels.astype(np.int32)
-    if np.unique(labels).size < 2:
+    if require_multiple_classes and np.unique(labels).size < 2:
         raise ValueError(f"{name} must contain at least two distinct classes.")
     return features, labels
 
@@ -449,7 +455,9 @@ def train_lightgbm(
     evals_result: dict[str, Any] = {}
     valid_labels = None
     if val_X is not None:
-        valid_features, valid_labels = _validate_lightgbm_data(val_X, val_y, name="validation")
+        valid_features, valid_labels = _validate_lightgbm_data(
+            val_X, val_y, name="validation", require_multiple_classes=False
+        )
         if valid_features.shape[1] != train_features.shape[1]:
             raise ValueError("Training and validation feature dimensions must match.")
         train_dataset = lgb.Dataset(
