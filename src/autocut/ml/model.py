@@ -73,3 +73,113 @@ class MTBClassifier(nn.Module):
             raise ValueError("x must contain only finite values (no NaN or Inf).")
         sequence_output, _ = self.backbone(x)
         return self.classifier(torch.mean(sequence_output, dim=1))
+
+
+# ---------------------------------------------------------------------------
+# LightGBM multiclass model configuration. The legacy P/U neural model above
+# remains available until production pipelines are migrated.
+# ---------------------------------------------------------------------------
+
+from dataclasses import asdict, dataclass
+import math
+
+
+@dataclass(frozen=True)
+class LightGBMConfig:
+    """Validated parameters for four-class LightGBM training."""
+
+    objective: str = "multiclass"
+    task: str = "train"
+    num_class: int = 4
+    num_leaves: int = 31
+    learning_rate: float = 0.03
+    max_depth: int = 6
+    min_data_in_leaf: int = 100
+    num_iterations: int = 2000
+    feature_fraction: float = 0.8
+    bagging_fraction: float = 0.8
+    bagging_frequency: int = 1
+    lambda_l1: float = 0.1
+    lambda_l2: float = 0.1
+    min_split_gain: float = 0.0
+    early_stopping_rounds: int = 100
+    random_seed: int = 42
+    verbosity: int = -1
+
+    def __post_init__(self) -> None:
+        if self.objective != "multiclass":
+            raise ValueError("objective must be 'multiclass'.")
+        if self.task not in {"train", "predict"}:
+            raise ValueError("task must be 'train' or 'predict'.")
+        if self.num_class != 4:
+            raise ValueError("num_class must be 4 for annotation classes 0, 1, 2, 3.")
+        for name in (
+            "num_leaves", "max_depth", "min_data_in_leaf",
+            "num_iterations", "bagging_frequency", "early_stopping_rounds",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer.")
+        if isinstance(self.random_seed, bool) or not isinstance(self.random_seed, int):
+            raise ValueError("random_seed must be an integer.")
+        for name in (
+            "learning_rate", "feature_fraction", "bagging_fraction",
+            "lambda_l1", "lambda_l2", "min_split_gain",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a finite number.")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be finite.")
+        if self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive.")
+        if not 0 < self.feature_fraction <= 1:
+            raise ValueError("feature_fraction must be in (0, 1].")
+        if not 0 < self.bagging_fraction <= 1:
+            raise ValueError("bagging_fraction must be in (0, 1].")
+        if self.lambda_l1 < 0 or self.lambda_l2 < 0 or self.min_split_gain < 0:
+            raise ValueError("Regularization and min_split_gain must be non-negative.")
+
+    def to_params(self) -> dict[str, object]:
+        """Return LightGBM parameter names accepted by lightgbm.train()."""
+        params = asdict(self)
+        params.pop("early_stopping_rounds")
+        params.pop("task")
+        params["metric"] = "multi_logloss"
+        params["verbosity"] = self.verbosity
+        return params
+
+
+class LightGBMClassifier:
+    """Small typed wrapper around a trained LightGBM Booster."""
+
+    def __init__(self, booster: object, *, feature_names: tuple[str, ...] | list[str] | None = None) -> None:
+        if not callable(getattr(booster, "predict", None)):
+            raise TypeError("booster must provide LightGBM's predict method.")
+        self.booster = booster
+        self.feature_names = tuple(feature_names or ())
+        self.num_classes = 4
+        self.feature_dim = len(self.feature_names) if self.feature_names else int(
+            getattr(booster, "num_feature")()
+        )
+
+    def predict_proba(self, X):
+        """Return a finite (N, 4) matrix of class probabilities."""
+        import numpy as np
+
+        values = np.asarray(X, dtype=np.float32)
+        if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] != self.feature_dim:
+            raise ValueError(f"X must have shape (N, {self.feature_dim}) with N > 0.")
+        if not np.isfinite(values).all():
+            raise ValueError("X must contain only finite values.")
+        probabilities = np.asarray(self.booster.predict(values), dtype=np.float64)
+        if probabilities.ndim == 1 and probabilities.size == len(values) * 4:
+            probabilities = probabilities.reshape(len(values), 4)
+        if probabilities.shape != (len(values), 4):
+            raise ValueError(f"LightGBM booster must return shape (N, 4); got {probabilities.shape}.")
+        if not np.isfinite(probabilities).all():
+            raise ValueError("LightGBM produced non-finite probabilities.")
+        row_sums = probabilities.sum(axis=1)
+        if np.any(probabilities < -1e-8) or not np.allclose(row_sums, 1.0, atol=1e-5):
+            raise ValueError("LightGBM predictions are not valid class probabilities.")
+        return probabilities.astype(np.float32, copy=False)
