@@ -106,6 +106,7 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         "roi_right": roi[1],
         "roi_bottom": roi[2],
         "roi_top": roi[3],
+        "feature_normalization": "per_video_zscore_all_windows_ddof0",
     }
 
 
