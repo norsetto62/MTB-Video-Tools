@@ -6,6 +6,7 @@ import pytest
 
 from autocut.data_models import Annotation, FeatureSequence, VideoInfo
 from autocut.dataset.manifest import DatasetRecord
+from autocut.motion.features import FEATURE_NAMES
 from autocut.ml.lightgbm_training import LightGBMGroupFoldResult
 from autocut.ml.model import LightGBMConfig
 from autocut.pipeline import lightgbm_training as pipeline
@@ -29,13 +30,13 @@ def _sequence():
     timestamps = np.arange(25, dtype=np.float64) * 0.5
     features = np.zeros((25, 54), dtype=np.float32)
     # Populate global and grid flows with finite, non-degenerate values.
-    features[:, 3] = 1.0
-    features[:, 4] = 0.5
+    features[:, FEATURE_NAMES.index("flow_u")] = 1.0
+    features[:, FEATURE_NAMES.index("flow_v")] = 0.5
     for row in range(3):
         for col in range(3):
             base = 0.2 + row * 0.4 + col * 0.15
-            features[:, 18 + row * 8 + col * 2] = base
-            features[:, 19 + row * 8 + col * 2] = base * 0.5
+            features[:, FEATURE_NAMES.index(f"grid_{row}_{col}_u")] = base
+            features[:, FEATURE_NAMES.index(f"grid_{row}_{col}_v")] = base * 0.5
     return FeatureSequence(features=features, timestamps=timestamps)
 
 
