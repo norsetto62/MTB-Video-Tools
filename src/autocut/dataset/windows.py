@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..motion.engineered import LIGHTGBM_FEATURE_NAMES
 from ..data_models import FeatureSequence, FeatureWindows
 
 
@@ -90,6 +91,11 @@ def build_windows_from_features(
 # ---------------------------------------------------------------------------
 
 LIGHTGBM_WINDOW_STATISTICS = ("mean", "max", "std", "median", "q90", "min")
+LIGHTGBM_TABULAR_FEATURE_NAMES = tuple(
+    f"{signal}_{statistic}"
+    for signal in LIGHTGBM_FEATURE_NAMES
+    for statistic in LIGHTGBM_WINDOW_STATISTICS
+)
 
 
 def aggregate_lightgbm_windows(windows: FeatureWindows) -> FeatureWindows:
