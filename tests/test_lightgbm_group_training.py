@@ -62,6 +62,8 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     assert metrics["queries"] == 1
     assert "10" in metrics["ndcg_at"]
     assert result.summary["ranking_metric"] == "ndcg"
+    assert result.summary["training_group_sizes"] == [16, 16]
+    assert result.summary["validation_group_sizes"] == [16]
     assert model.feature_dim == 48
     assert (tmp_path / "fold.json").is_file()
 
