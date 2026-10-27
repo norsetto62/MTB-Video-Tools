@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 from datetime import datetime
 
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "hpo", "models")
+COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-lovo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -61,9 +61,17 @@ def build_parser() -> argparse.ArgumentParser:
     # subparser option parsing consume or reject them.
     test.add_argument("pytest_args", nargs=argparse.REMAINDER)
 
-    lovo = subparsers.add_parser("lovo", help="Run leave-one-group-out evaluations.")
+    lovo = subparsers.add_parser("lovo", help="Run legacy P/U leave-one-group-out evaluations.")
     lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+
+    lightgbm_lovo = subparsers.add_parser(
+        "lightgbm-lovo",
+        help="Train and validate the four-class LightGBM model by manifest group.",
+    )
+    lightgbm_lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lightgbm_lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lightgbm_lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
 
     models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
@@ -235,6 +243,40 @@ def dispatch(args: argparse.Namespace) -> int:
             return 2
         result = run_training(manifest, settings)
         print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if args.command == "lightgbm-lovo":
+        from .config_loader import load_config
+        from .pipeline.lightgbm_training import run_lightgbm_lovo_from_manifest
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        results = run_lightgbm_lovo_from_manifest(
+            manifest,
+            settings,
+            checkpoint_dir=args.checkpoint_dir,
+        )
+        print(json.dumps([
+            {
+                "held_out_group": result.held_out_group,
+                "train_video_ids": result.train_video_ids,
+                "validation_video_ids": result.validation_video_ids,
+                **result.summary,
+            }
+            for result in results
+        ], indent=2, default=str))
         return 0
 
     if args.command in {"validate", "lovo", "hpo"}:
