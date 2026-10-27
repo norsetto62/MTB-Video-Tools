@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 from datetime import datetime
 
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-lovo", "hpo", "models")
+COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     lovo = subparsers.add_parser("lovo", help="Run legacy P/U leave-one-group-out evaluations.")
     lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+
+    lightgbm_train = subparsers.add_parser(
+        "lightgbm-train",
+        help="Train one four-class LightGBM model on all annotated manifest videos.",
+    )
+    lightgbm_train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lightgbm_train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lightgbm_train.add_argument("--checkpoint", type=Path, help="Override the single-model checkpoint path.")
 
     lightgbm_lovo = subparsers.add_parser(
         "lightgbm-lovo",
@@ -242,6 +250,32 @@ def dispatch(args: argparse.Namespace) -> int:
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
         result = run_training(manifest, settings)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if args.command == "lightgbm-train":
+        from .config_loader import load_config
+        from .pipeline.lightgbm_training import run_lightgbm_train_from_manifest
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        result = run_lightgbm_train_from_manifest(
+            manifest,
+            settings,
+            checkpoint_path=args.checkpoint,
+        )
         print(json.dumps(result, indent=2, default=str))
         return 0
 
