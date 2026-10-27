@@ -159,12 +159,6 @@ def train_lightgbm_group_fold(
             raise ValueError(
                 f"Training fold excluding group {held_out_group!r} is missing MTB class(es) {missing}."
             )
-    if len(np.unique(val_y)) < 2:
-        raise ValueError(
-            f"Held-out group {held_out_group!r} must contain at least two classes "
-            "for the current LightGBM validation contract."
-        )
-
     metadata = {
         "validation_strategy": "leave_one_group_out",
         "held_out_group": held_out_group,
