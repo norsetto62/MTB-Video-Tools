@@ -17,6 +17,7 @@ from autocut.annotations import load_training_annotations
 from autocut.config_loader import load_config
 from autocut.data_models import Clip
 from autocut.dataset.sequence import build_feature_sequence
+from autocut.dataset.cache_paths import feature_cache_dir
 from autocut.motion.features import FEATURE_NAMES
 from autocut.pipeline.training import _data_values
 from autocut.video.probe import get_video_info
@@ -344,7 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         roi_top,
     ) = _data_values(settings)
     paths = settings.get("paths", {})
-    cache_dir = Path(paths.get("cache_dir", "data/cache")).expanduser()
+    cache_dir = feature_cache_dir(settings)
     video_info = get_video_info(video_path)
     # Match training's exact cache identity: the extraction clip ends at the
     # last annotation end (clamped to the probed video duration).
