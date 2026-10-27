@@ -393,13 +393,12 @@ def _validate_lightgbm_data(
     y: np.ndarray,
     *,
     name: str,
-    require_multiple_classes: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     try:
         features = np.asarray(X, dtype=np.float32)
         labels_raw = np.asarray(y)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} features and labels must be numeric arrays.") from exc
+        raise ValueError(f"{name} features and relevance labels must be numeric arrays.") from exc
     if features.ndim != 2 or features.shape[0] == 0 or features.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
         raise ValueError(f"{name} X must have shape (N, {len(LIGHTGBM_TABULAR_FEATURE_NAMES)}).")
     if labels_raw.ndim != 1 or labels_raw.size != len(features):
@@ -409,31 +408,52 @@ def _validate_lightgbm_data(
     try:
         numeric_labels = np.asarray(labels_raw, dtype=np.float64)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} labels must be numeric classes 0..3.") from exc
+        raise ValueError(f"{name} relevance labels must be integers 0..3.") from exc
     if not np.isfinite(numeric_labels).all() or not np.isin(numeric_labels, [0, 1, 2, 3]).all():
-        raise ValueError(f"{name} labels must contain only integer classes 0, 1, 2, or 3.")
-    labels = numeric_labels.astype(np.int32)
-    if require_multiple_classes and np.unique(labels).size < 2:
-        raise ValueError(f"{name} must contain at least two distinct classes.")
-    return features, labels
+        raise ValueError(f"{name} relevance labels must contain only integer grades 0, 1, 2, or 3.")
+    return features, numeric_labels.astype(np.int32)
+
+
+def _validate_rank_groups(
+    group_sizes: Sequence[int] | None,
+    row_count: int,
+    *,
+    name: str,
+) -> list[int]:
+    if group_sizes is None:
+        raise ValueError(f"{name} group sizes are required for LambdaRank.")
+    values = list(group_sizes)
+    if not values or any(
+        isinstance(size, bool) or not isinstance(size, (int, np.integer)) or int(size) <= 0
+        for size in values
+    ):
+        raise ValueError(f"{name} group sizes must be a non-empty list of positive integers.")
+    result = [int(size) for size in values]
+    if sum(result) != row_count:
+        raise ValueError(
+            f"{name} group sizes sum to {sum(result)} rows but the dataset contains {row_count}."
+        )
+    return result
 
 
 def train_lightgbm(
     train_X: np.ndarray,
     train_y: np.ndarray,
     *,
+    train_group_sizes: Sequence[int] | None = None,
     val_X: np.ndarray | None = None,
     val_y: np.ndarray | None = None,
+    val_group_sizes: Sequence[int] | None = None,
     config: LightGBMConfig | None = None,
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
-) -> tuple[LightGBMClassifier, dict[str, Any]]:
-    """Train a four-class LightGBM model on pre-aggregated 48-column rows.
+) -> tuple[LightGBMRanker, dict[str, Any]]:
+    """Train LambdaRank on ordinal relevance labels grouped by query/video.
 
-    Supply validation data from held-out video groups to enable early stopping.
-    No feature scaling is fitted or applied: the saved checkpoint records the
-    exact feature schema and LightGBM configuration.
+    Each group-size entry describes the consecutive rows for one video. Ranking
+    is learned within videos, not across unrelated videos with different
+    annotation coverage or riding contexts.
     """
     try:
         import lightgbm as lgb
@@ -447,25 +467,26 @@ def train_lightgbm(
     if config.task != "train":
         raise ValueError("LightGBMConfig.task must be 'train' for train_lightgbm().")
     train_features, train_labels = _validate_lightgbm_data(train_X, train_y, name="training")
+    train_groups = _validate_rank_groups(train_group_sizes, len(train_features), name="training")
     if (val_X is None) != (val_y is None):
         raise ValueError("val_X and val_y must be supplied together.")
+    if (val_X is None) != (val_group_sizes is None):
+        raise ValueError("val_group_sizes must be supplied exactly when validation data is supplied.")
+    evals_result: dict[str, Any] = {}
     valid_sets = None
     valid_names = None
     callbacks = []
-    evals_result: dict[str, Any] = {}
-    valid_labels = None
     if val_X is not None:
-        valid_features, valid_labels = _validate_lightgbm_data(
-            val_X, val_y, name="validation", require_multiple_classes=False
-        )
+        valid_features, valid_labels = _validate_lightgbm_data(val_X, val_y, name="validation")
+        valid_groups = _validate_rank_groups(val_group_sizes, len(valid_features), name="validation")
         if valid_features.shape[1] != train_features.shape[1]:
             raise ValueError("Training and validation feature dimensions must match.")
         train_dataset = lgb.Dataset(
-            train_features, label=train_labels,
+            train_features, label=train_labels, group=train_groups,
             feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES), free_raw_data=False,
         )
         valid_dataset = lgb.Dataset(
-            valid_features, label=valid_labels,
+            valid_features, label=valid_labels, group=valid_groups,
             feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES),
             reference=train_dataset, free_raw_data=False,
         )
@@ -477,27 +498,28 @@ def train_lightgbm(
         ])
     else:
         train_dataset = lgb.Dataset(
-            train_features, label=train_labels,
+            train_features, label=train_labels, group=train_groups,
             feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES), free_raw_data=False,
         )
     booster = lgb.train(
-        config.to_params(),
-        train_dataset,
-        num_boost_round=config.num_iterations,
-        valid_sets=valid_sets,
-        valid_names=valid_names,
-        callbacks=callbacks,
+        config.to_params(), train_dataset, num_boost_round=config.num_iterations,
+        valid_sets=valid_sets, valid_names=valid_names, callbacks=callbacks,
     )
-    model = LightGBMClassifier(booster, feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
+    model = LightGBMRanker(booster, feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     best_iteration = int(booster.best_iteration or config.num_iterations)
     summary: dict[str, Any] = {
+        "objective": config.objective,
+        "ranking_metric": "ndcg",
+        "ndcg_eval_at": list(config.ndcg_eval_at),
         "best_iteration": best_iteration,
         "configured_max_iterations": config.num_iterations,
         "early_stopping_rounds": config.early_stopping_rounds if val_X is not None else None,
-        "classes_present_in_training": sorted(int(x) for x in np.unique(train_labels)),
-        "classes_present_in_validation": (
+        "training_relevance_grades": sorted(int(x) for x in np.unique(train_labels)),
+        "validation_relevance_grades": (
             sorted(int(x) for x in np.unique(valid_labels)) if val_X is not None else None
         ),
+        "training_group_sizes": train_groups,
+        "validation_group_sizes": valid_groups if val_X is not None else None,
         "evaluation_history": evals_result,
         "feature_count": len(LIGHTGBM_TABULAR_FEATURE_NAMES),
         "training_rows": int(len(train_features)),
@@ -505,8 +527,7 @@ def train_lightgbm(
     }
     if checkpoint_path is not None:
         payload = save_lightgbm_checkpoint(
-            checkpoint_path,
-            model,
+            checkpoint_path, model,
             feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES,
             training_config=config.__dict__,
             data_config=data_config,
