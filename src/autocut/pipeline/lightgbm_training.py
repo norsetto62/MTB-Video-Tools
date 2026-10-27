@@ -31,8 +31,10 @@ from ..dataset.sequence import (
 from ..ml.lightgbm_training import (
     LightGBMGroupFoldResult,
     LightGBMVideoData,
+    _combine,
     train_lightgbm_lovo,
 )
+from ..ml.training import train_lightgbm
 from ..ml.model import LightGBMConfig
 from ..video.probe import get_video_info
 
@@ -105,6 +107,7 @@ def prepare_lightgbm_manifest_data(
     settings: Mapping[str, Any],
     *,
     records: tuple[DatasetRecord, ...] | None = None,
+    require_multiple_groups: bool = True,
 ) -> tuple[dict[str, LightGBMVideoData], dict[str, str], dict[str, Any]]:
     """Load/reuse per-video cached features and build labeled 48-column rows.
 
@@ -174,7 +177,9 @@ def prepare_lightgbm_manifest_data(
         prepared[record.id] = LightGBMVideoData(windows=windows, targets=targets)
         group_by_video[record.id] = record.group_id
 
-    if len({group_by_video[video_id] for video_id in prepared}) < 2:
+    if not prepared:
+        raise ValueError("The manifest contains no annotated videos for LightGBM training.")
+    if require_multiple_groups and len({group_by_video[video_id] for video_id in prepared}) < 2:
         raise ValueError("At least two annotated manifest groups are required for LOVO validation.")
     return prepared, group_by_video, params
 
@@ -211,3 +216,62 @@ def run_lightgbm_lovo_from_manifest(
         },
         require_all_training_classes=require_all_training_classes,
     )
+
+
+
+def run_lightgbm_train_from_manifest(
+    manifest_path: str | Path,
+    settings: Mapping[str, Any],
+    *,
+    checkpoint_path: str | Path | None = None,
+    config: LightGBMConfig | None = None,
+) -> dict[str, Any]:
+    """Train one final four-class model on all annotated manifest videos.
+
+    This is the simple production-refit path: it uses the same cached feature
+    extraction, engineered signals, 48-column windows, and duration-weighted
+    majority-vote targets as LightGBM LOVO, but does not reserve a validation
+    group or run early stopping.
+    """
+    prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
+        manifest_path, settings, require_multiple_groups=False
+    )
+    if config is None:
+        config = _lightgbm_config(settings)
+    train_X, train_y = _combine(prepared, sorted(prepared))
+    present = set(np.unique(train_y).tolist())
+    missing = sorted(set(range(4)) - present)
+    if missing:
+        raise ValueError(
+            "Single-model LightGBM training requires examples of all MTB classes "
+            f"0, 1, 2, and 3; missing class(es): {missing}."
+        )
+    if checkpoint_path is None:
+        experiment = _section(settings, "experiment")
+        checkpoint_path = experiment.get(
+            "lightgbm_model_path", "models/lightgbm/model.json"
+        )
+    destination = Path(checkpoint_path).expanduser()
+    if destination.exists() and destination.is_dir():
+        raise ValueError(f"LightGBM checkpoint path is a directory: {destination}")
+    training_config = {
+        **data_config,
+        "manifest": str(Path(manifest_path).expanduser().resolve()),
+        "feature_cache_dir": str(feature_cache_dir(settings)),
+        "target_policy": "annotated-duration-majority; ties to higher class",
+        "group_by_video": dict(sorted(group_by_video.items())),
+        "training_video_ids": sorted(prepared),
+    }
+    _, summary = train_lightgbm(
+        train_X,
+        train_y,
+        config=config,
+        checkpoint_path=destination,
+        data_config=training_config,
+        metadata={
+            "training_strategy": "single_model_all_annotated_videos",
+            "training_video_ids": sorted(prepared),
+            "training_group_ids": sorted(set(group_by_video.values())),
+        },
+    )
+    return summary
