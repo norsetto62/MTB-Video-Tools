@@ -156,21 +156,46 @@ def index_cache_file(cache_dir: str | Path, cache_file: str | Path) -> bool:
 
 
 def index_existing_cache(cache_dir: str | Path) -> dict[str, int]:
-    """Inventory existing NPZ files without extracting or hashing source videos."""
+    """Rebuild and reconcile the catalog from NPZ files on disk.
+
+    NPZ files are the source of truth. Every discovered file is re-indexed;
+    catalog rows for files no longer present are removed only after discovery
+    and indexing complete successfully. Invalid NPZs are still represented as
+    invalid entries. This never extracts or hashes source videos.
+    """
     root = Path(cache_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    counts = {"found": 0, "valid": 0, "invalid": 0}
-    for path in root.rglob("*.npz"):
-        if path.resolve() == catalog_path(root).resolve():
-            continue
-        counts["found"] += 1
+    catalog = catalog_path(root).resolve()
+    # Finish discovery before changing the catalog, so a failed directory walk
+    # cannot accidentally prune entries.
+    files = sorted(
+        path for path in root.rglob("*.npz")
+        if path.resolve() != catalog
+    )
+    counts = {"found": len(files), "valid": 0, "invalid": 0}
+    for path in files:
         if index_cache_file(root, path):
             counts["valid"] += 1
         else:
             counts["invalid"] += 1
+
+    # Prune stale rows only after all discovered files have been indexed.
+    # Delete row-by-row to avoid SQLite's bound-variable limit for large caches.
+    discovered = {str(path.resolve()) for path in files}
+    with _connect(catalog) as connection:
+        existing = connection.execute(
+            "SELECT cache_path FROM cache_entries"
+        ).fetchall()
+        stale = [row["cache_path"] for row in existing
+                 if row["cache_path"] not in discovered]
+        connection.executemany(
+            "DELETE FROM cache_entries WHERE cache_path = ?",
+            ((path,) for path in stale),
+        )
+
     logger.info(
-        "Feature-cache catalog inventory: %d found, %d valid, %d invalid",
-        counts["found"], counts["valid"], counts["invalid"],
+        "Feature-cache catalog rebuild: %d found, %d valid, %d invalid, %d stale rows removed",
+        counts["found"], counts["valid"], counts["invalid"], len(stale),
     )
     return counts
 
