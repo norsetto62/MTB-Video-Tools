@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..data_models import Annotation, FeatureSequence, FeatureWindows
+from .normalization import normalize_per_video_features
 from ..motion.engineered import engineer_lightgbm_sequence
 from .targets import build_majority_vote_targets
 from .windows import build_lightgbm_windows_from_features
@@ -44,4 +45,11 @@ def build_lightgbm_training_data(
         window=window,
         stride=stride,
     )
-    return build_majority_vote_targets(tabular_windows, annotations)
+    # Normalize over every window from this video before dropping windows
+    # that have no unambiguous annotation target. Inference has no labels, so
+    # its normalization statistics must be computed over the complete video.
+    normalized_windows = FeatureWindows(
+        X=normalize_per_video_features(tabular_windows.X),
+        timestamps=tabular_windows.timestamps,
+    )
+    return build_majority_vote_targets(normalized_windows, annotations)
