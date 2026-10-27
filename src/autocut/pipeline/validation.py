@@ -63,7 +63,6 @@ def _predict_record(
     roi_right = float(roi.get("right", configured_roi_right))
     roi_bottom = float(roi.get("bottom", configured_roi_bottom))
     roi_top = float(roi.get("top", configured_roi_top))
-    paths = _section(settings, "paths")
     cache_dir = feature_cache_dir(settings)
 
     logger.info(
