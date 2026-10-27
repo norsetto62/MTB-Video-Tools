@@ -6,6 +6,7 @@ lgb = pytest.importorskip("lightgbm")
 
 from autocut.data_models import FeatureWindows
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+from autocut.dataset.normalization import normalize_per_video_features
 from autocut.ml.checkpoint import load_lightgbm_checkpoint
 from autocut.ml.inference import infer_lightgbm_ranking_windows
 from autocut.ml.model import LightGBMConfig
@@ -88,3 +89,24 @@ def test_lightgbm_training_rejects_wrong_feature_count_and_labels_and_missing_gr
         train_lightgbm(X, np.full(len(y), 5), train_group_sizes=[40], config=_config())
     with pytest.raises(ValueError, match="group sizes are required"):
         train_lightgbm(X, y, config=_config())
+
+
+
+def test_per_video_zscore_normalization_handles_constant_columns():
+    X = np.asarray([
+        [10.0, 4.0, 1.0],
+        [12.0, 4.0, 3.0],
+        [14.0, 4.0, 5.0],
+    ], dtype=np.float32)
+    normalized = normalize_per_video_features(X)
+    np.testing.assert_allclose(normalized.mean(axis=0), [0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(normalized.std(axis=0), [1.0, 0.0, 1.0], atol=1e-6)
+    assert np.isfinite(normalized).all()
+    np.testing.assert_array_equal(normalized[:, 1], np.zeros(3, dtype=np.float32))
+
+
+def test_per_video_zscore_rejects_invalid_feature_matrices():
+    with pytest.raises(ValueError, match="non-empty shape"):
+        normalize_per_video_features(np.empty((0, 48), dtype=np.float32))
+    with pytest.raises(ValueError, match="finite"):
+        normalize_per_video_features(np.asarray([[np.nan]], dtype=np.float32))
