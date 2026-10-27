@@ -144,6 +144,7 @@ class LightGBMConfig:
         """Return LightGBM parameter names accepted by lightgbm.train()."""
         params = asdict(self)
         params.pop("early_stopping_rounds")
+        params.pop("task")
         params["metric"] = "multi_logloss"
         params["verbosity"] = self.verbosity
         return params
