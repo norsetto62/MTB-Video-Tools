@@ -110,3 +110,32 @@ def test_per_video_zscore_rejects_invalid_feature_matrices():
         normalize_per_video_features(np.empty((0, 48), dtype=np.float32))
     with pytest.raises(ValueError, match="finite"):
         normalize_per_video_features(np.asarray([[np.nan]], dtype=np.float32))
+
+
+def test_ranking_inference_normalizes_the_complete_video_when_checkpoint_requests_it():
+    class CaptureBooster:
+        def __init__(self):
+            self.seen = None
+
+        def predict(self, X):
+            self.seen = np.asarray(X).copy()
+            return np.zeros(len(X), dtype=np.float32)
+
+    booster = CaptureBooster()
+    X = np.zeros((3, len(LIGHTGBM_TABULAR_FEATURE_NAMES)), dtype=np.float32)
+    X[:, 0] = [10.0, 12.0, 14.0]
+    timestamps = np.column_stack((np.arange(3) * 2.0, np.arange(3) * 2.0 + 4.0))
+    payload = {
+        "checkpoint_version": "lightgbm-1.0",
+        "model_class": "LightGBMRanker",
+        "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+        "_booster": booster,
+        "data_config": {
+            "feature_normalization": "per_video_zscore_all_windows_ddof0"
+        },
+    }
+    result = infer_lightgbm_ranking_windows(
+        payload, FeatureWindows(X=X, timestamps=timestamps)
+    )
+    np.testing.assert_allclose(booster.seen[:, 0], [-1.2247449, 0.0, 1.2247449], atol=1e-6)
+    np.testing.assert_array_equal(result.scores, np.zeros(3, dtype=np.float32))
