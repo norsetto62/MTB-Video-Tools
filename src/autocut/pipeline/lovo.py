@@ -141,7 +141,6 @@ def _write_selection_diagnostics(
     from ..video.probe import get_video_info
 
     _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
-    paths = _section(settings, "paths")
     cache_dir = feature_cache_dir(settings)
     declared_video, annotations = load_training_annotations(record.annotation_path)
     if declared_video.resolve() != record.video_path.resolve():
