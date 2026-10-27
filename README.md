@@ -155,10 +155,13 @@ During the refactor, existing behavior should be preserved wherever it is part o
 
 ## Single-model LightGBM training
 
-Train one four-class MTB 0..3 LightGBM model using every annotated video in the
-dataset manifest. Unlike `lightgbm-lovo`, this command does not run grouped
-validation or early stopping; it fits the final model on all prepared windows.
-It uses the canonical feature cache and writes a LightGBM JSON checkpoint.
+Train one four-class MTB 0..3 LightGBM model using the configured group split
+in `data.train_groups` and `data.validation_groups`. The validation groups are
+held out from the initial fit, and validation `multi_logloss` is recorded at
+each iteration to drive early stopping and select the best iteration. The
+production checkpoint is then refit on all annotated manifest videos for that
+number of iterations, including the validation videos. It uses the canonical
+feature cache and writes a LightGBM JSON checkpoint.
 
 ```powershell
 python -m autocut lightgbm-train
@@ -172,9 +175,10 @@ python -m autocut lightgbm-train data/manifest/annotations_manifest.yaml --confi
 
 The default checkpoint is `models/lightgbm/model.json`, overridable with
 `--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
-All four annotation classes must be represented in the prepared training data;
-the command stops with a clear error if any class is missing. The resulting
-summary includes the checkpoint path and training row counts.
+All four annotation classes must be represented in the configured training split
+and in the final all-data refit; the command stops with a clear error if any
+class is missing. The summary includes the selected iteration, validation loss
+history, configured group/video IDs, checkpoint path, and row counts.
 
 ## Feature-cache cleanup
 
