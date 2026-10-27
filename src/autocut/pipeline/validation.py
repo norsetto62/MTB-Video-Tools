@@ -16,6 +16,7 @@ from .training import _data_values, _path, _section
 from ..data_models import Clip
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
+from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.windows import build_windows, build_windows_from_features
 from ..motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, engineer_motion_features, engineer_motion_sequence
 from ..motion.features import FEATURE_NAMES
@@ -63,7 +64,7 @@ def _predict_record(
     roi_bottom = float(roi.get("bottom", configured_roi_bottom))
     roi_top = float(roi.get("top", configured_roi_top))
     paths = _section(settings, "paths")
-    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
+    cache_dir = feature_cache_dir(settings)
 
     logger.info(
         "Record %s: extracting features at %.3f fps, width %d",
