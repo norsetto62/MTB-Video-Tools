@@ -1,8 +1,8 @@
-"""Manifest-to-LightGBM training pipeline.
+"""Manifest-to-LightGBM LambdaRank training pipeline.
 
-This is a separate four-class path. It reuses the canonical manifest, NPZ
-feature cache, video feature extractor, annotation parser, and LightGBM
-dataset/training APIs without changing the legacy P/U pipeline.
+It reuses the canonical manifest, NPZ feature cache, video feature extractor,
+annotation parser, and tabular-window APIs without changing the legacy P/U
+pipeline. Ordinal labels are ranked within each video query.
 """
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ def prepare_lightgbm_manifest_data(
         if record.annotation_path is None:
             raise ValueError(
                 f"Manifest entry {record.id!r} has no annotation file; "
-                "four-class LightGBM training requires MTB 0..3 annotations."
+                "LightGBM ranking requires ordinal MTB 0..3 relevance annotations."
             )
         declared_video, annotations = load_training_annotations(record.annotation_path)
         if declared_video.resolve() != record.video_path.resolve():
