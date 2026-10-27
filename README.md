@@ -153,6 +153,29 @@ pytest
 
 During the refactor, existing behavior should be preserved wherever it is part of the established pipeline. Tests are therefore an important part of the migration from the legacy implementation.
 
+## Single-model LightGBM training
+
+Train one four-class MTB 0..3 LightGBM model using every annotated video in the
+dataset manifest. Unlike `lightgbm-lovo`, this command does not run grouped
+validation or early stopping; it fits the final model on all prepared windows.
+It uses the canonical feature cache and writes a LightGBM JSON checkpoint.
+
+```powershell
+python -m autocut lightgbm-train
+```
+
+Override the manifest, configuration, or output checkpoint when needed:
+
+```powershell
+python -m autocut lightgbm-train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/model.json
+```
+
+The default checkpoint is `models/lightgbm/model.json`, overridable with
+`--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
+All four annotation classes must be represented in the prepared training data;
+the command stops with a clear error if any class is missing. The resulting
+summary includes the checkpoint path and training row counts.
+
 ## Feature-cache cleanup
 
 The SQLite feature-cache catalog is a rebuildable index; NPZ files are the stored
