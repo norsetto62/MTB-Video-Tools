@@ -34,7 +34,7 @@ def test_lightgbm_lovo_dispatch_calls_manifest_pipeline(tmp_path, monkeypatch, c
             held_out_group="ascoli",
             train_video_ids=("castelli",),
             validation_video_ids=("ascoli",),
-            summary={"validation_metrics": {"accuracy": 0.75}},
+            summary={"validation_metrics": {"ndcg_at": {"10": 0.75}}},
         ),
     )
 
@@ -55,4 +55,4 @@ def test_lightgbm_lovo_dispatch_calls_manifest_pipeline(tmp_path, monkeypatch, c
     }
     output = capsys.readouterr().out
     assert '"held_out_group": "ascoli"' in output
-    assert '"accuracy": 0.75' in output
+    assert '"ndcg_at": {' in output
