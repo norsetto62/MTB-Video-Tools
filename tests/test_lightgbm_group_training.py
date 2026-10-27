@@ -1,4 +1,4 @@
-"""Tests for group-isolated four-class LightGBM training and validation."""
+"""Tests for per-video grouped LambdaRank training and validation."""
 import numpy as np
 import pytest
 
@@ -59,8 +59,9 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     assert set(result.train_video_ids).isdisjoint(result.validation_video_ids)
     metrics = result.summary["validation_metrics"]
     assert metrics["validation_rows"] == 16
-    assert len(metrics["confusion_matrix"]) == 4
-    assert set(metrics["per_class_recall"]) == {"0", "1", "2", "3"}
+    assert metrics["queries"] == 1
+    assert "10" in metrics["ndcg_at"]
+    assert result.summary["ranking_metric"] == "ndcg"
     assert model.feature_dim == 48
     assert (tmp_path / "fold.json").is_file()
 
@@ -74,19 +75,17 @@ def test_lovo_runs_one_fold_per_group():
         assert result.validation_video_ids
 
 
-def test_group_fold_rejects_training_fold_missing_a_class():
+def test_group_fold_rejects_training_data_without_relevance_pairs():
     videos = {
         "only_0": _video_data(1, [0, 0, 0, 0]),
         "only_1": _video_data(2, [1, 1, 1, 1]),
         "only_2": _video_data(3, [2, 2, 2, 2]),
-        "only_3": _video_data(4, [3, 3, 3, 3]),
     }
     groups = {video_id: f"group_{index}" for index, video_id in enumerate(videos)}
-    with pytest.raises(ValueError, match="missing MTB class"):
+    with pytest.raises(ValueError, match="multiple relevance grades"):
         train_lightgbm_group_fold(
             videos, groups, held_out_group="group_0", config=_config()
         )
-
 
 def test_video_data_rejects_misaligned_labels():
     X = np.zeros((3, 48), dtype=np.float32)
@@ -107,5 +106,5 @@ def test_group_fold_allows_a_single_class_in_the_held_out_group():
     )
     metrics = result.summary["validation_metrics"]
     assert metrics["validation_rows"] == 8
-    assert metrics["per_class_support"]["2"] == 8
-    assert metrics["per_class_support"]["0"] == 0
+    assert metrics["queries"] == 1
+    assert metrics["ndcg_at"]["10"] == pytest.approx(1.0)
