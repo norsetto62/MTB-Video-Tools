@@ -433,7 +433,7 @@ def train_lightgbm(
         import lightgbm as lgb
     except ImportError as exc:
         raise ImportError(
-            "LightGBM is required for this training path. Install it with pip install -e .[ml]."
+            "LightGBM is required for this training path. Install it with pip install -e ".[ml]"."
         ) from exc
     config = config or LightGBMConfig()
     if not isinstance(config, LightGBMConfig):
