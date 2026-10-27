@@ -19,6 +19,7 @@ import numpy as np
 from ..annotations import load_annotations
 from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
 from ..dataset.windows import build_windows
+from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows, InferenceResult
 from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
@@ -69,7 +70,7 @@ def _extract_windows(
             cache_clip,
             sample_fps=settings.video.sampling_fps,
             processing_width=settings.video.processing_width,
-            cache_dir=settings.paths.cache_dir / "features",
+            cache_dir=feature_cache_dir(settings),
             roi_left=settings.video.roi_left,
             roi_right=settings.video.roi_right,
             roi_bottom=settings.video.roi_bottom,
@@ -329,7 +330,7 @@ def run_pipeline(
         try:
             audio_analysis = analyze_audio(
                 music_directive.path,
-                cache_dir=settings.paths.cache_dir / "audio",
+                cache_dir=audio_cache_dir(settings),
             )
         except Exception as exc:
             logger.warning(
