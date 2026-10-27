@@ -172,10 +172,10 @@ python -m autocut lightgbm-train
 Override the manifest, configuration, or output checkpoint when needed:
 
 ```powershell
-python -m autocut lightgbm-train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/model.json
+python -m autocut lightgbm-train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/ranker.json
 ```
 
-The default checkpoint is `models/lightgbm/model.json`, overridable with
+The default checkpoint is `models/lightgbm/ranker.json`, overridable with
 `--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
 Ranking does not require every grade in every split, but at least one
 training video must contain multiple relevance grades so that preference pairs
