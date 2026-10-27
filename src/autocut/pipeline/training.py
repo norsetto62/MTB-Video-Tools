@@ -129,7 +129,6 @@ def _load_record_windows(
     """Extract P/U windows; an absent annotation file means every window is U."""
     record_started = time.perf_counter()
     _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
-    paths = _section(settings, "paths")
     cache_dir = feature_cache_dir(settings)
 
     annotations = None
