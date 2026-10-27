@@ -138,7 +138,7 @@ def prepare_lightgbm_manifest_data(
         if record.annotation_path is None:
             raise ValueError(
                 f"Manifest entry {record.id!r} has no annotation file; "
-                "LightGBM ranking requires ordinal MTB 0..3 relevance annotations."
+                "requires MTB 0..3 annotations (ordinal relevance grades for LightGBM ranking)."
             )
         declared_video, annotations = load_training_annotations(record.annotation_path)
         if declared_video.resolve() != record.video_path.resolve():
