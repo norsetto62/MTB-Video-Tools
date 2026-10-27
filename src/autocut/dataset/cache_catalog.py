@@ -186,6 +186,50 @@ def list_cache_entries(cache_dir: str | Path) -> list[dict[str, Any]]:
         ).fetchall()
     return [dict(row) for row in rows]
 
+
+def lookup_cache_file(cache_dir: str | Path, cache_file: str | Path) -> bool | None:
+    """Consult the catalog for a cache file, indexing it if absent or stale.
+
+    Returns True for a structurally valid NPZ, False for an indexed invalid or
+    missing file, and None when the catalog itself is unavailable. The caller
+    still performs full identity and content-digest validation before reuse.
+    """
+    root = Path(cache_dir).resolve()
+    path = Path(cache_file).resolve()
+    if not path.is_file() or path.suffix.lower() != ".npz":
+        return False
+    stat = path.stat()
+    try:
+        with _connect(catalog_path(root)) as connection:
+            row = connection.execute(
+                "SELECT file_size_bytes, indexed_mtime_ns, valid FROM cache_entries "
+                "WHERE cache_path = ?",
+                (str(path),),
+            ).fetchone()
+        if (row is not None
+                and row["file_size_bytes"] == stat.st_size
+                and row["indexed_mtime_ns"] == stat.st_mtime_ns):
+            return bool(row["valid"])
+        return index_cache_file(root, path)
+    except sqlite3.Error as exc:
+        logger.warning("Feature-cache catalog unavailable for %s: %s", path, exc)
+        return None
+
+
+def remove_cache_entry(cache_dir: str | Path, cache_file: str | Path) -> None:
+    """Remove a deleted cache file's catalog row; missing catalogs are harmless."""
+    path = catalog_path(cache_dir)
+    if not path.is_file():
+        return
+    try:
+        with _connect(path) as connection:
+            connection.execute(
+                "DELETE FROM cache_entries WHERE cache_path = ?",
+                (str(Path(cache_file).resolve()),),
+            )
+    except sqlite3.Error as exc:
+        logger.warning("Could not remove feature-cache catalog entry for %s: %s", cache_file, exc)
+
 def check_cache_compatibility(
     metadata: dict[str, Any],
     *,
