@@ -73,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
     lightgbm_train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
     lightgbm_train.add_argument("--checkpoint", type=Path, help="Override the single-model checkpoint path.")
 
+    lightgbm_report = subparsers.add_parser(
+        "lightgbm-score-report",
+        help="Score every window and export per-video/global LightGBM ranking diagnostics.",
+    )
+    lightgbm_report.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lightgbm_report.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lightgbm_report.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
+    lightgbm_report.add_argument(
+        "--output", type=Path, default=Path("output/lightgbm_window_scores.csv"),
+        help="Primary global-score CSV path (companion video-range CSV is written beside it).",
+    )
+
     lightgbm_lovo = subparsers.add_parser(
         "lightgbm-lovo",
         help="Train and validate a LightGBM ranking model by manifest group.",
@@ -285,6 +297,30 @@ def dispatch(args: argparse.Namespace) -> int:
             manifest,
             settings,
             checkpoint_path=args.checkpoint,
+        )
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if args.command == "lightgbm-score-report":
+        from .config_loader import load_config
+        from .pipeline.lightgbm_score_report import run_lightgbm_score_report
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        result = run_lightgbm_score_report(
+            manifest, settings, checkpoint_path=args.checkpoint, output_path=args.output
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
