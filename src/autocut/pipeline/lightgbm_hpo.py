@@ -157,7 +157,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     base_config = _lightgbm_config(settings)
     search_space = _validated_search_space(settings)
     prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
-        manifest_path, settings
+        manifest_path, settings, progress_callback=report
     )
     report(
         f"Prepared {len(prepared)} videos across "
