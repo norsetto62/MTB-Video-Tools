@@ -190,6 +190,40 @@ configured group/video IDs, query sizes, checkpoint path, and row counts.
 Older YAML settings `objective: multiclass` and `num_class: 4` are migrated to
 the ranking defaults by the training configuration loader.
 
+## LightGBM ranking HPO
+
+Tune the LightGBM ranking hyperparameters with Optuna. The default search
+space explicitly compares `lambdarank` and `rank_xendcg` while holding the
+data preparation and per-video query grouping fixed. Trials are scored by the
+mean held-out-group NDCG at the configured `lightgbm_hpo.ndcg_cutoff` (default
+10); use the same manifest and fold set when comparing objectives. The study
+is persisted in `data/db/lightgbm_hpo.db` and the trial table plus best
+parameters are exported to `output/hpo/lightgbm_ranking_hpo_results.json`.
+
+```powershell
+python -m autocut lightgbm-hpo --config config/train.yaml
+```
+
+Optional configuration belongs in a `lightgbm_hpo` YAML section:
+
+```yaml
+lightgbm_hpo:
+  study_name: lightgbm_ranking_hpo
+  n_trials: 30
+  ndcg_cutoff: 10
+  storage_path: data/db/lightgbm_hpo.db
+  output_dir: output/hpo
+  search_space:
+    objective:
+      choices: [lambdarank, rank_xendcg]
+```
+
+The default search space is used for parameters not explicitly listed. The
+objective choices must include both ranking objectives so the comparison is
+not accidentally disabled. HPO exports the best parameter set; it does not
+silently launch a production refit. Review the results, set the selected values
+under the `lightgbm` configuration section, then run `lightgbm-train` to
+create the production checkpoint.
 ## Feature-cache cleanup
 
 The SQLite feature-cache catalog is a rebuildable index; NPZ files are the stored
