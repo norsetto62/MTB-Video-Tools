@@ -664,9 +664,45 @@ def run_pipeline(
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")
+    ranked_candidate_rows = sorted(
+        all_candidates,
+        key=lambda item: (
+            -item.score,
+            -len(item.window_evidence),
+            -item.mean_score,
+            -item.duration,
+            item.video_order,
+            item.start,
+            item.video_name,
+            item.annotation_order if item.annotation_order is not None else -1,
+        ),
+    )
     result = {
         "schema_version": 1,
         "status": "completed",
+        "model_backend": backend,
+        "candidate_ranking": {
+            "score_semantics": (
+                "raw LambdaRank score; not a probability"
+                if backend == "lightgbm"
+                else "P/U positive probability"
+            ),
+            "order": ["max_score desc", "window_count desc", "mean_score desc", "duration_seconds desc"],
+            "candidates": [
+                {
+                    "rank": rank,
+                    "video": item.video_name,
+                    "annotation_order": item.annotation_order,
+                    "start_seconds": round(item.start, 3),
+                    "end_seconds": round(item.end, 3),
+                    "duration_seconds": round(item.duration, 3),
+                    "max_score": item.score,
+                    "window_count": len(item.window_evidence),
+                    "mean_score": item.mean_score,
+                }
+                for rank, item in enumerate(ranked_candidate_rows, start=1)
+            ],
+        },
         "annotation_manifest": str(annotation.resolve()),
         "checkpoint": str(settings.model.checkpoint.resolve()),
         "model_backend": backend,
