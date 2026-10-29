@@ -8,6 +8,9 @@ __pycache__/
 .vscode/
 .idea/
 
+# Inputs
+End_to_end.txt
+
 # Generated analysis data
 data/
 lr_finder_plot.png
@@ -24,6 +27,8 @@ config/
 
 # Tools
 tools/scores.py
+tools/analyze_top_windows.py
+tools/compare_global_segment_rankings.py
 
 # Python tooling
 .pytest_cache/
