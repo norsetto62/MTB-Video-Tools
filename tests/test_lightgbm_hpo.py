@@ -62,3 +62,19 @@ def test_hpo_custom_search_space_overrides_without_dropping_defaults():
     assert space["learning_rate"] == {"low": 0.02, "high": 0.04, "log": False}
     assert space["objective"]["choices"] == ["lambdarank", "rank_xendcg"]
     assert "num_leaves" in space
+
+
+
+def test_hpo_search_space_accepts_scalar_fixed_values_and_aliases():
+    settings = Config({
+        "lightgbm_hpo": {
+            "search_space": {
+                "bagging_freq": 1,
+                "reg_alpha": 0.25,
+            }
+        }
+    })
+    space = _validated_search_space(settings)
+    assert space["bagging_frequency"] == {"fixed": 1}
+    assert space["lambda_l1"] == {"fixed": 0.25}
+    assert "bagging_freq" not in space
