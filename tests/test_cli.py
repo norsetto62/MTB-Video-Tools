@@ -203,3 +203,27 @@ def test_lightgbm_train_cli_dispatches_to_single_model_pipeline(tmp_path, monkey
         "checkpoint_path": checkpoint,
     }
     assert '"training_rows": 12' in capsys.readouterr().out
+
+
+def test_lightgbm_hpo_cli_dispatches_to_hpo_pipeline(tmp_path, monkeypatch, capsys):
+    from autocut.config_loader import Config
+
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("videos: []\\n", encoding="utf-8")
+    config_path = tmp_path / "train.yaml"
+    config_path.write_text("logging:\\n  level: INFO\\n", encoding="utf-8")
+    settings = Config({
+        "data": {"manifest": str(manifest)},
+        "logging": {"level": "INFO"},
+    })
+    monkeypatch.setattr("autocut.config_loader.load_config", lambda path: settings)
+    captured = {}
+
+    def fake_hpo(path, loaded_settings):
+        captured.update(manifest=path, settings=loaded_settings)
+        return {"best_trial_number": 3, "best_params": {"objective": "rank_xendcg"}}
+
+    monkeypatch.setattr("autocut.pipeline.lightgbm_hpo.run_lightgbm_hpo", fake_hpo)
+    assert main(["lightgbm-hpo", "--config", str(config_path)]) == 0
+    assert captured == {"manifest": manifest, "settings": settings}
+    assert '"objective": "rank_xendcg"' in capsys.readouterr().out
