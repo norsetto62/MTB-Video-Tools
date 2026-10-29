@@ -212,3 +212,84 @@ def test_run_config_sections_rejects_invalid_video_width():
     else:
         raise AssertionError("invalid processing width should be rejected")
 
+
+
+
+def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, monkeypatch):
+    import numpy as np
+    from types import SimpleNamespace
+    from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+
+    source = tmp_path / "ride.mp4"
+    source.write_bytes(b"video placeholder")
+    annotations = tmp_path / "annotations.txt"
+    annotations.write_text(f"{source}\\n00:00 00:20\\n", encoding="utf-8")
+    checkpoint = tmp_path / "ranker.json"
+    checkpoint.write_text("placeholder", encoding="utf-8")
+    settings = _run_settings(checkpoint, tmp_path / "output", tmp_path / "cache")
+
+    monkeypatch.setattr(
+        run, "load_annotations",
+        lambda *args, **kwargs: (
+            [SimpleNamespace(
+                video_name=str(source), start=0.0, end=20.0,
+                mandatory=False, annotation_order=0,
+            )],
+            None,
+        ),
+    )
+    monkeypatch.setattr(run, "get_video_info", lambda path: VideoInfo(1920, 1080, 30.0, 20.0))
+    monkeypatch.setattr(
+        "autocut.ml.checkpoint.load_lightgbm_checkpoint",
+        lambda path: {
+            "model_class": "LightGBMRanker",
+            "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+            "data_config": {
+                "sampling_fps": 2.0, "processing_width": 480,
+                "window": 4.0, "stride": 2.0,
+                "roi_left": 0.15, "roi_right": 0.85,
+                "roi_bottom": 0.5, "roi_top": 0.1,
+            },
+            "_booster": object(),
+        },
+    )
+
+    class FakeRanker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def predict(self, X):
+            return np.array([-0.1, -0.2, -0.3, -0.4, -0.15])
+
+    monkeypatch.setattr("autocut.ml.model.LightGBMRanker", FakeRanker)
+    monkeypatch.setattr(
+        "autocut.dataset.sequence.build_feature_sequence",
+        lambda *args, **kwargs: SimpleNamespace(
+            features=np.ones((10, 4)), timestamps=np.arange(10, dtype=float)
+        ),
+    )
+    monkeypatch.setattr("autocut.motion.engineered.engineer_lightgbm_sequence", lambda X: X)
+    window_times = np.array([
+        [0.0, 4.0], [2.0, 6.0], [10.0, 14.0], [12.0, 16.0], [18.0, 20.0]
+    ])
+    monkeypatch.setattr(
+        "autocut.dataset.windows.build_lightgbm_windows_from_features",
+        lambda *args, **kwargs: SimpleNamespace(X=np.ones((5, 2)), timestamps=window_times),
+    )
+    monkeypatch.setattr("autocut.dataset.normalization.normalize_per_video_features", lambda X: X)
+
+    def fake_render(timeline, output_path, **kwargs):
+        assert len(timeline.clips) == 2
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"rendered")
+        return SimpleNamespace(output_path=output_path, duration=16.0)
+
+    monkeypatch.setattr(run, "render_timeline", fake_render)
+    result = run.run_pipeline(annotations, settings, backend="lightgbm")
+
+    assert result["status"] == "completed"
+    assert result["model_backend"] == "lightgbm"
+    assert result["candidate_count"] == 2
+    assert result["inference"][0]["status"] == "scored_lightgbm"
+    assert result["inference"][0]["score_semantics"] == "raw LambdaRank score"
+    assert Path(result["result_manifest"]).is_file()
