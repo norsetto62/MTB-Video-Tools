@@ -705,7 +705,6 @@ def run_pipeline(
         },
         "annotation_manifest": str(annotation.resolve()),
         "checkpoint": str(settings.model.checkpoint.resolve()),
-        "model_backend": backend,
         "configuration": _config_summary(settings, candidate_config, audio_config),
         "sources": [
             {
