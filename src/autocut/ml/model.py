@@ -85,7 +85,7 @@ import math
 
 @dataclass(frozen=True)
 class LightGBMConfig:
-    """Validated parameters for LambdaRank over per-video window queries."""
+    """Validated parameters for LightGBM ranking over per-video window queries."""
 
     objective: str = "lambdarank"
     task: str = "train"
@@ -106,8 +106,8 @@ class LightGBMConfig:
     verbosity: int = -1
 
     def __post_init__(self) -> None:
-        if self.objective != "lambdarank":
-            raise ValueError("objective must be 'lambdarank'.")
+        if self.objective not in {"lambdarank", "rank_xendcg"}:
+            raise ValueError("objective must be 'lambdarank' or 'rank_xendcg'.")
         if self.task not in {"train", "predict"}:
             raise ValueError("task must be 'train' or 'predict'.")
         for name in (
@@ -147,7 +147,7 @@ class LightGBMConfig:
         object.__setattr__(self, "ndcg_eval_at", cutoffs)
 
     def to_params(self) -> dict[str, object]:
-        """Return LightGBM LambdaRank parameters."""
+        """Return LightGBM ranking parameters."""
         params = asdict(self)
         params.pop("early_stopping_rounds")
         params.pop("task")
