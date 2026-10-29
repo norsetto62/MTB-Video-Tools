@@ -122,11 +122,26 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     study_name = section.get("study_name", "lightgbm_ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("lightgbm_hpo.study_name must be a non-empty string.")
+    progress = section.get("progress", True)
+    if not isinstance(progress, bool):
+        raise ValueError("lightgbm_hpo.progress must be true or false.")
+
+    def report(message: str) -> None:
+        # HPO progress is deliberately independent of logging.level, so WARNING
+        # can continue to suppress noisy cache diagnostics.
+        if progress:
+            print(f"[LightGBM HPO] {message}", flush=True)
+
+    report(f"Preparing manifest data from {manifest_path}.")
 
     base_config = _lightgbm_config(settings)
     search_space = _validated_search_space(settings)
     prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
         manifest_path, settings
+    )
+    report(
+        f"Prepared {len(prepared)} videos across "
+        f"{len(set(group_by_video.values()))} groups; opening study database."
     )
     cutoffs = base_config.ndcg_eval_at
     primary_cutoff = int(section.get("ndcg_cutoff", cutoffs[0]))
@@ -147,8 +162,16 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         sampler=optuna.samplers.TPESampler(seed=base_config.random_seed),
     )
 
+    trial_counter = 0
+
     def objective(trial: optuna.Trial) -> float:
+        nonlocal trial_counter
+        trial_counter += 1
         params = _suggest(trial, search_space)
+        report(
+            f"Trial {trial_counter}/{n_trials} started "
+            f"(study trial #{trial.number}; objective={params.get('objective')})."
+        )
         trial_config = replace(base_config, **params)
         folds = train_lightgbm_lovo(
             prepared,
@@ -183,12 +206,22 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
             trial.number, params.get("objective", base_config.objective),
             primary_cutoff, mean_ndcg, per_fold,
         )
+        report(
+            f"Trial {trial_counter}/{n_trials} finished: "
+            f"mean NDCG@{primary_cutoff}={mean_ndcg:.5f}."
+        )
         return mean_ndcg
 
     logger.info(
         "Starting LightGBM HPO study %r: %d new trials, objectives=%s, groups=%s",
         study_name, n_trials, search_space["objective"]["choices"],
         sorted(set(group_by_video.values())),
+    )
+    report(
+        f"Study '{study_name}': running {n_trials} new trials "
+        f"({len(study.trials)} trial records already in the database); "
+        f"optimizing mean NDCG@{primary_cutoff}. "
+        "A trial may take time while its LOVO folds run."
     )
     study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
     completed = [
@@ -228,5 +261,11 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         "LightGBM HPO complete: best trial %d, objective=%s, mean NDCG@%d=%.5f; results: %s",
         best.number, best.params.get("objective", base_config.objective),
         primary_cutoff, float(best.value), output_path,
+    )
+    report(
+        f"Finished. Best trial #{best.number}: "
+        f"objective={best.params.get('objective', base_config.objective)}, "
+        f"mean NDCG@{primary_cutoff}={float(best.value):.5f}. "
+        f"Results saved to {output_path}; database: {db_path}."
     )
     return {**payload, "results_path": str(output_path)}
