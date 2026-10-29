@@ -75,9 +75,11 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
     for name, value in raw.items():
         if isinstance(value, Config):
             value = value.to_dict()
+        # A scalar is shorthand for a fixed parameter value, e.g.
+        # bagging_freq: 1. Mapping forms define a search space explicitly.
         if not isinstance(value, dict):
-            raise ValueError(f"lightgbm_hpo.search_space.{name} must be a mapping.")
-        if "fixed" in value:
+            spec = {"fixed": value}
+        elif "fixed" in value:
             spec = {"fixed": value["fixed"]}
         elif "choices" in value:
             choices = value["choices"]
