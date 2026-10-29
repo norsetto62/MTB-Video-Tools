@@ -6,7 +6,7 @@ pipeline. Ordinal labels are ranked within each video query.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +116,7 @@ def prepare_lightgbm_manifest_data(
     *,
     records: tuple[DatasetRecord, ...] | None = None,
     require_multiple_groups: bool = True,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, LightGBMVideoData], dict[str, str], dict[str, Any]]:
     """Load/reuse per-video cached features and build labeled 48-column rows.
 
@@ -127,15 +128,22 @@ def prepare_lightgbm_manifest_data(
     if not isinstance(settings, Mapping):
         raise ValueError("settings must be a configuration mapping.")
     manifest = Path(manifest_path).expanduser()
+    if progress_callback is not None:
+        progress_callback(f"Loading and verifying manifest: {manifest}")
     if records is None:
         records = load_manifest(manifest, verify_files=True)
+    if progress_callback is not None:
+        progress_callback(f"Manifest ready: {len(records)} records; preparing cached features and labels")
     data = _section(settings, "data")
     params = _data_config(settings)
     cache_dir = feature_cache_dir(settings)
     prepared: dict[str, LightGBMVideoData] = {}
     group_by_video: dict[str, str] = {}
 
-    for record in records:
+    total_records = len(records)
+    for record_index, record in enumerate(records, start=1):
+        if progress_callback is not None:
+            progress_callback(f"Preparing video {record_index}/{total_records}: {record.id}")
         if record.annotation_path is None:
             raise ValueError(
                 f"Manifest entry {record.id!r} has no annotation file; "
@@ -184,6 +192,11 @@ def prepare_lightgbm_manifest_data(
             raise ValueError(f"Manifest entry {record.id!r} produced non-finite LightGBM features.")
         prepared[record.id] = LightGBMVideoData(windows=windows, targets=targets)
         group_by_video[record.id] = record.group_id
+        if progress_callback is not None:
+            progress_callback(
+                f"Prepared {record_index}/{total_records}: {record.id} "
+                f"({len(targets)} windows; group={record.group_id})"
+            )
 
     if not prepared:
         raise ValueError("The manifest contains no annotated videos for LightGBM training.")
