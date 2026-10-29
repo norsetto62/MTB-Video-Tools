@@ -9,7 +9,7 @@ def test_help_lists_commands(capsys):
     except SystemExit as exc:
         assert exc.code == 0
     output = capsys.readouterr().out
-    for command in ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "models"):
+    for command in ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "lightgbm-hpo", "models"):
         assert command in output
 
 
