@@ -252,14 +252,17 @@ def dispatch(args: argparse.Namespace) -> int:
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
-        result = run_pipeline(
-            args.annotations,
-            settings,
-            output_path=args.output,
-            video_encoder=args.video_encoder,
-            backend=args.backend,
-            checkpoint_path=args.checkpoint,
-        )
+        # Preserve the original call contract for the default P/U path.
+        # Besides avoiding needless kwargs, this keeps existing integrations
+        # and monkeypatched CLI tests backward-compatible.
+        run_kwargs = {
+            "output_path": args.output,
+            "video_encoder": args.video_encoder,
+        }
+        if args.backend != "pu" or args.checkpoint is not None:
+            run_kwargs["backend"] = args.backend
+            run_kwargs["checkpoint_path"] = args.checkpoint
+        result = run_pipeline(args.annotations, settings, **run_kwargs)
         print(json.dumps(result, indent=2, default=str))
         return 0
 
