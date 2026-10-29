@@ -104,6 +104,7 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
     assert result["videos_scored"] == 1
     assert result["windows_scored"] == 3
     assert result["global_scores_csv"] == str(output.resolve())
+    assert result["per_video_scores_csv"] == str((tmp_path / "scores_by_video.csv").resolve())
     assert result["video_ranges_csv"] == str((tmp_path / "scores_video_ranges.csv").resolve())
     import csv
     with output.open(encoding="utf-8-sig", newline="") as stream:
@@ -114,3 +115,18 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
     assert all(float(row["video_score_min"]) == -1.0 for row in rows)
     assert all(float(row["video_score_max"]) == 2.0 for row in rows)
     assert all(float(row["video_score_range"]) == 3.0 for row in rows)
+
+
+
+def test_cli_parser_exposes_score_report():
+    from autocut.cli import build_parser
+
+    args = build_parser().parse_args([
+        "lightgbm-score-report", "manifest.yaml",
+        "--checkpoint", "models/ranker.json",
+        "--output", "output/scores.csv",
+    ])
+    assert args.command == "lightgbm-score-report"
+    assert args.manifest == Path("manifest.yaml")
+    assert args.checkpoint == Path("models/ranker.json")
+    assert args.output == Path("output/scores.csv")
