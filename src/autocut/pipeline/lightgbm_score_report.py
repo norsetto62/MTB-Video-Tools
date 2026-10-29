@@ -240,6 +240,7 @@ def run_lightgbm_score_report(
     if output.suffix.lower() != ".csv":
         output = output / "lightgbm_window_scores.csv"
     video_output = output.with_name(f"{output.stem}_video_ranges.csv")
+    per_video_output = output.with_name(f"{output.stem}_by_video.csv")
     fields = [
         "rank_global", "video_id", "group_id", "window_index", "start_seconds",
         "end_seconds", "duration_seconds", "score", "rank_in_video",
@@ -252,6 +253,11 @@ def run_lightgbm_score_report(
         "best_window_score",
     ]
     _write_csv(output, fields, all_rows)
+    per_video_rows = sorted(
+        all_rows,
+        key=lambda row: (row["video_id"], row["rank_in_video"], row["window_index"]),
+    )
+    _write_csv(per_video_output, fields, per_video_rows)
     summaries.sort(key=lambda row: (-row["score_max"], row["video_id"]))
     _write_csv(video_output, summary_fields, summaries)
     return {
@@ -260,6 +266,7 @@ def run_lightgbm_score_report(
         "videos_scored": len(summaries),
         "windows_scored": len(all_rows),
         "global_scores_csv": str(output.resolve()),
+        "per_video_scores_csv": str(per_video_output.resolve()),
         "video_ranges_csv": str(video_output.resolve()),
         "score_semantics": "raw LambdaRank score; not a probability or calibrated cross-video quality",
         "video_summary": summaries,
