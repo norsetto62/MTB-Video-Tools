@@ -37,13 +37,16 @@ DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
 
 def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
     section = _section(settings, "lightgbm_hpo")
-    raw = section.get("search_space", DEFAULT_SEARCH_SPACE)
+    raw = section.get("search_space", {})
     if isinstance(raw, Config):
         raw = raw.to_dict()
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError("lightgbm_hpo.search_space must be a non-empty mapping.")
+    if not isinstance(raw, dict):
+        raise ValueError("lightgbm_hpo.search_space must be a mapping.")
 
-    space: dict[str, dict[str, Any]] = {}
+    # User entries override the defaults; omitted parameters remain tunable.
+    space: dict[str, dict[str, Any]] = {
+        name: dict(spec) for name, spec in DEFAULT_SEARCH_SPACE.items()
+    }
     allowed = set(LightGBMConfig.__dataclass_fields__) - {
         "task", "early_stopping_rounds", "ndcg_eval_at", "random_seed", "verbosity"
     }
