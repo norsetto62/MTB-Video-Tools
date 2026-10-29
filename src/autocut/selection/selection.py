@@ -95,7 +95,7 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
         if isinstance(item.video_order, bool) or not isinstance(item.video_order, int) or item.video_order < 0: raise ValueError("Candidate video_order must be a non-negative integer.")
         if item.annotation_order is not None and (isinstance(item.annotation_order, bool) or not isinstance(item.annotation_order, int) or item.annotation_order < 0): raise ValueError("Candidate annotation_order must be a non-negative integer or None.")
         _validate_interval(item.start, item.end, "Candidate")
-        if not math.isfinite(item.score) or not math.isfinite(item.mean_score) or item.score < 0 or item.mean_score < 0: raise ValueError("Candidate scores must be finite and non-negative.")
+        if not math.isfinite(item.score) or not math.isfinite(item.mean_score): raise ValueError("Candidate scores must be finite.")
         if not math.isclose(item.duration, item.end - item.start, rel_tol=0.0, abs_tol=1e-6): raise ValueError("Candidate duration must equal end - start.")
     for item in mandatory_list:
         if not isinstance(item, MandatoryClip): raise TypeError("mandatory_clips must contain MandatoryClip instances.")

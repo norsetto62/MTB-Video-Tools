@@ -30,6 +30,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     run.add_argument("--output", type=Path, help="Output video path (default: output/<annotations>_autocut.mp4).")
     run.add_argument(
+        "--backend", choices=("pu", "lightgbm"), default="pu",
+        help="Inference backend: legacy P/U probabilities (default) or LightGBM LambdaRank scores.",
+    )
+    run.add_argument(
+        "--checkpoint", type=Path,
+        help="Override model checkpoint (for LightGBM use models/lightgbm/ranker.json).",
+    )
+    run.add_argument(
         "--video-encoder",
         choices=("h264_nvenc", "libx264"),
         help="Override video.encoder from the run configuration.",
@@ -249,6 +257,8 @@ def dispatch(args: argparse.Namespace) -> int:
             settings,
             output_path=args.output,
             video_encoder=args.video_encoder,
+            backend=args.backend,
+            checkpoint_path=args.checkpoint,
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
