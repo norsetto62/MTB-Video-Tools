@@ -209,9 +209,9 @@ def test_lightgbm_hpo_cli_dispatches_to_hpo_pipeline(tmp_path, monkeypatch, caps
     from autocut.config_loader import Config
 
     manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\\n", encoding="utf-8")
+    manifest.write_text("videos: []\n", encoding="utf-8")
     config_path = tmp_path / "train.yaml"
-    config_path.write_text("logging:\\n  level: INFO\\n", encoding="utf-8")
+    config_path.write_text("logging:\n  level: INFO\n", encoding="utf-8")
     settings = Config({
         "data": {"manifest": str(manifest)},
         "logging": {"level": "INFO"},
