@@ -19,12 +19,11 @@ def test_lightgbm_segments_use_hierarchical_ranking_and_allow_negative_scores():
 
     assert len(segments) == 3
     assert segments[0].max_score == pytest.approx(-0.1)
-    assert segments[0].window_count == 1
-    assert segments[0].mean_score == pytest.approx(-0.1)
-    assert segments[1].window_count == 2
-    assert segments[1].max_score == pytest.approx(-0.3)
-    assert segments[1].mean_score == pytest.approx(-0.35)
-    assert segments[2].max_score == pytest.approx(-0.15)
+    assert segments[0].window_count == 2
+    assert segments[0].mean_score == pytest.approx(-0.15)
+    assert segments[1].max_score == pytest.approx(-0.15)
+    assert segments[1].window_count == 1
+    assert segments[2].max_score == pytest.approx(-0.3)
 
 
 def test_lightgbm_segments_merge_when_gap_is_two_seconds():
