@@ -255,32 +255,56 @@ def load_feature_sequence(
         from .cache_catalog import lookup_cache_file, remove_cache_entry
 
         catalog_valid = lookup_cache_file(cache_dir, target)
-        if catalog_valid is False:
-            if not target.is_file():
+        if not target.is_file():
+            if catalog_valid is False:
                 remove_cache_entry(cache_dir, target)
             return None
-        # True means catalog structure is current, not that the NPZ digest or
-        # requested extraction identity is trusted. Keep full checks below.
+        # The catalog is only a rebuildable index, never the source of truth.
+        # A stale "invalid" row must not veto an existing NPZ; validate the
+        # NPZ directly and repair the row if the file proves valid.
+        if catalog_valid is False:
+            logger.warning(
+                "Cache catalog marked an existing NPZ invalid; validating file directly: %s",
+                target,
+            )
         with np.load(target, allow_pickle=False) as archive:
             if set(archive.files) != {"metadata", "features", "timestamps"}:
+                logger.warning("Feature cache miss: unexpected NPZ members in %s", target)
                 return None
             raw_metadata = archive["metadata"]
             if raw_metadata.shape != ():
+                logger.warning("Feature cache miss: malformed metadata array in %s", target)
                 return None
             metadata = json.loads(str(raw_metadata.item()))
             features = archive["features"]
             timestamps = archive["timestamps"]
         if not isinstance(metadata, dict):
+            logger.warning("Feature cache miss: metadata is not an object in %s", target)
             return None
         digest = metadata.pop("features_sha256", None)
-        if metadata != expected or not isinstance(digest, str):
+        if metadata != expected:
+            logger.warning(
+                "Feature cache miss: extraction identity mismatch in %s; expected key=%s",
+                target, key,
+            )
+            return None
+        if not isinstance(digest, str):
+            logger.warning("Feature cache miss: missing content digest in %s", target)
             return None
         _validate_arrays(features, timestamps, clip=clip)
         if _array_digest(features, timestamps) != digest:
+            logger.warning("Feature cache miss: feature-array digest mismatch in %s", target)
             return None
+        if catalog_valid is False:
+            try:
+                from .cache_catalog import index_cache_file
+                index_cache_file(cache_dir, target)
+            except Exception as exc:
+                logger.warning("Could not repair cache catalog entry for %s: %s", target, exc)
         return FeatureSequence(
             features=np.array(features, dtype=np.float32, copy=True),
             timestamps=np.array(timestamps, dtype=np.float64, copy=True),
         )
-    except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError) as exc:
+        logger.warning("Feature cache miss: could not validate cache entry for %s: %s", video_path, exc)
         return None
