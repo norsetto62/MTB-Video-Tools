@@ -300,116 +300,93 @@ quality of motion signal
 downstream prediction performance
 ```
 
-# 3. Training Losses
+# 3. LightGBM Optimisation
 
-## 1. Which training losses are worth trying?
+Ottimizzare un modello LightGBM richiede di bilanciare la capacità della rete di apprendere pattern complessi con la regolarizzazione per evitare l'overfitting. Avendo elencato i parametri chiave, possiamo raggrupparli in categorie logiche e definire una strategia di tuning efficace.
 
+1. Controllare la Capacità degli Alberi (Complessità)
+Questi parametri definiscono quanto "grande" e profondo può crescere ogni singolo albero:
 
-A. Weighted cross-entropy — keep as the baseline
+num_leaves (Il parametro più critico): Determina il numero massimo di foglie in un albero. Poiché LightGBM cresce gli alberi leaf-wise (per foglia) anziché level-wise (per livello), num_leaves è il fattore principale che controlla la complessità. Regola d'oro: Poiché ogni albero binario profondo d ha al massimo 2^d foglie, imposta sempre num_leaves inferiore a 2^{max_depth} (es. con max_depth=7, usa num_leaves tra 30 e 63) per evitare un overfitting estremo.
 
-This is what you already use. It penalizes incorrect predictions according to their class weights:
-\[
-L=-w_y\log p_y
-\]
+max_depth: Limita la profondità massima dell'albero. È utile impostarlo come barriera di sicurezza per impedire a num_leaves di generare alberi troppo sbilanciati o profondi.
 
-It's a strong, well-understood baseline. Since your HPO already tunes class weights, first establish whether a better weight range helps before replacing the loss. One caution: class weights alter the effective balance of learning and can change the probability calibration, so the raw \(p_2\) values may not remain directly comparable.
+min_data_in_leaf: Fondamentale per gestire dataset rumorosi o con poche istanze. Aumentarlo (es. a valori tra 20 e 100+) impedisce all'albero di creare foglie basate su pochissimi campioni. Valori bassi rischiano l'overfitting, valori alti portano a underfitting.
 
+min_split_gain: Rappresenta il guadagno minimo (information gain) necessario per effettuare una divisione (split). Aumentarlo filtra i tagli "inutili" o guidati dal rumore, semplificando l'albero.
 
-B. Focal loss — first alternative to test
-Recommended experiment
-Focal loss reduces the contribution of examples the model already classifies confidently and focuses more on difficult examples:
-\[
-L=-\alpha_y(1-p_y)^\gamma\log p_y
-\]
+2. Velocità di Apprendimento e Iterazionilearning_rate (o eta) e num_iterations (o n_estimators): 
 
-Here, \(\alpha_y\) can account for class imbalance, and \(\gamma\) controls how strongly easy examples are down-weighted.
-Start with \(\gamma=1\) and \(\gamma=2\), comparing each with \(\gamma=0\), which recovers weighted cross-entropy when the same class weights are used.
-Why it may help: if class 2 has a recognizable but subtle pattern, focal loss may encourage learning from class-2 examples that the model currently struggles with.
-The risk: it can overemphasize noisy labels, ambiguous boundaries, or unusual outliers. If many class-2 annotations are inherently ambiguous, focal loss may make the problem worse.
+Sono indissolubili. Un learning_rate basso (es. 0.01 o 0.03) associato a un numero alto di iterazioni produce modelli generalmente più accurati e generalizzabili. Best practice: Invece di fissare num_iterations, imposta un numero alto (es. 1000 o 2000) e usa l'Early Stopping (interrompi il training se la validation loss non migliora per es. 50-100 iterazioni).
 
+3. Regolarizzazione e Campionamento (Stocastica)
 
-C. Class-balanced cross-entropy
-Rather than choosing class weights only through broad manual ranges, derive them from class frequencies. One approach uses the effective number of samples, which reduces the tendency to give an extremely rare class an excessively large weight.
-This is worth testing if class 2 is substantially less frequent than classes 0 and 1. It is less compelling if the class frequencies are reasonably balanced and the main issue is overlap between classes.
+Introdurre casualità aiuta gli alberi a non dipendere troppo dalle stesse feature o dagli stessi dati.
 
+feature_fraction (Subsampling delle colonne): Frazione di feature scelte casualmente per ogni albero (es. 0.7 - 0.9). Riduce la correlazione tra gli alberi e combatte l'overfitting.
 
-D. Logit-adjusted cross-entropy or balanced softmax
-These methods adjust for differences in class prevalence at the logit or softmax level. They can help when a model tends to favor frequent classes, but they overlap conceptually with class weighting, so I would test them later rather than add them to the first experiment.
+bagging_fraction e bagging_freq: Frazione di dati campionati a ogni iterazione. Va usato insieme a bagging_freq > 0 (che definisce ogni quanti step effettuare il bagging). Accelera il training e migliora la regolarizzazione.
 
-## 2. Experiments to be done
+L1 (reg_alpha) e L2 (reg_lambda): Penalizzano i pesi delle foglie. Aggiungono regolarizzazione pura, molto utile se il modello tende a sovradattarsi sui dati di training.
 
-Experiment	    Training loss	        Purpose
-1	Weighted    cross-entropy	        Baseline with current settings
-2	Weighted    focal, \(\gamma=1\)	    Mild focus on difficult examples
-3	Weighted    focal, \(\gamma=2\)	    Stronger focus on difficult examples
-4	Class-balanced cross-entropy	    Test a more systematic imbalance correction
+Un ordine di priorità logico per la ricerca dei parametri è:
 
-# 4. Inference classifier
+Fase 1 (Struttura): Ottimizza num_leaves, max_depth e min_data_in_leaf.
+Fase 2 (Stocastica): Ottimizza feature_fraction e bagging_fraction.
+Fase 3 (Regolarizzazione): Ottimizza reg_alpha (L1) e reg_lambda (L2).
+Fase 4 (Fine-tuning): Abbassa il learning_rate e attiva l'Early Stopping per trovare il numero ottimale di alberi.
 
-We have the following options:
+Le Regole d'Oro per l'HPO in questo scenario
+Usa sempre l'Early Stopping: Non cercare il numero esatto di alberi (num_iterations). Imposta un numero alto (es. 1500) e fai fermare il training se la validation loss non migliora per 50-100 round. In questo modo permetti a Optuna di testare learning rate diversi senza preoccuparsi di bruciare tentativi con troppi o pochi alberi.
 
-1. Soft Dampening (Instead of a Hard Zero Cliff)
-Instead of slamming Class 2 straight to 0.0 when it fails the threshold, apply a smooth scaling factor or a ramp function.
+Usa scale logaritmiche per i parametri di scala: Parametri come learning_rate, reg_alpha (L1) e reg_lambda (L2) coprono ordini di grandezza differenti (da 0.001 a 0.1). Usare una scala logaritmica in Optuna (log=True) esplora lo spazio in modo molto più efficiente.
 
- * If p_2 is below our threshold, gently scale it down proportional to how close it was, rather than executing a discontinuous step function. This preserves relative confidences and prevents sudden spike artifacts in our probability plots.
+Occhio al bilanciamento della complessità: num_leaves e max_depth vanno legati mentalmente. Se permetti alberi molto profondi (max_depth=10), rischi un overfitting pazzesco sui tuoi 8 gruppi se non alzi min_data_in_leaf.
 
-2. Margin-Based Thresholding
-Instead of evaluating Class 2 in a vacuum (p_2 > threshold), evaluate it relative to its biggest rival (Class 1, since that's where our bleed is happening).
+Il Search Space Consigliato per Optuna
 
- * The Rule: Class 2 is only triggered if p_2 - p_1 > margin (or a dynamic threshold offset).
- * Why it works: This directly addresses our root bottleneck—the Class 1 Class 2 confusion. It ensures the model doesn't just clear an arbitrary global number, but actually has to be more confident in Class 2 than in the adjacent Class 1 setup.
+        'objective': 'multiclass'
+        'metric': 'multi_logloss',
+        'boosting_type': 'gbdt',
+        'random_state': 42,
+        'verbose': -1,
+        
+        # 1. Complessità dell'albero
+        'max_depth': trial.suggest_int('max_depth', 3, 9),
+        'num_leaves': trial.suggest_int('num_leaves', 15, 127), # Regola: tieni num_leaves < 2^max_depth
+        'min_data_in_leaf': trial.suggest_int('min_data_in_leaf', 20, 200),
+        
+        # 2. Learning Rate e Iterazioni (con Early Stopping esterno)
+        'learning_rate': trial.suggest_float('learning_rate', 0.005, 0.1, log=True),
+        
+        # 3. Subsampling (Stocastica per regolarizzare)
+        'feature_fraction': trial.suggest_float('feature_fraction', 0.6, 1.0),
+        'bagging_fraction': trial.suggest_float('bagging_fraction', 0.6, 1.0),
+        'bagging_freq': 1, # Obbligatorio se usi bagging_fraction > 0
+        
+        # 4. Regolarizzazione L1 e L2
+        'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 10.0, log=True),
+        'reg_lambda': trial.suggest_float('reg_lambda', 1e-3, 10.0, log=True),
+        
+        # 5. Min split gain (taglia i rami deboli)
+        'min_split_gain': trial.suggest_float('min_split_gain', 0.0, 1.0)
 
-3. Temporal Smoothing (Hysteresis / Moving Window)
-Because this is a video pipeline, isolated single-frame flickers where p_2 bounces above and below the threshold create annoying false-cut artifacts.
- * Running a light rolling average or temporal median filter across the probability vector timeline before applying your thresholding logic will naturally clean out high-frequency noise. Real actions have duration; brief single-window spikes are almost always feature-space stutter.
-Also remember we alredy implemented an asymmetric envelope filter on p2 even though that was further down the pipeline
+Per hpo **La metrica ideale è NDCG (Normalized Discounted Cumulative Gain)**
 
-## 1. Proposed testing
+- *Perché:* Spesso, quando fai un montaggio video, non ti interessa che il modello azzecca la soglia esatta al millesimo, ma ti interessa che **i 10 momenti migliori in assoluto finiscano in cima alla classifica**.
+- LightGBM supporta nativamente il ranking (`objective='lambdarank'`). Usare l'NDCG come metrica di Optuna significa dire all'algoritmo di ottimizzare i parametri affinché i momenti più spettacolari siano *sempre* ai primi posti della lista generata per ogni video.
 
-1. Fix threshold consistency
-Remove the special case for c2_threshold != 0.5, so the configured decision rule is applied consistently at every threshold. Keep a baseline evaluation for comparison. [x] DONE
+## Configurazione HPO iniziale
 
-2. Compare threshold versus margin
-Use identical model outputs and LOVO folds. Compare class-2 precision, recall, F1/F2, false triggers from classes 0 and 1, and event-level results. [ ] ON-GOING
+Partirei da questi parametri:
 
-3. Inspect the envelope and test temporal logic
-Establish what the current filter already does, then compare no additional filter against hysteresis or light smoothing.
+| Parametro         | Scelta iniziale                                      |
+| ----------------- | ---------------------------------------------------- |
+| Obiettivo         | `lambdarank`                                         |
+| Metrica           | `ndcg`                                               |
+| Cutoff principale | `NDCG@10`                                            |
+| Unità di ranking  | Video                                                |
+| Validazione       | Grouped LOVO                                         |
+| Obiettivo Optuna  | Massimizzare la media di NDCG\@10 sui video held-out |
 
-4. Plot each stage separately
-Plot raw model probabilities, the class-2 decision score, and the output after the existing envelope. That should make it much easier to distinguish model confusion from post-processing artifacts.
-
-# 5. Future Optimizations
-
-
-Additional performance work should be recorded here as it is investigated.
-
-Possible areas include:
-
-- frame decoding / sampling
-- grayscale conversion and frame caching
-- memory allocation
-- optical-flow calculation
-- feature extraction
-- temporal derivatives
-- spatial aggregation (windows stride)
-- dataset generation
-- inference batching
-
-Optimizations should be added only when there is a measurable or well-understood reason to do so.
-
----
-
-# 6. General Principle
-
-The motion pipeline should avoid repeating work.
-
-In particular:
-
-- frames should be converted to grayscale once
-- grayscale frames should be reusable/cached where practical
-- ROI should be applied upstream
-- invariant configuration should be established once
-- expensive optical-flow processing should not perform unnecessary validation
-- downstream feature extraction should operate directly on the resulting optical-flow arrays
-
-The hot path should contain as little application-level overhead as reasonably possible.
+Terrei anche `NDCG@5` e `NDCG@20` come metriche secondarie, per capire se il modello privilegia davvero i primissimi segmenti oppure produce classifiche buone su un insieme più ampio.
