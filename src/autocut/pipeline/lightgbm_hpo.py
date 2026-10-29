@@ -13,6 +13,7 @@ import numpy as np
 from ..config_loader import Config
 from ..ml.model import LightGBMConfig
 from ..ml.lightgbm_training import train_lightgbm_lovo
+from ..dataset.manifest import load_manifest
 from .lightgbm_training import (
     _lightgbm_config,
     _section,
@@ -117,9 +118,11 @@ def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str,
         elif "choices" in spec:
             params[name] = trial.suggest_categorical(name, spec["choices"])
         elif "step" in spec:
-            params[name] = trial.suggest_float(
-                name, spec["low"], spec["high"], step=spec["step"]
-            )
+            low, high, step = spec["low"], spec["high"], spec["step"]
+            if float(low).is_integer() and float(high).is_integer() and float(step).is_integer():
+                params[name] = trial.suggest_int(name, int(low), int(high), step=int(step))
+            else:
+                params[name] = trial.suggest_float(name, low, high, step=step)
         else:
             params[name] = trial.suggest_float(
                 name, spec["low"], spec["high"], log=spec["log"]
@@ -156,8 +159,43 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
 
     base_config = _lightgbm_config(settings)
     search_space = _validated_search_space(settings)
+
+    # Proxy groups are an explicit HPO-only subset: filter before feature
+    # preparation so non-proxy videos are not decoded or extracted.
+    proxy_value = section.get("proxy_test_groups")
+    selected_records = None
+    if proxy_value is not None:
+        if isinstance(proxy_value, Config):
+            proxy_value = proxy_value.to_dict()
+        if not isinstance(proxy_value, (tuple, list)) or not proxy_value:
+            raise ValueError("lightgbm_hpo.proxy_test_groups must be a non-empty list of group IDs.")
+        proxy_groups: list[str] = []
+        for item in proxy_value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("lightgbm_hpo.proxy_test_groups must contain non-empty string group IDs.")
+            group = item.strip()
+            if group in proxy_groups:
+                raise ValueError(f"lightgbm_hpo.proxy_test_groups contains duplicate group ID {group!r}.")
+            proxy_groups.append(group)
+        report(f"Loading manifest to select proxy groups: {', '.join(proxy_groups)}.")
+        all_records = load_manifest(manifest_path, verify_files=True)
+        available_groups = {record.group_id for record in all_records}
+        unknown_groups = sorted(set(proxy_groups) - available_groups)
+        if unknown_groups:
+            raise ValueError(
+                "lightgbm_hpo.proxy_test_groups not found in manifest: "
+                + ", ".join(unknown_groups)
+            )
+        selected_records = tuple(record for record in all_records if record.group_id in proxy_groups)
+        counts = {group: sum(record.group_id == group for record in selected_records) for group in proxy_groups}
+        report("Proxy subset selected: " + ", ".join(f"{group}={counts[group]} videos" for group in proxy_groups) + f"; total={len(selected_records)} videos.")
+        if len({record.group_id for record in selected_records}) < 2:
+            raise ValueError("Proxy-group HPO requires at least two groups for LOVO evaluation.")
+    else:
+        report("No proxy_test_groups configured; using all manifest groups.")
+
     prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
-        manifest_path, settings, progress_callback=report
+        manifest_path, settings, records=selected_records, progress_callback=report
     )
     report(
         f"Prepared {len(prepared)} videos across "
@@ -260,6 +298,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         "ndcg_cutoff": primary_cutoff,
         "direction": "maximize",
         "evaluated_groups": sorted(set(group_by_video.values())),
+        "proxy_test_groups": sorted(set(group_by_video.values())) if proxy_value is not None else None,
         "completed_trials": len(completed),
         "best_trial_number": best.number,
         "best_value": best.value,
