@@ -69,12 +69,42 @@ def test_selection_validates_types_and_durations():
         select_candidates([], max_clip_duration=-1)
 
 
-def test_blended_max_and_mean_probability_determine_priority():
-    # Candidate A has a higher peak, but B has stronger sustained evidence.
+def test_hierarchical_ranking_prioritizes_max_score_first():
+    # The strongest peak wins even when the other candidate has a higher mean.
     peak_only = candidate(start=0, end=4, score=0.95, mean_score=0.2)
     sustained = candidate(start=10, end=14, score=0.8, mean_score=0.7)
-    result = select_candidates([peak_only, sustained])
-    assert result.selected == (sustained, peak_only)
+    result = select_candidates([sustained, peak_only])
+    assert result.selected == (peak_only, sustained)
+
+
+def test_hierarchical_ranking_uses_window_count_then_mean_then_duration():
+    weak_support = candidate(
+        start=0, end=8, score=0.9, mean_score=0.8,
+        evidence=(WindowEvidence(0, 4, 0.9),),
+    )
+    more_support = candidate(
+        start=10, end=14, score=0.9, mean_score=0.7,
+        evidence=(WindowEvidence(10, 12, 0.9), WindowEvidence(12, 14, 0.8)),
+    )
+    mean_wins = candidate(
+        start=20, end=28, score=0.9, mean_score=0.85,
+        evidence=(WindowEvidence(20, 24, 0.9), WindowEvidence(24, 28, 0.8)),
+    )
+    result = select_candidates([weak_support, more_support, mean_wins])
+    assert result.selected == (mean_wins, more_support, weak_support)
+
+
+def test_hierarchical_ranking_uses_duration_after_equal_peak_count_and_mean():
+    shorter = candidate(
+        start=0, end=4, score=0.9, mean_score=0.8,
+        evidence=(WindowEvidence(0, 4, 0.9),),
+    )
+    longer = candidate(
+        start=10, end=16, score=0.9, mean_score=0.8,
+        evidence=(WindowEvidence(10, 13, 0.9),),
+    )
+    result = select_candidates([shorter, longer])
+    assert result.selected == (longer, shorter)
 
 
 def test_duration_budget_uses_probability_priority():
