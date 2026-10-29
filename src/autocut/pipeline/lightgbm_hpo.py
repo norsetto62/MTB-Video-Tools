@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import optuna
 import numpy as np
@@ -210,7 +210,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         "completed_trials": len(completed),
         "best_trial_number": best.number,
         "best_value": best.value,
-        "best_params": {**base_config.to_params(), **best.params},
+        "best_params": asdict(replace(base_config, **best.params)),
         "best_fold_ndcg": best.user_attrs.get("fold_ndcg", {}),
         "trials": [
             {
