@@ -111,10 +111,18 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
             "preserving mandatory clips and selecting no optional candidates.",
             mandatory_duration, max_total_duration,
         )
-    # We rank by averaging max and mean scores (compromise to catch brief highlight and more sustained action), tie-break with duration and ordering
+    # Hierarchical ranking: preserve the strongest peak first, then prefer
+    # candidates supported by more inference windows, stronger sustained scores,
+    # and finally longer duration. Do not blend scores: the model's score scale
+    # should remain the primary ordering signal.
     ranked = sorted(candidate_list, key=lambda item: (
-        -(item.score+item.mean_score)/2.0, item.duration,
-        item.video_order, item.start, item.video_name,
+        -item.score,
+        -len(item.window_evidence),
+        -item.mean_score,
+        -item.duration,
+        item.video_order,
+        item.start,
+        item.video_name,
         item.annotation_order if item.annotation_order is not None else -1,
     ))
     selected: list[SelectionCandidate] = []
