@@ -47,6 +47,24 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
     space: dict[str, dict[str, Any]] = {
         name: dict(spec) for name, spec in DEFAULT_SEARCH_SPACE.items()
     }
+    # Accept common native LightGBM aliases in YAML, then normalize them to
+    # the canonical LightGBMConfig field names used by dataclasses.replace().
+    aliases = {
+        "bagging_freq": "bagging_frequency",
+        "reg_alpha": "lambda_l1",
+        "reg_lambda": "lambda_l2",
+    }
+    normalized_raw: dict[str, Any] = {}
+    for supplied_name, value in raw.items():
+        name = aliases.get(supplied_name, supplied_name)
+        if name in normalized_raw:
+            raise ValueError(
+                f"Multiple HPO search-space keys map to {name!r}; "
+                "use only one canonical name or alias."
+            )
+        normalized_raw[name] = value
+    raw = normalized_raw
+
     allowed = set(LightGBMConfig.__dataclass_fields__) - {
         "task", "early_stopping_rounds", "ndcg_eval_at", "random_seed", "verbosity"
     }
