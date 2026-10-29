@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 from datetime import datetime
 
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "hpo", "models")
+COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "lightgbm-hpo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,6 +80,16 @@ def build_parser() -> argparse.ArgumentParser:
     lightgbm_lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lightgbm_lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
     lightgbm_lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
+
+    lightgbm_hpo = subparsers.add_parser(
+        "lightgbm-hpo",
+        help="Tune LightGBM ranking objective and hyperparameters with Optuna.",
+    )
+    lightgbm_hpo.add_argument(
+        "--config", type=Path, default=Path("config/train.yaml"),
+        help="Training and LightGBM HPO YAML configuration file",
+    )
+    lightgbm_hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
     models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
@@ -313,7 +323,7 @@ def dispatch(args: argparse.Namespace) -> int:
         ], indent=2, default=str))
         return 0
 
-    if args.command in {"validate", "lovo", "hpo"}:
+    if args.command in {"validate", "lovo", "hpo", "lightgbm-hpo"}:
         from .config_loader import load_config
 
         settings = load_config(args.config)
@@ -330,6 +340,12 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
+        if args.command == "lightgbm-hpo":
+            from .pipeline.lightgbm_hpo import run_lightgbm_hpo
+
+            result = run_lightgbm_hpo(manifest, settings)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
         if args.command == "hpo":
             if args.diagnose_trial is not None:
                 from .pipeline.hpo import run_hpo_diagnostics
