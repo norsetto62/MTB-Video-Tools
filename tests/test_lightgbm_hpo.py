@@ -19,6 +19,8 @@ def test_lightgbm_config_rejects_non_ranking_objective():
 def test_hpo_search_space_includes_both_objectives_by_default():
     space = _validated_search_space(Config({}))
     assert space["objective"]["choices"] == ["lambdarank", "rank_xendcg"]
+    assert "learning_rate" in space
+    assert "num_leaves" in space
 
 
 def test_hpo_search_space_requires_both_objective_choices():
@@ -46,3 +48,17 @@ def test_suggest_uses_categorical_objective():
     params = _suggest(trial, {"objective": {"choices": ["lambdarank", "rank_xendcg"]}})
     assert params == {"objective": "rank_xendcg"}
     assert trial.calls == [("objective", ["lambdarank", "rank_xendcg"])]
+
+
+def test_hpo_custom_search_space_overrides_without_dropping_defaults():
+    settings = Config({
+        "lightgbm_hpo": {
+            "search_space": {
+                "learning_rate": {"low": 0.02, "high": 0.04},
+            }
+        }
+    })
+    space = _validated_search_space(settings)
+    assert space["learning_rate"] == {"low": 0.02, "high": 0.04, "log": False}
+    assert space["objective"]["choices"] == ["lambdarank", "rank_xendcg"]
+    assert "num_leaves" in space
