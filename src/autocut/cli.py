@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 from datetime import datetime
 
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "lightgbm-hpo", "hpo", "models")
+COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-score-report", "lightgbm-lovo", "lightgbm-hpo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
