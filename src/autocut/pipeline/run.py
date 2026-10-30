@@ -142,7 +142,8 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
 
     defaults = {
         "paths": {"data_dir": "data", "models_dir": "models", "output_dir": "output", "cache_dir": "data/cache"},
-        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc", "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
+        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc", "resolution": "2.7k",
+                   "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
         "selection": {
@@ -155,7 +156,7 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
     }
     allowed_keys = {
         "paths": {"data_dir", "models_dir", "output_dir", "cache_dir"},
-        "video": {"sampling_fps", "processing_width", "encoder", "roi_left", "roi_right", "roi_bottom", "roi_top"},
+        "video": {"sampling_fps", "processing_width", "encoder", "resolution", "roi_left", "roi_right", "roi_bottom", "roi_top"},
         "features": {"window_duration", "window_stride"},
         "model": {"checkpoint", "inference_batch_size"},
         "selection": set(defaults["selection"]),
@@ -213,6 +214,8 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         raise ValueError("model.inference_batch_size must be a positive integer.")
     if raw["video"]["encoder"] not in {"h264_nvenc", "libx264"}:
         raise ValueError("video.encoder must be h264_nvenc or libx264.")
+    if raw["video"]["resolution"] not in {"4k", "2.7k", "1080p"}:
+        raise ValueError("video.resolution must be one of 4k, 2.7k, or 1080p.")
     level = raw["logging"]["level"]
     if not isinstance(level, str) or level.upper() not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}:
         raise ValueError("logging.level must be a standard Python logging level.")
@@ -241,6 +244,7 @@ def _config_summary(
         "sample_fps": settings.video.sampling_fps,
         "processing_width": settings.video.processing_width,
         "video_encoder": settings.video.encoder,
+        "video_resolution": settings.video.resolution,
         "window_duration": settings.features.window_duration,
         "window_stride": settings.features.window_stride,
         "checkpoint": str(settings.model.checkpoint),
@@ -652,6 +656,7 @@ def run_pipeline(
         render_result = render_timeline(
             timeline, destination,
             video_encoder=video_encoder or settings.video.encoder,
+            video_resolution=settings.video.resolution,
         )
     else:
         render_result = render_with_music(
@@ -661,6 +666,7 @@ def run_pipeline(
             config=audio_config,
             mix_original_audio=music_directive.mix,
             video_encoder=(video_encoder or settings.video.encoder),
+            video_resolution=settings.video.resolution,
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")

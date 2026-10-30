@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from tqdm import tqdm
+
 from autocut.audio.config import AudioConfig
 from autocut.selection.timeline import Timeline
 from autocut.video.probe import _find_ffprobe
@@ -186,75 +188,120 @@ def _render_reencoded_transport_stream(
     *,
     include_audio: bool,
     video_encoder: str,
+    video_resolution: str,
 ) -> Path:
-    """Re-encode each source interval before concatenating MPEG-TS clips."""
+    """Re-encode each source interval and concatenate them using the filter graph to prevent blanks."""
     ffmpeg = _find_ffmpeg()
     clip_files: list[Path] = []
-    for index, clip in enumerate(timeline.clips):
-        source = Path(clip.video_name).resolve()
-        if not source.is_file():
-            raise FileNotFoundError(f"Timeline source video not found: {clip.video_name}")
-        start = _duration("clip source_start", clip.source_start, allow_zero=True)
-        end = _duration("clip source_end", clip.source_end)
-        if end <= start:
-            raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
 
-        clip_file = temporary_directory / f"clip_{index:04d}.ts"
-        command = [
-            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", str(start), "-i", str(source), "-t", str(end - start),
-            "-map", "0:v:0",
-        ]
-        if include_audio:
-            command.extend(["-map", "0:a:0?"])
-        else:
-            command.append("-an")
-        if video_encoder == "h264_nvenc":
-            command.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"])
-        elif video_encoder == "libx264":
-            command.extend(["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
-        else:
-            raise ValueError("video_encoder must be 'h264_nvenc' or 'libx264'.")
-        command.extend(["-pix_fmt", "yuv420p"])
-        if include_audio:
-            command.extend(["-c:a", "aac", "-b:a", "320k"])
-        command.extend(["-f", "mpegts", str(clip_file)])
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
-            raise RuntimeError(
-                f"Failed to encode timeline clip {index + 1} "
-                f"({source}, {start:.3f}–{end:.3f}; exit status {exc.returncode}): "
-                f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
-            ) from exc
-        except OSError as exc:
-            raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
-        clip_files.append(clip_file)
+    total_clips = len(timeline.clips)
 
-    concat_file = temporary_directory / "clips.ffconcat"
-    lines = ["ffconcat version 1.0"]
-    for clip_file in clip_files:
-        escaped = str(clip_file.resolve()).replace("\\", "/").replace("'", "'\\''")
-        lines.append(f"file '{escaped}'")
-    concat_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    RESOLUTION_PRESETS = {
+        "4k": (3840, 2160),
+        "2.7k": (2688, 1512),
+        "1080p": (1920, 1080),
+    }
+    target_width, target_height = RESOLUTION_PRESETS[video_resolution]
 
+    with tqdm(total=total_clips, desc="Encoding timeline clips", unit="clip") as pbar:
+        for index, clip in enumerate(timeline.clips):
+            source = Path(clip.video_name).resolve()
+            if not source.is_file():
+                raise FileNotFoundError(f"Timeline source video not found: {clip.video_name}")
+            start = _duration("clip source_start", clip.source_start, allow_zero=True)
+            end = _duration("clip source_end", clip.source_end)
+            duration = end - start
+            if duration <= 0:
+                raise ValueError(f"Invalid source interval for {clip.video_name}: {start}–{end}.")
+
+            video_short_name = Path(clip.video_name).name
+            pbar.set_postfix(video=video_short_name[:15], dur=f"{duration:.1f}s")
+
+            clip_file = temporary_directory / f"clip_{index:04d}.ts"
+            video_filter = f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+
+            command = [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", str(start),
+                "-i", str(source),
+                "-t", str(duration),
+                "-avoid_negative_ts", "make_zero",
+                "-map", "0:v:0",
+                "-vf", video_filter,
+            ]
+            if include_audio:
+                command.extend(["-map", "0:a:0?"])
+            else:
+                command.append("-an")
+
+            if video_encoder == "h264_nvenc":
+                command.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-no-scenecut", "1"])
+            elif video_encoder == "libx264":
+                command.extend(["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
+            else:
+                raise ValueError("video_encoder must be 'h264_nvenc' or 'libx264'.")
+
+            command.extend(["-pix_fmt", "yuv420p"])
+            if include_audio:
+                command.extend(["-c:a", "aac", "-b:a", "320k"])
+            command.extend(["-f", "mpegts", str(clip_file)])
+
+            try:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as exc:
+                stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
+                raise RuntimeError(
+                    f"Failed to encode timeline clip {index + 1} "
+                    f"({source}, {start:.3f}–{end:.3f}; exit status {exc.returncode}): "
+                    f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
+                ) from exc
+            except OSError as exc:
+                raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+
+            clip_files.append(clip_file)
+            pbar.update(1)
+
+    print("\n🔗 Assembling clips and finalization, pls. wait few seconds...")
     assembled = temporary_directory / "assembled.ts"
-    command = [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "concat", "-safe", "0", "-i", str(concat_file),
-        "-c", "copy", str(assembled),
-    ]
+
+    # Dynamic build commands with all input files and concat filter
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y"]
+    for clip_file in clip_files:
+        command.extend(["-i", str(clip_file)])
+
+    # Complex concat filter (video and optional audio)
+    filter_inputs = "".join([f"[{i}:v]" + (f"[{i}:a]" if include_audio else "") for i in range(len(clip_files))])
+    has_audio_flag = 1 if include_audio else 0
+    filter_expr = f"{filter_inputs}concat=n={len(clip_files)}:v=1:a={has_audio_flag}[outv]"
+    if include_audio:
+        filter_expr = f"{filter_inputs}concat=n={len(clip_files)}:v=1:a=1[outv][outa]"
+
+    command.extend(["-filter_complex", filter_expr, "-map", "[outv]"])
+    if include_audio:
+        command.extend(["-map", "[outa]"])
+
+    # Light re-encoding or clean muxing in mpegts for final assemply
+    if video_encoder == "h264_nvenc":
+        command.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20"])
+    else:
+        command.extend(["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
+
+    if include_audio:
+        command.extend(["-c:a", "aac", "-b:a", "320k"])
+
+    command.extend(["-f", "mpegts", str(assembled)])
+
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
         raise RuntimeError(
-            f"Failed to concatenate re-encoded timeline clips (exit status {exc.returncode}): "
+            f"Failed to concatenate timeline clips via filter graph (exit status {exc.returncode}): "
             f"{stderr or 'FFmpeg returned a non-zero exit status.'}"
         ) from exc
     except OSError as exc:
         raise RuntimeError(f"Could not execute FFmpeg: {exc}") from exc
+
     return assembled
 
 
@@ -263,6 +310,7 @@ def render_timeline(
     output_path: str | Path,
     *,
     video_encoder: str = "h264_nvenc",
+    video_resolution: str = "2.7k",
 ) -> RenderResult:
     """Render a timeline by re-encoding each clip before concatenation."""
     if not isinstance(timeline, Timeline):
@@ -279,7 +327,7 @@ def render_timeline(
     ) as directory:
         temporary = Path(directory)
         assembled = _render_reencoded_transport_stream(
-            timeline, temporary, include_audio=True, video_encoder=video_encoder
+            timeline, temporary, include_audio=True, video_encoder=video_encoder, video_resolution=video_resolution,
         )
         command = [
             _find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
@@ -306,6 +354,7 @@ def render_with_music(
     config: AudioConfig,
     mix_original_audio: bool = False,
     video_encoder: str = "h264_nvenc",
+    video_resolution: str = "2.7k",
 ) -> RenderResult:
     """Re-encode each selected clip, concatenate them, then add the soundtrack."""
     if not isinstance(timeline, Timeline):
@@ -330,6 +379,7 @@ def render_with_music(
         assembled = _render_reencoded_transport_stream(
             timeline, temporary, include_audio=mix_original_audio,
             video_encoder=video_encoder,
+            video_resolution=video_resolution,
         )
 
         return mix_music(
