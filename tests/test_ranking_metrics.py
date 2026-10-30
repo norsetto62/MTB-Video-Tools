@@ -44,7 +44,7 @@ def test_videos_without_class3_are_excluded_and_reported():
     labels = np.array([0, 1, 2, 0, 2, 1])
     times = np.array([[0, 4], [2, 6], [4, 8], [0, 4], [2, 6], [4, 8]], dtype=float)
     result = segment_recall_at_k(labels, np.arange(6), [3, 3], times)
-    assert result["segment_recall_at_5"] == 0.0
+    assert result["segment_recall_at_5"] is None
     assert result["videos_with_events"] == 0
     assert result["evaluated_videos"] == 0
 
