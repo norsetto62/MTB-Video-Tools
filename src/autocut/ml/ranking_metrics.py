@@ -79,7 +79,7 @@ def segment_recall_at_k(
             per_video[str(video_index)] = {"events": len(events), "hits": hits, "recall": float(recall)}
         offset = stop
 
-    mean_recall = float(np.mean(recalls)) if recalls else 0.0
+    mean_recall = float(np.mean(recalls)) if recalls else None
     return {
         "metric": f"segment_recall_at_{k}",
         "k": k,
@@ -106,6 +106,12 @@ def make_segment_recall_at_5(timestamps: np.ndarray, group_sizes: Sequence[int])
             fixed_timestamps,
             k=5,
         )
-        return "segment_recall_at_5", float(result["segment_recall_at_5"]), True
+        value = result["segment_recall_at_5"]
+        if value is None:
+            raise ValueError(
+                "Validation data contains no class-3 events; Segment Recall@5 "
+                "and metric-based early stopping are undefined for this fold."
+            )
+        return "segment_recall_at_5", float(value), True
 
     return evaluate
