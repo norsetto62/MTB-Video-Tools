@@ -319,6 +319,9 @@ def run_lightgbm_train_from_manifest(
         config = _lightgbm_config(settings)
     train_X, train_y, train_group_sizes = _combine_with_group_sizes(prepared, train_ids)
     val_X, val_y, val_group_sizes = _combine_with_group_sizes(prepared, validation_ids)
+    val_timestamps = np.concatenate(
+        [prepared[video_id].windows.timestamps for video_id in validation_ids], axis=0
+    )
     if not any(
         len(np.unique(train_y[offset:offset + size])) > 1
         for offset, size in _group_offsets(train_group_sizes)
@@ -327,8 +330,8 @@ def run_lightgbm_train_from_manifest(
     if len(val_y) == 0:
         raise ValueError("The configured validation groups produced no labeled windows.")
 
-    # This first fit is strictly group-held-out. Its NDCG history and best
-    # iteration determine how long the final all-data refit should run.
+    # This first fit is strictly group-held-out. Its Segment Recall@5 history
+    # and best iteration determine the final all-data refit's iteration count.
     _, validation_summary = train_lightgbm(
         train_X,
         train_y,
@@ -336,6 +339,7 @@ def run_lightgbm_train_from_manifest(
         val_X=val_X,
         val_y=val_y,
         val_group_sizes=val_group_sizes,
+        val_timestamps=val_timestamps,
         config=config,
         data_config={
             **data_config,
