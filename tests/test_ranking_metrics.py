@@ -10,17 +10,17 @@ def test_overlapping_and_touching_class3_windows_form_one_event():
     times = np.array([
         [0, 4], [2, 6], [6, 10], [8, 12], [20, 24], [22, 26],
     ], dtype=float)
-    scores = np.array([0.9, 0.1, 0.2, 0.99, 0.8, 0.3])
+    scores = np.array([0.9, 0.1, 0.2, 0.0, 0.8, 0.3])
     result = segment_recall_at_k(labels, scores, [6], times, k=2)
     # Top-2 contains one window from each of the two events.
     assert result["events"] == 2
     assert result["hit_events"] == 2
-    assert result["segment_recall_at_5"] == pytest.approx(1.0)
+    assert result["segment_recall_at_k"] == pytest.approx(1.0)
 
 
 def test_top_k_is_computed_independently_per_video_and_only_class3_counts():
     labels = np.array([3, 0, 0, 3, 2, 0, 3, 0])
-    scores = np.array([0.1, 0.9, 0.8, 0.7, 1.0, 0.9, 0.2, 0.1])
+    scores = np.array([0.1, 0.9, 0.8, 0.95, 1.0, 0.9, 0.2, 0.1])
     times = np.array([
         [0, 4], [2, 6], [4, 8], [10, 14],
         [0, 4], [2, 6], [10, 14], [12, 16],
