@@ -58,10 +58,10 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     assert result.validation_video_ids == ("video_c",)
     assert set(result.train_video_ids).isdisjoint(result.validation_video_ids)
     metrics = result.summary["validation_metrics"]
-    assert metrics["validation_rows"] == 16
-    assert metrics["queries"] == 1
-    assert "10" in metrics["ndcg_at"]
-    assert result.summary["ranking_metric"] == "ndcg"
+    assert metrics["evaluated_videos"] == 1
+    assert metrics["events"] >= 1
+    assert 0.0 <= metrics["segment_recall_at_5"] <= 1.0
+    assert result.summary["ranking_metric"] == "segment_recall_at_5"
     assert result.summary["training_group_sizes"] == [16, 16]
     assert result.summary["validation_group_sizes"] == [16]
     assert model.feature_dim == 48
@@ -107,6 +107,6 @@ def test_group_fold_allows_a_single_class_in_the_held_out_group():
         videos, groups, held_out_group="validation", config=_config()
     )
     metrics = result.summary["validation_metrics"]
-    assert metrics["validation_rows"] == 8
-    assert metrics["queries"] == 1
-    assert metrics["ndcg_at"]["10"] == pytest.approx(1.0)
+    assert metrics["evaluated_videos"] == 0
+    assert metrics["events"] == 0
+    assert metrics["segment_recall_at_5"] == pytest.approx(0.0)
