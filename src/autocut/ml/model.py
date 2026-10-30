@@ -147,15 +147,19 @@ class LightGBMConfig:
         object.__setattr__(self, "ndcg_eval_at", cutoffs)
 
     def to_params(self) -> dict[str, object]:
-        """Return LightGBM ranking parameters."""
-        params = asdict(self)
-        params.pop("early_stopping_rounds")
-        params.pop("task")
-        params.pop("ndcg_eval_at")
-        params["metric"] = "ndcg"
-        params["ndcg_eval_at"] = list(self.ndcg_eval_at)
-        params["verbosity"] = self.verbosity
-        return params
+            """Return LightGBM ranking parameters."""
+            params = asdict(self)
+            params.pop("early_stopping_rounds")
+            params.pop("task")
+            params.pop("ndcg_eval_at")
+            params["metric"] = "ndcg"
+            params["ndcg_eval_at"] = list(self.ndcg_eval_at)
+            params["verbosity"] = self.verbosity
+
+            # KEY ADDITION: We value more higher classes (especially 3)
+            params["label_gain"] = [0.0, 1.0, 5.0, 25.0]
+
+            return params
 
 
 class LightGBMRanker:
