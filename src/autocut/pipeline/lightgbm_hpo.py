@@ -234,23 +234,28 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
                 "ranking_hpo_trial": trial.number,
             },
         )
-        scores: list[float] = []
+        per_video_scores: list[float] = []
         per_fold: dict[str, float] = {}
         for fold in folds:
             metrics = fold.summary.get("validation_metrics", {})
             score = metrics.get("segment_recall_at_5")
             if score is not None and np.isfinite(float(score)):
-                value = float(score)
-                scores.append(value)
-                per_fold[fold.held_out_group] = value
-        if not scores:
+                per_fold[fold.held_out_group] = float(score)
+                per_video = metrics.get("per_video", {})
+                per_video_scores.extend(
+                    float(item["recall"])
+                    for item in per_video.values()
+                    if np.isfinite(float(item["recall"]))
+                )
+        if not per_video_scores:
             raise ValueError(
-                f"Trial {trial.number} produced no valid Segment Recall@5 scores."
+                f"Trial {trial.number} produced no validation videos with class-3 events."
             )
-        mean_recall = float(np.mean(scores))
+        mean_recall = float(np.mean(per_video_scores))
         trial.set_user_attr("metric", "segment_recall_at_5")
         trial.set_user_attr("mean_segment_recall_at_5", mean_recall)
         trial.set_user_attr("fold_segment_recall_at_5", per_fold)
+        trial.set_user_attr("evaluated_video_count", len(per_video_scores))
         trial.set_user_attr("evaluated_folds", sorted(per_fold))
         logger.info(
             "LightGBM HPO trial %d: objective=%s, mean Segment Recall@5=%.5f, folds=%s",
