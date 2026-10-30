@@ -57,6 +57,11 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
     model, summary = train_lightgbm(
         train_X, train_y, train_group_sizes=[30, 30, 30, 30],
         val_X=val_X, val_y=val_y, val_group_sizes=[12, 12, 12, 12],
+        val_timestamps=np.concatenate([
+            np.column_stack((np.arange(12) * 2.0 + i * 100.0,
+                             np.arange(12) * 2.0 + i * 100.0 + 4.0))
+            for i in range(4)
+        ]),
         config=_config(), checkpoint_path=path,
         data_config={"window": 4.0, "stride": 2.0, "sampling_fps": 2.0},
         metadata={"fold": "heldout-group"},
@@ -64,7 +69,8 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
     assert model.feature_dim == 48
     assert summary["training_rows"] == 120
     assert summary["validation_rows"] == 48
-    assert summary["ranking_metric"] == "ndcg"
+    assert summary["ranking_metric"] == "segment_recall_at_5"
+    assert "segment_recall_at_5" in summary["evaluation_history"]["validation"]
     assert summary["training_group_sizes"] == [30, 30, 30, 30]
     assert path.is_file()
 
