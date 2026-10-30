@@ -444,6 +444,7 @@ def train_lightgbm(
     val_X: np.ndarray | None = None,
     val_y: np.ndarray | None = None,
     val_group_sizes: Sequence[int] | None = None,
+    val_timestamps: np.ndarray | None = None,
     config: LightGBMConfig | None = None,
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
@@ -477,8 +478,15 @@ def train_lightgbm(
     valid_names = None
     callbacks = []
     if val_X is not None:
+        if val_timestamps is None:
+            raise ValueError("val_timestamps are required for Segment Recall@5 validation.")
+        from autocut.ml.ranking_metrics import make_segment_recall_at_5
         valid_features, valid_labels = _validate_lightgbm_data(val_X, val_y, name="validation")
         valid_groups = _validate_rank_groups(val_group_sizes, len(valid_features), name="validation")
+        validation_timestamps = np.asarray(val_timestamps, dtype=np.float64)
+        if validation_timestamps.shape != (len(valid_features), 2):
+            raise ValueError("val_timestamps must have shape (N, 2) aligned with val_X.")
+        segment_recall_eval = make_segment_recall_at_5(validation_timestamps, valid_groups)
         if valid_features.shape[1] != train_features.shape[1]:
             raise ValueError("Training and validation feature dimensions must match.")
         train_dataset = lgb.Dataset(
@@ -501,16 +509,22 @@ def train_lightgbm(
             train_features, label=train_labels, group=train_groups,
             feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES), free_raw_data=False,
         )
+    params = config.to_params()
+    if val_X is not None:
+        # Disable LightGBM's native NDCG: Segment Recall@5 is the sole
+        # validation metric and therefore the early-stopping criterion.
+        params["metric"] = "None"
     booster = lgb.train(
-        config.to_params(), train_dataset, num_boost_round=config.num_iterations,
+        params, train_dataset, num_boost_round=config.num_iterations,
         valid_sets=valid_sets, valid_names=valid_names, callbacks=callbacks,
+        feval=segment_recall_eval if val_X is not None else None,
     )
     model = LightGBMRanker(booster, feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     best_iteration = int(booster.best_iteration or config.num_iterations)
     summary: dict[str, Any] = {
         "objective": config.objective,
-        "ranking_metric": "ndcg",
-        "ndcg_eval_at": list(config.ndcg_eval_at),
+        "ranking_metric": "segment_recall_at_5" if val_X is not None else None,
+        "selection_metric": "segment_recall_at_5" if val_X is not None else None,
         "best_iteration": best_iteration,
         "configured_max_iterations": config.num_iterations,
         "early_stopping_rounds": config.early_stopping_rounds if val_X is not None else None,
