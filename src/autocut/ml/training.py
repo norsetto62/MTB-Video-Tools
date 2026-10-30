@@ -486,7 +486,11 @@ def train_lightgbm(
         validation_timestamps = np.asarray(val_timestamps, dtype=np.float64)
         if validation_timestamps.shape != (len(valid_features), 2):
             raise ValueError("val_timestamps must have shape (N, 2) aligned with val_X.")
-        segment_recall_eval = make_segment_recall_at_5(validation_timestamps, valid_groups)
+        has_validation_events = bool(np.any(valid_labels == 3))
+        segment_recall_eval = (
+            make_segment_recall_at_5(validation_timestamps, valid_groups)
+            if has_validation_events else None
+        )
         if valid_features.shape[1] != train_features.shape[1]:
             raise ValueError("Training and validation feature dimensions must match.")
         train_dataset = lgb.Dataset(
@@ -500,12 +504,13 @@ def train_lightgbm(
         )
         # The custom evaluator is bound to validation timestamps; evaluating
         # the training Dataset with that callback would misalign its rows.
-        valid_sets, valid_names = [valid_dataset], ["validation"]
-        callbacks.extend([
-            lgb.early_stopping(config.early_stopping_rounds, first_metric_only=True, verbose=False),
-            lgb.record_evaluation(evals_result),
-            lgb.log_evaluation(period=10),
-        ])
+        valid_sets, valid_names = ([valid_dataset], ["validation"]) if has_validation_events else (None, None)
+        if has_validation_events:
+            callbacks.extend([
+                lgb.early_stopping(config.early_stopping_rounds, first_metric_only=True, verbose=False),
+                lgb.record_evaluation(evals_result),
+                lgb.log_evaluation(period=10),
+            ])
     else:
         train_dataset = lgb.Dataset(
             train_features, label=train_labels, group=train_groups,
@@ -519,14 +524,15 @@ def train_lightgbm(
     booster = lgb.train(
         params, train_dataset, num_boost_round=config.num_iterations,
         valid_sets=valid_sets, valid_names=valid_names, callbacks=callbacks,
-        feval=segment_recall_eval if val_X is not None else None,
+        feval=segment_recall_eval,
     )
     model = LightGBMRanker(booster, feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     best_iteration = int(booster.best_iteration or config.num_iterations)
     summary: dict[str, Any] = {
         "objective": config.objective,
-        "ranking_metric": "segment_recall_at_5" if val_X is not None else None,
-        "selection_metric": "segment_recall_at_5" if val_X is not None else None,
+        "ranking_metric": "segment_recall_at_5" if val_X is not None and has_validation_events else None,
+        "selection_metric": "segment_recall_at_5" if val_X is not None and has_validation_events else None,
+        "validation_has_class3_events": bool(has_validation_events) if val_X is not None else None,
         "best_iteration": best_iteration,
         "configured_max_iterations": config.num_iterations,
         "early_stopping_rounds": config.early_stopping_rounds if val_X is not None else None,
