@@ -131,12 +131,10 @@ def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str,
 
 
 def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
-    """Tune LightGBM ranking objective and hyperparameters on identical LOVO folds.
+    """Tune LightGBM hyperparameters by mean per-video MTB-3 Segment Recall@5.
 
-    Each video remains a separate ranking query. The objective optimized by
-    Optuna is the unweighted mean of the configured validation NDCG@k across
-    held-out groups. The function exports the best configuration but does not
-    silently start a production refit; use lightgbm-train after reviewing it.
+    Each video is a separate query for LambdaRank and for evaluation. Optuna
+    maximizes the unweighted mean Segment Recall@5 across held-out LOVO groups.
     """
     section = _section(settings, "lightgbm_hpo")
     n_trials = section.get("n_trials", 30)
@@ -145,6 +143,9 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     study_name = section.get("study_name", "lightgbm_ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("lightgbm_hpo.study_name must be a non-empty string.")
+    # Do not mix historical NDCG trial values with the new event-recall objective.
+    if not study_name.endswith("_segment_recall_at_5"):
+        study_name = f"{study_name}_segment_recall_at_5"
     progress = section.get("progress", True)
     if not isinstance(progress, bool):
         raise ValueError("lightgbm_hpo.progress must be true or false.")
@@ -201,14 +202,6 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         f"Prepared {len(prepared)} videos across "
         f"{len(set(group_by_video.values()))} groups; opening study database."
     )
-    cutoffs = base_config.ndcg_eval_at
-    primary_cutoff = int(section.get("ndcg_cutoff", cutoffs[0]))
-    if primary_cutoff not in cutoffs:
-        raise ValueError(
-            f"lightgbm_hpo.ndcg_cutoff={primary_cutoff} must be included in "
-            f"lightgbm.ndcg_eval_at={cutoffs}."
-        )
-
     db_path = Path(section.get("storage_path", "data/db/lightgbm_hpo.db")).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{db_path.as_posix()}"
@@ -244,31 +237,31 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         scores: list[float] = []
         per_fold: dict[str, float] = {}
         for fold in folds:
-            metrics = fold.summary.get("validation_metrics", {}).get("ndcg_at", {})
-            score = metrics.get(str(primary_cutoff))
+            metrics = fold.summary.get("validation_metrics", {})
+            score = metrics.get("segment_recall_at_5")
             if score is not None and np.isfinite(float(score)):
                 value = float(score)
                 scores.append(value)
                 per_fold[fold.held_out_group] = value
         if not scores:
             raise ValueError(
-                f"Trial {trial.number} produced no valid NDCG@{primary_cutoff} scores."
+                f"Trial {trial.number} produced no valid Segment Recall@5 scores."
             )
-        mean_ndcg = float(np.mean(scores))
-        trial.set_user_attr("ndcg_cutoff", primary_cutoff)
-        trial.set_user_attr("mean_ndcg", mean_ndcg)
-        trial.set_user_attr("fold_ndcg", per_fold)
+        mean_recall = float(np.mean(scores))
+        trial.set_user_attr("metric", "segment_recall_at_5")
+        trial.set_user_attr("mean_segment_recall_at_5", mean_recall)
+        trial.set_user_attr("fold_segment_recall_at_5", per_fold)
         trial.set_user_attr("evaluated_folds", sorted(per_fold))
         logger.info(
-            "LightGBM HPO trial %d: objective=%s, mean NDCG@%d=%.5f, folds=%s",
+            "LightGBM HPO trial %d: objective=%s, mean Segment Recall@5=%.5f, folds=%s",
             trial.number, params.get("objective", base_config.objective),
-            primary_cutoff, mean_ndcg, per_fold,
+            mean_recall, per_fold,
         )
         report(
             f"Trial {trial_counter}/{n_trials} finished: "
-            f"mean NDCG@{primary_cutoff}={mean_ndcg:.5f}."
+            f"mean Segment Recall@5={mean_recall:.5f}."
         )
-        return mean_ndcg
+        return mean_recall
 
     logger.info(
         "Starting LightGBM HPO study %r: %d new trials, objectives=%s, groups=%s",
@@ -294,8 +287,8 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "study_name": study_name,
-        "objective": "mean_per_group_ndcg",
-        "ndcg_cutoff": primary_cutoff,
+        "objective": "mean_per_video_segment_recall_at_5",
+        "metric": "segment_recall_at_5",
         "direction": "maximize",
         "evaluated_groups": sorted(set(group_by_video.values())),
         "proxy_test_groups": sorted(set(group_by_video.values())) if proxy_value is not None else None,
@@ -303,13 +296,13 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         "best_trial_number": best.number,
         "best_value": best.value,
         "best_params": asdict(replace(base_config, **best.params)),
-        "best_fold_ndcg": best.user_attrs.get("fold_ndcg", {}),
+        "best_fold_segment_recall_at_5": best.user_attrs.get("fold_segment_recall_at_5", {}),
         "trials": [
             {
                 "number": trial.number,
                 "value": trial.value,
                 "params": trial.params,
-                "fold_ndcg": trial.user_attrs.get("fold_ndcg", {}),
+                "fold_segment_recall_at_5": trial.user_attrs.get("fold_segment_recall_at_5", {}),
             }
             for trial in completed
         ],
@@ -317,14 +310,14 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     output_path = output_dir / f"{study_name}_results.json"
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info(
-        "LightGBM HPO complete: best trial %d, objective=%s, mean NDCG@%d=%.5f; results: %s",
+        "LightGBM HPO complete: best trial %d, objective=%s, mean Segment Recall@5=%.5f; results: %s",
         best.number, best.params.get("objective", base_config.objective),
-        primary_cutoff, float(best.value), output_path,
+        float(best.value), output_path,
     )
     report(
         f"Finished. Best trial #{best.number}: "
         f"objective={best.params.get('objective', base_config.objective)}, "
-        f"mean NDCG@{primary_cutoff}={float(best.value):.5f}. "
+        f"mean Segment Recall@5={float(best.value):.5f}. "
         f"Results saved to {output_path}; database: {db_path}."
     )
     return {**payload, "results_path": str(output_path)}
