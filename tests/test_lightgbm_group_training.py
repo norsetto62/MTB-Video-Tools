@@ -109,4 +109,4 @@ def test_group_fold_allows_a_single_class_in_the_held_out_group():
     metrics = result.summary["validation_metrics"]
     assert metrics["evaluated_videos"] == 0
     assert metrics["events"] == 0
-    assert metrics["segment_recall_at_5"] == pytest.approx(0.0)
+    assert metrics["segment_recall_at_5"] is None
