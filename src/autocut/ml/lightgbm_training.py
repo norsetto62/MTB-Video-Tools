@@ -136,47 +136,6 @@ def _combine_timestamps(
     return np.concatenate(parts, axis=0)
 
 
-def _ranking_metrics(
-    y_true: np.ndarray,
-    scores: np.ndarray,
-    group_sizes: Sequence[int],
-    *,
-    cutoffs: Sequence[int],
-    label_gain: list[float],
-) -> dict[str, Any]:
-    """Calculate mean per-video NDCG, the ranking metric used for training."""
-    def dcg(relevance: np.ndarray, k: int) -> float:
-        rel = relevance[:k].astype(np.int64)
-        if not len(rel):
-            return 0.0
-        gains = np.array([label_gain[min(int(r), len(label_gain) - 1)] for r in rel], dtype=np.float64)
-        discounts = np.log2(np.arange(2, len(rel) + 2, dtype=np.float64))
-        return float(np.sum(gains / discounts))
-
-    results: dict[str, Any] = {"validation_rows": int(len(y_true)), "queries": int(len(group_sizes))}
-    offset = 0
-    by_cutoff: dict[str, float | None] = {}
-    for cutoff in cutoffs:
-        query_values: list[float] = []
-        offset = 0
-        for size in group_sizes:
-            labels = y_true[offset:offset + size]
-            pred = scores[offset:offset + size]
-            offset += size
-            if size < 1 or len(labels) != size:
-                continue
-            order = np.argsort(-pred, kind="stable")
-            ideal = np.sort(labels)[::-1]
-            ideal_dcg = dcg(ideal, cutoff)
-            if ideal_dcg > 0:
-                query_values.append(dcg(labels[order], cutoff) / ideal_dcg)
-        by_cutoff[str(int(cutoff))] = (
-            float(np.mean(query_values)) if query_values else None
-        )
-    results["ndcg_at"] = by_cutoff
-    return results
-
-
 def train_lightgbm_group_fold(
     video_data: Mapping[str, LightGBMVideoData],
     group_by_video: Mapping[str, str],
