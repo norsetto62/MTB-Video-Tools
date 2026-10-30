@@ -121,6 +121,20 @@ def _group_offsets(group_sizes: Sequence[int]):
         yield offset, size
         offset += size
 
+def _combine_timestamps(
+    video_data: Mapping[str, LightGBMVideoData],
+    video_ids: Sequence[str],
+) -> np.ndarray:
+    """Combine per-window [start,end] timestamps in the same order as _combine."""
+    parts = [
+        np.asarray(video_data[video_id].windows.timestamps, dtype=np.float64)
+        for video_id in video_ids
+        if len(video_data[video_id].targets) > 0
+    ]
+    if not parts:
+        return np.empty((0, 2), dtype=np.float64)
+    return np.concatenate(parts, axis=0)
+
 
 def _ranking_metrics(
     y_true: np.ndarray,
@@ -184,6 +198,7 @@ def train_lightgbm_group_fold(
     val_ids = tuple(sorted(video_id for video_id in video_data if group_by_video[video_id] == held_out_group))
     train_X, train_y, train_group_sizes = _combine_with_group_sizes(video_data, train_ids)
     val_X, val_y, val_group_sizes = _combine_with_group_sizes(video_data, val_ids)
+    val_timestamps = _combine_timestamps(video_data, val_ids)
     if len(train_y) == 0 or len(val_y) == 0:
         raise ValueError("Both training and held-out group must contain labeled windows.")
     if not any(
@@ -207,6 +222,7 @@ def train_lightgbm_group_fold(
         val_X=val_X,
         val_y=val_y,
         val_group_sizes=val_group_sizes,
+        val_timestamps=val_timestamps,
         config=config,
         checkpoint_path=checkpoint_path,
         data_config={
@@ -216,15 +232,10 @@ def train_lightgbm_group_fold(
         metadata=metadata,
     )
     ranking_scores = model.predict(val_X)
-    params = config.to_params() if config else None
-    label_gain = params.get("label_gain") if params else None
-    if not isinstance(label_gain, list):
-        label_gain = [0.0, 1.0, 3.0, 7.0]
-    summary["validation_metrics"] = _ranking_metrics(
-            val_y, ranking_scores, val_group_sizes, 
-            cutoffs=config.ndcg_eval_at if config else (10,),
-            label_gain=label_gain,
-        )
+    from autocut.ml.ranking_metrics import segment_recall_at_k
+    summary["validation_metrics"] = segment_recall_at_k(
+        val_y, ranking_scores, val_group_sizes, val_timestamps, k=5
+    )
     summary["held_out_group"] = held_out_group
     summary["train_video_ids"] = list(train_ids)
     summary["validation_video_ids"] = list(val_ids)
