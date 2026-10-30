@@ -498,7 +498,9 @@ def train_lightgbm(
             feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES),
             reference=train_dataset, free_raw_data=False,
         )
-        valid_sets, valid_names = [train_dataset, valid_dataset], ["train", "validation"]
+        # The custom evaluator is bound to validation timestamps; evaluating
+        # the training Dataset with that callback would misalign its rows.
+        valid_sets, valid_names = [valid_dataset], ["validation"]
         callbacks.extend([
             lgb.early_stopping(config.early_stopping_rounds, first_metric_only=True, verbose=False),
             lgb.record_evaluation(evals_result),
