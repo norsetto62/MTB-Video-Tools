@@ -70,7 +70,7 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
     assert summary["training_rows"] == 120
     assert summary["validation_rows"] == 48
     assert summary["ranking_metric"] == "segment_recall_at_5"
-    assert "segment_recall_at_5" in summary["evaluation_history"]["validation"]
+    assert set(summary["evaluation_history"]["validation"]) == {"segment_recall_at_5"}
     assert summary["training_group_sizes"] == [30, 30, 30, 30]
     assert path.is_file()
 
