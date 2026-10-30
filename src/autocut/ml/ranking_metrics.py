@@ -79,8 +79,12 @@ def segment_recall_at_k(
             per_video[str(video_index)] = {"events": len(events), "hits": hits, "recall": float(recall)}
         offset = stop
 
+    mean_recall = float(np.mean(recalls)) if recalls else 0.0
     return {
-        "segment_recall_at_5": float(np.mean(recalls)) if recalls else 0.0,
+        "metric": f"segment_recall_at_{k}",
+        "k": k,
+        "segment_recall_at_k": mean_recall,
+        "segment_recall_at_5": mean_recall if k == 5 else None,
         "videos_with_events": videos_with_events,
         "events": total_events,
         "hit_events": hit_events,
