@@ -157,7 +157,7 @@ class LightGBMConfig:
             params["verbosity"] = self.verbosity
 
             # KEY ADDITION: We value more higher classes (especially 3)
-            params["label_gain"] = [0.0, 1.0, 5.0, 25.0]
+            params["label_gain"] = [0.0, 1.0, 3.0, 9.0]
 
             return params
 

@@ -128,13 +128,14 @@ def _ranking_metrics(
     group_sizes: Sequence[int],
     *,
     cutoffs: Sequence[int],
+    label_gain: list[float],
 ) -> dict[str, Any]:
     """Calculate mean per-video NDCG, the ranking metric used for training."""
     def dcg(relevance: np.ndarray, k: int) -> float:
-        rel = relevance[:k].astype(np.float64)
+        rel = relevance[:k].astype(np.int64)
         if not len(rel):
             return 0.0
-        gains = np.exp2(rel) - 1.0
+        gains = np.array([label_gain[min(int(r), len(label_gain) - 1)] for r in rel], dtype=np.float64)
         discounts = np.log2(np.arange(2, len(rel) + 2, dtype=np.float64))
         return float(np.sum(gains / discounts))
 
@@ -215,9 +216,15 @@ def train_lightgbm_group_fold(
         metadata=metadata,
     )
     ranking_scores = model.predict(val_X)
+    params = config.to_params() if config else None
+    label_gain = params.get("label_gain") if params else None
+    if not isinstance(label_gain, list):
+        label_gain = [0.0, 1.0, 3.0, 7.0]
     summary["validation_metrics"] = _ranking_metrics(
-        val_y, ranking_scores, val_group_sizes, cutoffs=config.ndcg_eval_at if config else (10,)
-    )
+            val_y, ranking_scores, val_group_sizes, 
+            cutoffs=config.ndcg_eval_at if config else (10,),
+            label_gain=label_gain,
+        )
     summary["held_out_group"] = held_out_group
     summary["train_video_ids"] = list(train_ids)
     summary["validation_video_ids"] = list(val_ids)
