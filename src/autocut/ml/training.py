@@ -477,6 +477,8 @@ def train_lightgbm(
     valid_sets = None
     valid_names = None
     callbacks = []
+    segment_recall_eval = None
+    has_validation_events = False
     if val_X is not None:
         if val_timestamps is None:
             raise ValueError("val_timestamps are required for Segment Recall@5 validation.")
