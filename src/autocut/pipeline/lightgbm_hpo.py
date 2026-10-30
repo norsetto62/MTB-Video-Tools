@@ -271,7 +271,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     report(
         f"Study '{study_name}': running {n_trials} new trials "
         f"({len(study.trials)} trial records already in the database); "
-        f"optimizing mean NDCG@{primary_cutoff}. "
+        "optimizing mean Segment Recall@5. "
         "A trial may take time while its LOVO folds run."
     )
     study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
