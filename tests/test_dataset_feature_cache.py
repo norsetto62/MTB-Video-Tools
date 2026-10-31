@@ -256,3 +256,52 @@ def test_feature_cache_indexes_and_reuses_existing_unindexed_npz(tmp_path):
 
     assert actual is not None
     assert cache_path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize(
+    ("requested_end", "expected_reuse"),
+    [(821.77095, True), (822.01, False)],
+)
+def test_window_aware_cache_reuses_only_when_complete_windows_are_covered(
+    tmp_path, requested_end, expected_reuse
+):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=821.0)
+    cached_timestamps = np.arange(0.5, 821.0, 0.5, dtype=np.float64)
+    cached = FeatureSequence(
+        features=np.ones((len(cached_timestamps), len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=cached_timestamps,
+    )
+    cache_path = save_feature_sequence(cached, video, cache_dir, cached_clip)
+    original_bytes = cache_path.read_bytes()
+
+    requested = Clip(video_name="ride", start=0.0, end=requested_end)
+    actual = load_feature_sequence(
+        video, cache_dir, requested,
+        sample_fps=2.0,
+        window_duration=4.0,
+        window_stride=2.0,
+    )
+
+    assert (actual is not None) is expected_reuse
+    if expected_reuse:
+        assert actual.timestamps[-1] >= 820.0 - 1e-6
+        assert cache_path.read_bytes() == original_bytes
+
+
+def test_window_aware_cache_still_requires_full_coverage_without_window_contract(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=821.0)
+    cached_timestamps = np.arange(0.5, 821.0, 0.5, dtype=np.float64)
+    cached = FeatureSequence(
+        features=np.ones((len(cached_timestamps), len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=cached_timestamps,
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    requested = Clip(video_name="ride", start=0.0, end=821.77095)
+    assert load_feature_sequence(video, cache_dir, requested) is None
