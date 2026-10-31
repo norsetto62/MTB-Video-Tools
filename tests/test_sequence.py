@@ -417,3 +417,31 @@ def test_build_feature_sequence_rejects_reversed_roi(kwargs, message):
     clip = Clip(video_name="test.mp4", start=0.0, end=2.0)
     with pytest.raises(ValueError, match=message):
         build_feature_sequence("test.mp4", clip, **kwargs)
+
+
+
+def test_build_feature_sequence_reuses_covering_cache_without_video_decode(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shorter requested interval is sliced from a larger cached sequence."""
+    from autocut.dataset.feature_cache import save_feature_sequence
+
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"source video bytes")
+    cache_dir = tmp_path / "features"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.arange(11 * 54, dtype=np.float32).reshape(11, 54),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    def unexpected_reader(*args, **kwargs):
+        raise AssertionError("VideoReader must not decode on a covering-cache hit")
+
+    monkeypatch.setattr("autocut.dataset.sequence.VideoReader", unexpected_reader)
+    requested = Clip(video_name="ride", start=2.0, end=4.0)
+    actual = build_feature_sequence(video, requested, cache_dir=cache_dir)
+
+    np.testing.assert_array_equal(actual.timestamps, np.asarray([2.5, 3.0, 3.5]))
+    np.testing.assert_array_equal(actual.features, cached.features[4:7])
