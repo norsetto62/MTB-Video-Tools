@@ -16,7 +16,17 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
         SimpleNamespace(id="video-b", group_id="validation"),
         SimpleNamespace(id="video-c", group_id="other"),
     )
-    prepared = {record.id: object() for record in records}
+    prepared = {
+        record.id: SimpleNamespace(
+            windows=SimpleNamespace(
+                timestamps=np.column_stack((
+                    np.arange(len(labels_by_video[record.id]), dtype=float) * 2.0,
+                    np.arange(len(labels_by_video[record.id]), dtype=float) * 2.0 + 4.0,
+                ))
+            )
+        )
+        for record in records
+    }
     group_by_video = {record.id: record.group_id for record in records}
     data_config = {"sampling_fps": 2.0, "window": 4.0, "stride": 2.0}
     captured = {"train_calls": []}
