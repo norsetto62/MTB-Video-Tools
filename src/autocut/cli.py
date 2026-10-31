@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Sequence
 from datetime import datetime
 
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "hpo", "models")
+COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-score-report", "lightgbm-lovo", "lightgbm-hpo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +29,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("annotations", type=Path, help="Annotation TXT file.")
     run.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     run.add_argument("--output", type=Path, help="Output video path (default: output/<annotations>_autocut.mp4).")
+    run.add_argument(
+        "--backend", choices=("pu", "lightgbm"), default="pu",
+        help="Inference backend: legacy P/U probabilities (default) or LightGBM LambdaRank scores.",
+    )
+    run.add_argument(
+        "--checkpoint", type=Path,
+        help="Override model checkpoint (for LightGBM use models/lightgbm/ranker.json).",
+    )
     run.add_argument(
         "--video-encoder",
         choices=("h264_nvenc", "libx264"),
@@ -61,9 +69,47 @@ def build_parser() -> argparse.ArgumentParser:
     # subparser option parsing consume or reject them.
     test.add_argument("pytest_args", nargs=argparse.REMAINDER)
 
-    lovo = subparsers.add_parser("lovo", help="Run leave-one-group-out evaluations.")
+    lovo = subparsers.add_parser("lovo", help="Run legacy P/U leave-one-group-out evaluations.")
     lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+
+    lightgbm_train = subparsers.add_parser(
+        "lightgbm-train",
+        help="Train one LightGBM ranking model on annotated windows.",
+    )
+    lightgbm_train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lightgbm_train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lightgbm_train.add_argument("--checkpoint", type=Path, help="Override the single-model checkpoint path.")
+
+    lightgbm_report = subparsers.add_parser(
+        "lightgbm-score-report",
+        help="Score every window and export per-video/global LightGBM ranking diagnostics.",
+    )
+    lightgbm_report.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lightgbm_report.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lightgbm_report.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
+    lightgbm_report.add_argument(
+        "--output", type=Path, default=Path("output/lightgbm_window_scores.csv"),
+        help="Primary global-score CSV path (companion video-range CSV is written beside it).",
+    )
+
+    lightgbm_lovo = subparsers.add_parser(
+        "lightgbm-lovo",
+        help="Train and validate a LightGBM ranking model by manifest group.",
+    )
+    lightgbm_lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lightgbm_lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lightgbm_lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
+
+    lightgbm_hpo = subparsers.add_parser(
+        "lightgbm-hpo",
+        help="Tune LightGBM ranking objective and hyperparameters with Optuna.",
+    )
+    lightgbm_hpo.add_argument(
+        "--config", type=Path, default=Path("config/train.yaml"),
+        help="Training and LightGBM HPO YAML configuration file",
+    )
+    lightgbm_hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
     models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
@@ -80,6 +126,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Training and HPO YAML configuration file"
     )
     hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    hpo.add_argument(
+        "--diagnose-trial",
+        type=int,
+        help="Export full-timeline selection diagnostics for an existing trial without running new trials or a production refit.",
+    )
+    hpo.add_argument(
+        "--diagnostics-output",
+        type=Path,
+        help="CSV output path for --diagnose-trial (default: output/hpo/<study>_trial_<N>_selection_diagnostics.csv).",
+    )
     
     return parser
 
@@ -196,12 +252,17 @@ def dispatch(args: argparse.Namespace) -> int:
         if not args.annotations.is_file():
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
-        result = run_pipeline(
-            args.annotations,
-            settings,
-            output_path=args.output,
-            video_encoder=args.video_encoder,
-        )
+        # Preserve the original call contract for the default P/U path.
+        # Besides avoiding needless kwargs, this keeps existing integrations
+        # and monkeypatched CLI tests backward-compatible.
+        run_kwargs = {
+            "output_path": args.output,
+            "video_encoder": args.video_encoder,
+        }
+        if args.backend != "pu" or args.checkpoint is not None:
+            run_kwargs["backend"] = args.backend
+            run_kwargs["checkpoint_path"] = args.checkpoint
+        result = run_pipeline(args.annotations, settings, **run_kwargs)
         print(json.dumps(result, indent=2, default=str))
         return 0
 
@@ -227,7 +288,91 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command in {"validate", "lovo", "hpo"}:
+    if args.command == "lightgbm-train":
+        from .config_loader import load_config
+        from .pipeline.lightgbm_training import run_lightgbm_train_from_manifest
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        result = run_lightgbm_train_from_manifest(
+            manifest,
+            settings,
+            checkpoint_path=args.checkpoint,
+        )
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if args.command == "lightgbm-score-report":
+        from .config_loader import load_config
+        from .pipeline.lightgbm_score_report import run_lightgbm_score_report
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        result = run_lightgbm_score_report(
+            manifest, settings, checkpoint_path=args.checkpoint, output_path=args.output
+        )
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if args.command == "lightgbm-lovo":
+        from .config_loader import load_config
+        from .pipeline.lightgbm_training import run_lightgbm_lovo_from_manifest
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        results = run_lightgbm_lovo_from_manifest(
+            manifest,
+            settings,
+            checkpoint_dir=args.checkpoint_dir,
+        )
+        print(json.dumps([
+            {
+                "held_out_group": result.held_out_group,
+                "train_video_ids": result.train_video_ids,
+                "validation_video_ids": result.validation_video_ids,
+                **result.summary,
+            }
+            for result in results
+        ], indent=2, default=str))
+        return 0
+
+    if args.command in {"validate", "lovo", "hpo", "lightgbm-hpo"}:
         from .config_loader import load_config
 
         settings = load_config(args.config)
@@ -244,7 +389,26 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
+        if args.command == "lightgbm-hpo":
+            from .pipeline.lightgbm_hpo import run_lightgbm_hpo
+
+            result = run_lightgbm_hpo(manifest, settings)
+            print(json.dumps(result, indent=2, default=str))
+            return 0
         if args.command == "hpo":
+            if args.diagnose_trial is not None:
+                from .pipeline.hpo import run_hpo_diagnostics
+
+                report_path = run_hpo_diagnostics(
+                    manifest,
+                    settings,
+                    trial_number=args.diagnose_trial,
+                    output_path=args.diagnostics_output,
+                )
+                print(f"Selection diagnostics written to: {report_path.resolve()}")
+                return 0
+            if args.diagnostics_output is not None:
+                raise ValueError("--diagnostics-output requires --diagnose-trial.")
             from .pipeline.hpo import run_hpo
 
             run_hpo(manifest, settings)

@@ -14,23 +14,20 @@ from ..config_loader import Config
 from ..audio.config import AudioConfig
 from ..selection.candidates_generation import CandidateGenerationConfig
 
-import cv2
 import numpy as np
 
 from ..annotations import load_annotations
 from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
-from ..dataset.feature_cache import load_feature_sequence, save_feature_sequence
 from ..dataset.windows import build_windows
+from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows, InferenceResult
+from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
 from ..ml.checkpoint import load_checkpoint, validate_checkpoint
-from ..motion.features import FeatureExtractor
-from ..motion.flow import calculate_optical_flow
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
 from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
-from ..video.reader import VideoReader
 from ..audio.pipeline import prepare_audio_timeline
 from ..audio.analysis import AudioAnalysis, analyze_audio
 
@@ -55,133 +52,57 @@ def _extract_windows(
     start: float,
     end: float,
     settings: Config,
+    *,
+    feature_names: list[str] | tuple[str, ...] | None = None,
 ) -> FeatureWindows | None:
-    """Load cached motion features or extract, cache, and window them."""
-    cache_dir = settings.paths.cache_dir / "features"
+    """Use the canonical dataset sequence builder, then construct windows."""
+    from ..dataset.sequence import build_feature_sequence
+
     cache_clip = Clip(
         video_name=str(video_path),
         start=float(start),
         end=float(end),
         mandatory=False,
     )
-    sequence = load_feature_sequence(
-        video_path,
-        cache_dir,
-        cache_clip,
-        sample_fps=settings.video.sampling_fps,
-        processing_width=settings.video.processing_width,
-    )
-
-    if sequence is not None:
-        logger.info(
-            "Feature cache HIT: %s [%.1f, %.1f]s (%d rows).",
-            video_path.name, start, end, len(sequence.timestamps),
+    try:
+        sequence = build_feature_sequence(
+            video_path,
+            cache_clip,
+            sample_fps=settings.video.sampling_fps,
+            processing_width=settings.video.processing_width,
+            cache_dir=feature_cache_dir(settings),
+            roi_left=settings.video.roi_left,
+            roi_right=settings.video.roi_right,
+            roi_bottom=settings.video.roi_bottom,
+            roi_top=settings.video.roi_top,
+            window_duration=settings.features.window_duration,
+            window_stride=settings.features.window_stride,
         )
-        # Cache timestamps are source-absolute; windows stay range-local.
+        # Dataset sequence timestamps are absolute; candidate windows are
+        # local to this processing range and translated back by the caller.
         sequence = FeatureSequence(
             features=sequence.features,
             timestamps=np.asarray(sequence.timestamps - start, dtype=np.float64),
         )
-    else:
-        logger.info(
-            "Feature cache MISS: %s [%.1f, %.1f]s; extracting motion features.",
-            video_path.name, start, end,
-        )
-        feature_rows: list[np.ndarray] = []
-        timestamps: list[float] = []
-        previous_gray: np.ndarray | None = None
-        extractor: FeatureExtractor | None = None
-        started = time.monotonic()
-        last_progress = started
-        frames_processed = 0
-        estimated_frames = max(1, int(round((end - start) * settings.video.sampling_fps)))
+        # Seven-signal checkpoints require the transform over the continuous
+        # sequence before overlapping windows are formed (especially Savitzky-Golay).
+        if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES):
+            transformed = engineer_motion_sequence(sequence.features)
+            from ..dataset.windows import build_windows_from_features
 
-        logger.info(
-            "Analysing %s range [%.1f, %.1f]s (%.1fs at %.2f sampled FPS).",
-            video_path, start, end, end - start, settings.video.sampling_fps,
-        )
-
-        with VideoReader(
-            video_path,
-            start=start,
-            duration=end - start,
-            sample_fps=settings.video.sampling_fps,
-        ) as reader:
-            for _frame_index, timestamp, frame in reader:
-                frames_processed += 1
-                height, width = frame.shape[:2]
-                target_width = min(width, settings.video.processing_width)
-                if target_width != width:
-                    target_height = max(2, int(round(height * target_width / width)))
-                    frame = cv2.resize(
-                        frame, (target_width, target_height),
-                        interpolation=cv2.INTER_AREA,
-                    )
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                if previous_gray is not None:
-                    if extractor is None:
-                        extractor = FeatureExtractor(gray.shape[1], gray.shape[0])
-                    flow = calculate_optical_flow(previous_gray, gray)
-                    feature_rows.append(extractor.extract_vector(flow))
-                    timestamps.append(float(timestamp))
-                previous_gray = gray
-
-                now = time.monotonic()
-                if frames_processed % 20 == 0 or now - last_progress >= 10.0:
-                    logger.info(
-                        "Motion analysis: %s — %d/%d sampled frames (%.0f%%), "
-                        "%.1fs elapsed.",
-                        video_path.name,
-                        frames_processed,
-                        estimated_frames,
-                        min(100.0, 100.0 * frames_processed / estimated_frames),
-                        now - started,
-                    )
-                    last_progress = now
-
-        logger.info(
-            "Motion analysis finished for %s: %d sampled frames, "
-            "%d motion-feature rows in %.1fs.",
-            video_path.name, frames_processed, len(feature_rows),
-            time.monotonic() - started,
-        )
-
-        if len(feature_rows) < 2:
-            logger.info(
-                "Skipping candidate inference for short range %s [%.3f, %.3f): "
-                "not enough sampled frames.",
-                video_path, start, end,
+            return build_windows_from_features(
+                transformed,
+                sequence.timestamps,
+                window=settings.features.window_duration,
+                stride=settings.features.window_stride,
             )
-            return None
-
-        sequence = FeatureSequence(
-            features=np.asarray(feature_rows, dtype=np.float32),
-            timestamps=np.asarray(timestamps, dtype=np.float64),
-        )
-        cached_sequence = FeatureSequence(
-            features=sequence.features,
-            timestamps=np.asarray(sequence.timestamps + start, dtype=np.float64),
-        )
-        cache_path = save_feature_sequence(
-            cached_sequence,
-            video_path,
-            cache_dir,
-            cache_clip,
-            sample_fps=settings.video.sampling_fps,
-            processing_width=settings.video.processing_width,
-        )
-        logger.info("Feature cache SAVED: %s", cache_path)
-
-    try:
         return build_windows(
             sequence,
             window=settings.features.window_duration,
             stride=settings.features.window_stride,
         )
     except ValueError as exc:
-        # A short processing range is not fatal: mandatory clips are still
-        # retained by the timeline stage.
-        if len(sequence.timestamps) * (1.0 / settings.video.sampling_fps) < settings.features.window_duration:
+        if end - start < settings.features.window_duration:
             logger.info(
                 "Skipping candidate inference for short range %s [%.3f, %.3f): %s",
                 video_path, start, end, exc,
@@ -197,18 +118,13 @@ def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
         start=candidate.start + offset,
         end=candidate.end + offset,
         duration=candidate.duration,
-        tier=candidate.tier,
-        mean_score=candidate.mean_score,
-        max_score=candidate.max_score,
+        mean_probability=candidate.mean_probability,
+        max_probability=candidate.max_probability,
         window_evidence=tuple(
             WindowEvidence(
                 start=window.start + offset,
                 end=window.end + offset,
-                score=window.score,
-                tier=window.tier,
-                p0=window.p0,
-                p1=window.p1,
-                p2=window.p2,
+                probability=window.probability,
             )
             for window in candidate.window_evidence
         ),
@@ -228,21 +144,21 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
 
     defaults = {
         "paths": {"data_dir": "data", "models_dir": "models", "output_dir": "output", "cache_dir": "data/cache"},
-        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
+        "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc", "resolution": "2.7k",
+                   "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
         "selection": {
-            "min_clip": 3.0, "max_clip_duration": 0.0, "class_score_weights": [0.0, 1.0, 2.5],
-            "junk_threshold": 0.20, "action_threshold": 0.60, "flow_threshold": 0.40,
+            "min_clip": 3.0, "max_clip_duration": 0.0,
             "min_candidate_duration": 3.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0,
-            "p2_envelope_decay": 0.0,
+            "positive_threshold": 0.5,
         },
         "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0},
         "logging": {"level": "INFO"},
     }
     allowed_keys = {
         "paths": {"data_dir", "models_dir", "output_dir", "cache_dir"},
-        "video": {"sampling_fps", "processing_width", "encoder"},
+        "video": {"sampling_fps", "processing_width", "encoder", "resolution", "roi_left", "roi_right", "roi_bottom", "roi_top"},
         "features": {"window_duration", "window_stride"},
         "model": {"checkpoint", "inference_batch_size"},
         "selection": set(defaults["selection"]),
@@ -287,6 +203,11 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         "selection", "max_clip_duration", minimum=0.0
     )
 
+    from ..dataset.sequence import validate_roi
+    roi = validate_roi(raw["video"]["roi_left"], raw["video"]["roi_right"], raw["video"]["roi_bottom"], raw["video"]["roi_top"])
+    for key, value in zip(("roi_left", "roi_right", "roi_bottom", "roi_top"), roi):
+        raw["video"][key] = value
+
     width = raw["video"]["processing_width"]
     if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
         raise ValueError("video.processing_width must be a positive integer.")
@@ -295,19 +216,19 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
         raise ValueError("model.inference_batch_size must be a positive integer.")
     if raw["video"]["encoder"] not in {"h264_nvenc", "libx264"}:
         raise ValueError("video.encoder must be h264_nvenc or libx264.")
+    if raw["video"]["resolution"] not in {"4k", "2.7k", "1080p"}:
+        raise ValueError("video.resolution must be one of 4k, 2.7k, or 1080p.")
     level = raw["logging"]["level"]
     if not isinstance(level, str) or level.upper() not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}:
         raise ValueError("logging.level must be a standard Python logging level.")
 
     candidate_fields = {
-        "class_score_weights", "junk_threshold", "action_threshold", "flow_threshold",
-        "min_candidate_duration", "max_gap_to_merge", "padding_seconds", "p2_envelope_decay",
+        "min_candidate_duration", "max_gap_to_merge", "padding_seconds", "positive_threshold",
     }
     candidate_values = {
         key: value for key, value in raw["selection"].items() if key in candidate_fields
     }
-    if isinstance(candidate_values.get("class_score_weights"), list):
-        candidate_values["class_score_weights"] = tuple(candidate_values["class_score_weights"])
+    
     # min_clip is the sole final candidate-duration filter.
     candidate_values["min_candidate_duration"] = raw["selection"]["min_clip"]
     candidate_config = CandidateGenerationConfig(**candidate_values)
@@ -325,6 +246,7 @@ def _config_summary(
         "sample_fps": settings.video.sampling_fps,
         "processing_width": settings.video.processing_width,
         "video_encoder": settings.video.encoder,
+        "video_resolution": settings.video.resolution,
         "window_duration": settings.features.window_duration,
         "window_stride": settings.features.window_stride,
         "checkpoint": str(settings.model.checkpoint),
@@ -345,6 +267,8 @@ def run_pipeline(
     *,
     output_path: str | Path | None = None,
     video_encoder: str | None = None,
+    backend: str = "pu",
+    checkpoint_path: str | Path | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
 
@@ -353,6 +277,10 @@ def run_pipeline(
     or synchronized. The returned dictionary is also written as a result JSON.
     """
     settings, candidate_config, audio_config = _run_config_sections(settings)
+    if backend not in {"pu", "lightgbm"}:
+        raise ValueError("backend must be 'pu' or 'lightgbm'.")
+    if checkpoint_path is not None:
+        settings = settings.with_overrides({"model.checkpoint": Path(checkpoint_path).expanduser()})
     annotation = Path(annotation_path)
     if not annotation.is_file():
         raise FileNotFoundError(f"Annotation file not found: {annotation}")
@@ -414,7 +342,7 @@ def run_pipeline(
         try:
             audio_analysis = analyze_audio(
                 music_directive.path,
-                cache_dir=settings.paths.cache_dir / "audio",
+                cache_dir=audio_cache_dir(settings),
             )
         except Exception as exc:
             logger.warning(
@@ -428,7 +356,52 @@ def run_pipeline(
 
     all_candidates: list[SelectionCandidate] = []
     inference_summaries: list[dict] = []
-    logger.info("Starting motion analysis and model inference.")
+    logger.info("Starting motion analysis and model inference using backend=%s.", backend)
+
+    lightgbm_payload = None
+    lightgbm_ranker = None
+    lightgbm_params = None
+    lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+    lightgbm_range_orders: dict[str, list[tuple[float, float, int]]] = {}
+    if backend == "lightgbm":
+        from ..ml.checkpoint import load_lightgbm_checkpoint
+        from ..ml.model import LightGBMRanker
+        from ..dataset.sequence import (
+            DEFAULT_PROCESSING_WIDTH, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_LEFT,
+            DEFAULT_ROI_RIGHT, DEFAULT_ROI_TOP, DEFAULT_SAMPLE_FPS, validate_roi,
+        )
+        from ..dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+        checkpoint_payload = load_lightgbm_checkpoint(settings.model.checkpoint)
+        if checkpoint_payload.get("model_class") != "LightGBMRanker":
+            raise ValueError(f"Expected LightGBMRanker checkpoint, got {checkpoint_payload.get('model_class')!r}.")
+        if checkpoint_payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+            raise ValueError("LightGBM checkpoint feature schema does not match current window preparation.")
+        saved = checkpoint_payload.get("data_config", {})
+        if not isinstance(saved, Mapping):
+            raise ValueError("LightGBM checkpoint data_config must be a mapping.")
+        def saved_or(key, fallback):
+            return saved.get(key, fallback)
+        roi = validate_roi(
+            saved_or("roi_left", settings.video.roi_left),
+            saved_or("roi_right", settings.video.roi_right),
+            saved_or("roi_bottom", settings.video.roi_bottom),
+            saved_or("roi_top", settings.video.roi_top),
+        )
+        lightgbm_params = {
+            "sampling_fps": float(saved_or("sampling_fps", settings.video.sampling_fps or DEFAULT_SAMPLE_FPS)),
+            "processing_width": int(saved_or("processing_width", settings.video.processing_width or DEFAULT_PROCESSING_WIDTH)),
+            "window": float(saved_or("window", saved_or("window_duration", settings.features.window_duration))),
+            "stride": float(saved_or("stride", saved_or("window_stride", settings.features.window_stride))),
+            "roi_left": roi[0], "roi_right": roi[1], "roi_bottom": roi[2], "roi_top": roi[3],
+        }
+        if (not math.isfinite(lightgbm_params["sampling_fps"]) or lightgbm_params["sampling_fps"] <= 0
+            or lightgbm_params["processing_width"] <= 0
+            or not math.isfinite(lightgbm_params["window"]) or lightgbm_params["window"] <= 0
+            or not math.isfinite(lightgbm_params["stride"]) or lightgbm_params["stride"] <= 0):
+            raise ValueError("LightGBM checkpoint has invalid preprocessing metadata.")
+        lightgbm_ranker = LightGBMRanker(
+            checkpoint_payload["_booster"], feature_names=tuple(checkpoint_payload["feature_names"])
+        )
 
     # Process each annotation interval independently. This retains the
     # manifest row identity throughout inference and candidate generation;
@@ -459,7 +432,71 @@ def run_pipeline(
             })
             continue
         order = video_order[video_name]
-        windows = _extract_windows(Path(video_name), start, end, settings)
+        if backend == "lightgbm":
+            from ..dataset.sequence import build_feature_sequence
+            from ..dataset.normalization import normalize_per_video_features
+            from ..dataset.windows import build_lightgbm_windows_from_features
+            from ..motion.engineered import engineer_lightgbm_sequence
+            from ..selection.lightgbm_candidates import select_ranked_segments
+            sequence_clip = Clip(video_name=video_name, start=start, end=end, mandatory=False)
+            sequence = build_feature_sequence(
+                Path(video_name), sequence_clip,
+                sample_fps=lightgbm_params["sampling_fps"],
+                processing_width=lightgbm_params["processing_width"],
+                cache_dir=feature_cache_dir(settings),
+                roi_left=lightgbm_params["roi_left"], roi_right=lightgbm_params["roi_right"],
+                roi_bottom=lightgbm_params["roi_bottom"], roi_top=lightgbm_params["roi_top"],
+                window_duration=lightgbm_params["window"],
+                window_stride=lightgbm_params["stride"],
+            )
+            signals = engineer_lightgbm_sequence(sequence.features)
+            windows = build_lightgbm_windows_from_features(
+                signals, sequence.timestamps, window=lightgbm_params["window"], stride=lightgbm_params["stride"]
+            )
+            normalized = normalize_per_video_features(windows.X)
+            scores = lightgbm_ranker.predict(normalized)
+            lightgbm_windows_by_video.setdefault(video_name, []).append((
+                np.asarray(windows.timestamps, dtype=np.float64),
+                np.asarray(scores, dtype=np.float64),
+            ))
+            lightgbm_range_orders.setdefault(video_name, []).append((start, end, annotation_order))
+            logger.info(
+                "LightGBM annotation #%d: scored %d window(s); pooling by video before top-10 selection.",
+                annotation_order, len(scores),
+            )
+            inference_summaries.append({
+                "video": video_name, "annotation_order": annotation_order,
+                "range_start": start, "range_end": end,
+                "window_count": len(scores), "candidate_count": 0,
+                "status": "scored_lightgbm",
+                "score_semantics": "raw LambdaRank score",
+            })
+            continue
+
+        if isinstance(settings.model.checkpoint, (str, Path)):
+            payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
+        elif isinstance(settings.model.checkpoint, Mapping):
+            payload = validate_checkpoint(dict(settings.model.checkpoint))
+        else:
+            raise TypeError("checkpoint must be a path or a checkpoint mapping.")
+        data_config = payload.get("data_config", {})
+        checkpoint_feature_names = payload.get("feature_names")
+        trained_roi = data_config.get("roi") if isinstance(data_config, Mapping) else None
+        if not isinstance(trained_roi, Mapping):
+            raise ValueError(
+                "Checkpoint has no ROI metadata. Retrain the model with the current "
+                "ROI-aware feature pipeline before inference."
+            )
+        settings = settings.with_overrides({
+            "data.roi_left": trained_roi["left"],
+            "data.roi_right": trained_roi["right"],
+            "data.roi_bottom": trained_roi["bottom"],
+            "data.roi_top": trained_roi["top"],
+        })
+        windows = _extract_windows(
+            Path(video_name), start, end, settings,
+            feature_names=checkpoint_feature_names,
+        )
         if windows is None:
             inference_summaries.append({
                 "video": video_name,
@@ -482,38 +519,9 @@ def run_pipeline(
             windows,
             batch_size=settings.model.inference_batch_size,
         )
-        probabilities = inference.probabilities  # shape: [N, 3]
-
-        if isinstance(settings.model.checkpoint, (str, Path)):
-            payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
-        elif isinstance(settings.model.checkpoint, Mapping):
-            payload = validate_checkpoint(dict(settings.model.checkpoint))
-        else:
-            raise TypeError("checkpoint must be a path or a checkpoint mapping.")
-
-        c2_threshold = float(payload.get("c2_threshold", 0.50))
-
-        #c2_threshold filtering
-        # Copy so we don't mutate in place unexpectedly
-        probabilities = probabilities.copy()
-        c2_probs = probabilities[:, 2]
-
-        # If Class 2 probability is below the threshold, suppress it
-        # (e.g., redistribute or shift weight so it doesn't win argmax/envelope)
-        below_threshold = c2_probs < c2_threshold
-
-        # For windows where p2 fails the threshold, force p2 to 0 
-        # (or reallocate its mass so classes 0/1 take over)
-        probabilities[below_threshold, 2] = 0.0
-
-        # Renormalize rows so probabilities still sum to 1.0
-        row_sums = probabilities.sum(axis=1, keepdims=True)
-        probabilities = probabilities / np.where(row_sums == 0, 1.0, row_sums)
-
-        # Wrap back into InferenceResult and pass to candidates
         cleaned_inference = InferenceResult(
             timestamps=inference.timestamps,
-            probabilities=probabilities,
+            probabilities=inference.probabilities,
         )
         candidates = generate_candidates(
             cleaned_inference,
@@ -542,6 +550,62 @@ def run_pipeline(
             )
             for candidate in candidates
         )
+
+    if backend == "lightgbm":
+        from ..selection.lightgbm_candidates import select_ranked_segments
+        from ..selection.candidates_generation import CandidateClip, WindowEvidence
+        for video_name, batches in lightgbm_windows_by_video.items():
+            timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
+            scores = np.concatenate([batch[1] for batch in batches], axis=0)
+            # Annotation ranges can overlap; deduplicate identical source windows
+            # before ranking so the same evidence cannot count twice.
+            unique: dict[tuple[float, float], float] = {}
+            for (window_start, window_end), score in zip(timestamps, scores):
+                key = (round(float(window_start), 6), round(float(window_end), 6))
+                unique[key] = max(float(score), unique.get(key, -math.inf))
+            ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
+            timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
+            scores = np.asarray([score for _, score in ordered], dtype=np.float64)
+            segments = select_ranked_segments(timestamps, scores, top_k=10, max_gap_seconds=2.0)
+            range_orders = lightgbm_range_orders[video_name]
+            order = video_order[video_name]
+            for segment in segments:
+                if segment.duration_seconds + 1e-9 < settings.selection.min_clip:
+                    continue
+                evidence = tuple(
+                    WindowEvidence(
+                        start=float(timestamps[i, 0]), end=float(timestamps[i, 1]),
+                        probability=float(scores[i]),
+                    )
+                    for i in segment.window_indices
+                )
+                candidate = CandidateClip(
+                    start=segment.start, end=segment.end,
+                    duration=segment.duration_seconds,
+                    mean_probability=segment.mean_score, max_probability=segment.max_score,
+                    window_evidence=evidence,
+                )
+                matching_orders = [
+                    annotation_order for range_start, range_end, annotation_order in range_orders
+                    if range_start < segment.end and segment.start < range_end
+                ]
+                annotation_order = min(matching_orders) if matching_orders else None
+                all_candidates.append(SelectionCandidate(
+                    video_name=video_name, video_order=order,
+                    candidate=candidate, annotation_order=annotation_order,
+                ))
+            video_summaries = [item for item in inference_summaries if item["video"] == video_name]
+            total_candidates = sum(
+                1 for candidate in all_candidates
+                if candidate.video_name == video_name
+            )
+            for summary in video_summaries:
+                summary["candidate_count"] = total_candidates
+                summary["video_top_windows"] = min(10, len(scores))
+            logger.info(
+                "LightGBM video %s: %d unique windows, %d top-window merged candidate(s).",
+                Path(video_name).name, len(scores), total_candidates,
+            )
 
     mandatory = tuple(
         MandatoryClip(
@@ -586,7 +650,7 @@ def run_pipeline(
             timeline,
             music_directive.path,
             config=audio_config,
-            cache_dir=settings.paths.cache_dir / "audio",
+            cache_dir=audio_cache_dir(settings),
             analysis=audio_analysis,
         )
 
@@ -596,6 +660,7 @@ def run_pipeline(
         render_result = render_timeline(
             timeline, destination,
             video_encoder=video_encoder or settings.video.encoder,
+            video_resolution=settings.video.resolution,
         )
     else:
         render_result = render_with_music(
@@ -605,12 +670,49 @@ def run_pipeline(
             config=audio_config,
             mix_original_audio=music_directive.mix,
             video_encoder=(video_encoder or settings.video.encoder),
+            video_resolution=settings.video.resolution,
         )
 
     result_path = destination.with_name(f"{destination.stem}_result.json")
+    ranked_candidate_rows = sorted(
+        all_candidates,
+        key=lambda item: (
+            -item.score,
+            -len(item.window_evidence),
+            -item.mean_score,
+            -item.duration,
+            item.video_order,
+            item.start,
+            item.video_name,
+            item.annotation_order if item.annotation_order is not None else -1,
+        ),
+    )
     result = {
         "schema_version": 1,
         "status": "completed",
+        "model_backend": backend,
+        "candidate_ranking": {
+            "score_semantics": (
+                "raw LambdaRank score; not a probability"
+                if backend == "lightgbm"
+                else "P/U positive probability"
+            ),
+            "order": ["max_score desc", "window_count desc", "mean_score desc", "duration_seconds desc"],
+            "candidates": [
+                {
+                    "rank": rank,
+                    "video": item.video_name,
+                    "annotation_order": item.annotation_order,
+                    "start_seconds": round(item.start, 3),
+                    "end_seconds": round(item.end, 3),
+                    "duration_seconds": round(item.duration, 3),
+                    "max_score": item.score,
+                    "window_count": len(item.window_evidence),
+                    "mean_score": item.mean_score,
+                }
+                for rank, item in enumerate(ranked_candidate_rows, start=1)
+            ],
+        },
         "annotation_manifest": str(annotation.resolve()),
         "checkpoint": str(settings.model.checkpoint.resolve()),
         "configuration": _config_summary(settings, candidate_config, audio_config),

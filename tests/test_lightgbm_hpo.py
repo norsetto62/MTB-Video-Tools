@@ -1,0 +1,80 @@
+"""Tests for LightGBM ranking HPO objective selection."""
+import pytest
+
+from autocut.config_loader import Config
+from autocut.ml.model import LightGBMConfig
+from autocut.pipeline.lightgbm_hpo import _suggest, _validated_search_space
+
+
+def test_lightgbm_config_accepts_both_ranking_objectives():
+    assert LightGBMConfig(objective="lambdarank").objective == "lambdarank"
+    assert LightGBMConfig(objective="rank_xendcg").objective == "rank_xendcg"
+
+
+def test_lightgbm_config_rejects_non_ranking_objective():
+    with pytest.raises(ValueError, match="rank_xendcg"):
+        LightGBMConfig(objective="multiclass")
+
+
+def test_hpo_search_space_includes_both_objectives_by_default():
+    space = _validated_search_space(Config({}))
+    assert space["objective"]["choices"] == ["lambdarank", "rank_xendcg"]
+    assert "learning_rate" in space
+    assert "num_leaves" in space
+
+
+def test_hpo_search_space_requires_both_objective_choices():
+    settings = Config({
+        "lightgbm_hpo": {
+            "search_space": {
+                "objective": {"choices": ["lambdarank"]},
+            }
+        }
+    })
+    with pytest.raises(ValueError, match="exactly these choices"):
+        _validated_search_space(settings)
+
+
+def test_suggest_uses_categorical_objective():
+    class Trial:
+        def __init__(self):
+            self.calls = []
+
+        def suggest_categorical(self, name, choices):
+            self.calls.append((name, choices))
+            return "rank_xendcg"
+
+    trial = Trial()
+    params = _suggest(trial, {"objective": {"choices": ["lambdarank", "rank_xendcg"]}})
+    assert params == {"objective": "rank_xendcg"}
+    assert trial.calls == [("objective", ["lambdarank", "rank_xendcg"])]
+
+
+def test_hpo_custom_search_space_overrides_without_dropping_defaults():
+    settings = Config({
+        "lightgbm_hpo": {
+            "search_space": {
+                "learning_rate": {"low": 0.02, "high": 0.04},
+            }
+        }
+    })
+    space = _validated_search_space(settings)
+    assert space["learning_rate"] == {"low": 0.02, "high": 0.04, "log": False}
+    assert space["objective"]["choices"] == ["lambdarank", "rank_xendcg"]
+    assert "num_leaves" in space
+
+
+
+def test_hpo_search_space_accepts_scalar_fixed_values_and_aliases():
+    settings = Config({
+        "lightgbm_hpo": {
+            "search_space": {
+                "bagging_freq": 1,
+                "reg_alpha": 0.25,
+            }
+        }
+    })
+    space = _validated_search_space(settings)
+    assert space["bagging_frequency"] == {"fixed": 1}
+    assert space["lambda_l1"] == {"fixed": 0.25}
+    assert "bagging_freq" not in space

@@ -95,7 +95,7 @@ class FeatureWindows:
     """Fixed-size temporal windows extracted from a feature sequence.
 
     Attributes:
-        X: Windowed feature matrix with shape (N, T, F).
+        X: Temporal windows with shape (N, T, F), or tabular rows with shape (N, F).
         timestamps: Window start/end times with shape (N, 2).
     """
 

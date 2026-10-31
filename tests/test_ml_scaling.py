@@ -159,3 +159,33 @@ def test_disabled_scaler_state_round_trip():
 def test_from_state_dict_rejects_invalid_state(state):
     with pytest.raises(ValueError):
         FeatureScaler.from_state_dict(state)
+
+
+
+def test_robust_scaler_uses_median_and_iqr_instead_of_outlier_inflated_std():
+    X = np.array([[0.0], [1.0], [2.0], [3.0], [10000.0]], dtype=np.float32)
+    robust = FeatureScaler(strategy="robust").fit(X)
+    standard = FeatureScaler(strategy="standard").fit(X)
+
+    assert robust.mean_[0] == pytest.approx(2.0)
+    assert robust.scale_[0] == pytest.approx(2.0)
+    assert standard.scale_[0] > 1000.0
+    normal_values = np.array([[2.0], [3.0]], dtype=np.float32)
+    robust_gap = np.diff(robust.transform(normal_values)[:, 0])[0]
+    standard_gap = np.diff(standard.transform(normal_values)[:, 0])[0]
+    assert robust_gap == pytest.approx(0.5)
+    assert standard_gap < 0.001
+
+
+def test_robust_scaler_state_round_trip_preserves_strategy_and_transform():
+    X = np.array([[0.0, 2.0], [1.0, 3.0], [2.0, 100.0]], dtype=np.float32)
+    scaler = FeatureScaler(strategy="robust").fit(X)
+    restored = FeatureScaler.from_state_dict(scaler.state_dict())
+
+    assert restored.strategy == "robust"
+    np.testing.assert_array_equal(restored.transform(X), scaler.transform(X))
+
+
+def test_scaler_rejects_unknown_strategy():
+    with pytest.raises(ValueError, match="strategy"):
+        FeatureScaler(strategy="quantile")

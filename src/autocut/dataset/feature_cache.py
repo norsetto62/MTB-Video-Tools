@@ -23,7 +23,7 @@ from ..motion.flow import DEFAULT_FARNEBACK, FarnebackConfig
 
 logger = logging.getLogger(__name__)
 
-FEATURE_CACHE_VERSION = 2
+FEATURE_CACHE_VERSION = 3
 FEATURE_SCHEMA_VERSION = 1
 _ARRAY_FORMAT_VERSION = 1
 
@@ -72,6 +72,10 @@ def _identity(
     sample_fps: float,
     processing_width: int,
     flow_config: FarnebackConfig,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> tuple[dict[str, Any], str]:
     source = Path(video_path).expanduser().resolve()
@@ -90,6 +94,7 @@ def _identity(
         "clip": {"start": float(clip.start), "end": float(clip.end)},
         "sample_fps": float(sample_fps),
         "processing_width": int(processing_width),
+        "roi": {"left": float(roi_left), "right": float(roi_right), "bottom": float(roi_bottom), "top": float(roi_top)},
         "flow_config": _config_payload(flow_config),
     }
     if source_fingerprint_mode == "sha256":
@@ -107,12 +112,17 @@ def feature_cache_path(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> Path:
     """Return the deterministic cache path; metadata fingerprinting is the default."""
     _, key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
+        roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
         source_fingerprint_mode=source_fingerprint_mode,
     )
     return Path(cache_dir) / f"{key}.npz"
@@ -137,6 +147,10 @@ def save_feature_sequence(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> Path:
     """Write a feature sequence and metadata via an atomic file replacement."""
@@ -145,6 +159,7 @@ def save_feature_sequence(
     metadata, identity_key = _identity(
         video_path, clip, sample_fps=sample_fps,
         processing_width=processing_width, flow_config=flow_config,
+        roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
         source_fingerprint_mode=source_fingerprint_mode,
     )
     features = np.asarray(sequence.features)
@@ -173,6 +188,16 @@ def save_feature_sequence(
         except OSError:
             pass
         raise
+
+    # Keep the catalog synchronized with every successful cache write. Catalog
+    # failures must not invalidate an atomically-written NPZ; lookup can rebuild
+    # the entry on the next read.
+    try:
+        from .cache_catalog import index_cache_file
+
+        index_cache_file(target.parent, target)
+    except Exception as exc:  # catalog is a rebuildable optimization
+        logger.warning("Could not index feature cache %s: %s", target, exc)
     return target
 
 
@@ -204,6 +229,106 @@ def _validate_arrays(
         raise ValueError("cached timestamps must lie within the clip interval.")
 
 
+def _read_valid_cache(
+    path: Path,
+    *,
+    expected_common: dict[str, Any],
+    requested_clip: Clip,
+    sample_fps: float,
+    source_sha256: str | None,
+    window_duration: float | None = None,
+    window_stride: float | None = None,
+) -> FeatureSequence | None:
+    """Read, integrity-check and temporally slice one compatible NPZ."""
+    try:
+        with np.load(path, allow_pickle=False) as archive:
+            if set(archive.files) != {"metadata", "features", "timestamps"}:
+                return None
+            raw = archive["metadata"]
+            if raw.shape != ():
+                return None
+            metadata = json.loads(str(raw.item()))
+            features = np.array(archive["features"], copy=True)
+            timestamps = np.array(archive["timestamps"], copy=True)
+        if not isinstance(metadata, dict):
+            return None
+        digest = metadata.pop("features_sha256", None)
+        if not isinstance(digest, str) or _array_digest(features, timestamps) != digest:
+            return None
+        if any(metadata.get(key) != value for key, value in expected_common.items()):
+            return None
+        mode = metadata.get("source_fingerprint_mode")
+        if mode == "sha256":
+            if source_sha256 is None or metadata.get("source_sha256") != source_sha256:
+                return None
+        elif mode != "metadata":
+            return None
+        _validate_arrays(features, timestamps)
+        stored_clip = metadata.get("clip")
+        if not isinstance(stored_clip, dict):
+            return None
+        stored_start = float(stored_clip["start"])
+        stored_end = float(stored_clip["end"])
+        tolerance = 1e-6
+        if stored_start > requested_clip.start + tolerance:
+            return None
+
+        # A windowed inference consumer does not need feature samples in the
+        # trailing partial window. Permit a shorter cached interval only when
+        # it still contains every sample required by the final complete window.
+        required_end = requested_clip.end
+        if window_duration is not None or window_stride is not None:
+            if window_duration is None or window_stride is None:
+                return None
+            duration = requested_clip.end - requested_clip.start
+            if duration < window_duration - tolerance:
+                return None
+            last_window_index = int(np.floor(
+                (duration - window_duration + tolerance) / window_stride
+            ))
+            required_end = (
+                requested_clip.start
+                + last_window_index * window_stride
+                + window_duration
+            )
+        if stored_end < required_end - tolerance:
+            return None
+
+        # VideoReader's feature timestamps are start + n/fps, n >= 1.
+        # Reuse is safe only when the requested interval starts on the
+        # cached sampling lattice; otherwise a fresh decode has a different
+        # sampling phase and the cached rows are not equivalent.
+        step = 1.0 / sample_fps
+        phase = (requested_clip.start - stored_start) / step
+        if abs(phase - round(phase)) > tolerance:
+            return None
+        mask = (
+            (timestamps > requested_clip.start + tolerance)
+            & (timestamps < requested_clip.end - tolerance)
+        )
+        selected_features = features[mask]
+        selected_timestamps = timestamps[mask]
+        if selected_features.shape[0] < 2:
+            return None
+        expected_first = requested_clip.start + step
+        if abs(float(selected_timestamps[0]) - expected_first) > tolerance:
+            return None
+        if not np.allclose(np.diff(selected_timestamps), step, rtol=0.0, atol=tolerance):
+            return None
+        # Feature timestamps mark the sampled frame at the end of each
+        # optical-flow pair. For a half-open interval ending at required_end,
+        # the final required feature timestamp is one sampling step earlier.
+        required_last_timestamp = required_end - step
+        if float(selected_timestamps[-1]) < required_last_timestamp - tolerance:
+            return None
+        return FeatureSequence(
+            features=np.asarray(selected_features, dtype=np.float32),
+            timestamps=np.asarray(selected_timestamps, dtype=np.float64),
+        )
+    except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError):
+        return None
+
+
 def load_feature_sequence(
     video_path: str | Path,
     cache_dir: str | Path,
@@ -212,36 +337,81 @@ def load_feature_sequence(
     sample_fps: float = 2.0,
     processing_width: int = 480,
     flow_config: FarnebackConfig = DEFAULT_FARNEBACK,
+    roi_left: float = 0.15,
+    roi_right: float = 0.85,
+    roi_bottom: float = 0.50,
+    roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
+    window_duration: float | None = None,
+    window_stride: float | None = None,
 ) -> FeatureSequence | None:
-    """Load a compatible cache entry; missing, stale, or corrupt entries are misses."""
+    """Load an exact or temporally covering compatible cache entry.
+
+    Exact identity is checked first. If absent, catalog candidates for the
+    same source video are validated and sliced to the requested interval.
+    """
     try:
         expected, key = _identity(
             video_path, clip, sample_fps=sample_fps,
             processing_width=processing_width, flow_config=flow_config,
+            roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
             source_fingerprint_mode=source_fingerprint_mode,
         )
-        target = Path(cache_dir) / f"{key}.npz"
-        with np.load(target, allow_pickle=False) as archive:
-            if set(archive.files) != {"metadata", "features", "timestamps"}:
-                return None
-            raw_metadata = archive["metadata"]
-            if raw_metadata.shape != ():
-                return None
-            metadata = json.loads(str(raw_metadata.item()))
-            features = archive["features"]
-            timestamps = archive["timestamps"]
-        if not isinstance(metadata, dict):
-            return None
-        digest = metadata.pop("features_sha256", None)
-        if metadata != expected or not isinstance(digest, str):
-            return None
-        _validate_arrays(features, timestamps, clip=clip)
-        if _array_digest(features, timestamps) != digest:
-            return None
-        return FeatureSequence(
-            features=np.array(features, dtype=np.float32, copy=True),
-            timestamps=np.array(timestamps, dtype=np.float64, copy=True),
-        )
-    except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError):
+        common = {name: value for name, value in expected.items() if name != "clip"}
+        source = Path(video_path).expanduser().resolve()
+        stat = source.stat()
+        common["source_path"] = str(source)
+        common["source_size_bytes"] = stat.st_size
+        common["source_mtime_ns"] = stat.st_mtime_ns
+        exact_path = Path(cache_dir) / f"{key}.npz"
+
+        from .cache_catalog import find_cache_candidates, index_cache_file, lookup_cache_file
+
+        candidates: list[Path] = []
+        if exact_path.is_file():
+            lookup_cache_file(cache_dir, exact_path)
+            candidates.append(exact_path)
+        for candidate in find_cache_candidates(cache_dir, source_path=source):
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        # A SHA-256 source fingerprint is computed only if at least one
+        # candidate actually uses that mode.
+        source_sha256 = None
+        for candidate in candidates:
+            try:
+                with np.load(candidate, allow_pickle=False) as archive:
+                    raw = archive["metadata"]
+                    if raw.shape == ():
+                        metadata = json.loads(str(raw.item()))
+                        if metadata.get("source_fingerprint_mode") == "sha256":
+                            source_sha256 = source_file_hash(source)
+                            break
+            except (OSError, ValueError, KeyError, EOFError, json.JSONDecodeError):
+                continue
+
+        for candidate in candidates:
+            result = _read_valid_cache(
+                candidate,
+                expected_common=common,
+                requested_clip=clip,
+                sample_fps=sample_fps,
+                source_sha256=source_sha256,
+                window_duration=window_duration,
+                window_stride=window_stride,
+            )
+            if result is not None:
+                if candidate != exact_path:
+                    logger.info(
+                        "Reusing covering feature cache %s for interval [%.3f, %.3f]",
+                        candidate, clip.start, clip.end,
+                    )
+                try:
+                    index_cache_file(cache_dir, candidate)
+                except Exception as exc:
+                    logger.warning("Could not refresh cache catalog for %s: %s", candidate, exc)
+                return result
+        return None
+    except (OSError, ValueError, TypeError) as exc:
+        logger.warning("Feature cache miss: could not validate cache entry for %s: %s", video_path, exc)
         return None

@@ -1,7 +1,6 @@
 """Window-level inference for trained AutoCut MTB-interest models.
 
-Inference returns the model's three class probabilities for each input window,
-along with the window timestamps. It does not classify windows with argmax,
+Inference returns one P probability for each input window, along with timestamps. It does not classify windows with argmax,
 apply candidate-selection thresholds, or merge/select segments.
 """
 
@@ -14,10 +13,12 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from autocut.data_models import FeatureWindows
+from autocut.data_models import FeatureSequence, FeatureWindows
 from autocut.ml.checkpoint import load_checkpoint, restore_model, validate_checkpoint
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
+from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, engineer_motion_features, engineer_motion_sequence
+from autocut.dataset.windows import build_windows_from_features
 
 
 @dataclass(frozen=True)
@@ -26,8 +27,7 @@ class InferenceResult:
 
     Attributes:
         timestamps: Window start/end times in seconds, shape (N, 2).
-        probabilities: Class probabilities in class-ID order (0, 1, 2),
-            shape (N, 3). Each row sums to approximately one.
+        probabilities: Probability of membership in P, shape (N,).
     """
 
     timestamps: np.ndarray
@@ -41,19 +41,19 @@ def infer_windows(
     batch_size: int = 256,
     device: str | torch.device = "cpu",
 ) -> InferenceResult:
-    """Predict class probabilities for precomputed feature windows.
+    """Predict P probabilities for precomputed feature windows.
 
     Args:
         checkpoint: Path to a saved AutoCut checkpoint, or an already-loaded
             checkpoint payload.
         windows: FeatureWindows produced by AutoCut's window builder. Input
-            features must use the canonical FEATURE_NAMES order.
+            features must use the canonical FEATURE_NAMES order; compact-feature
+            checkpoints derive their four engineered signals from these vectors.
         batch_size: Maximum number of windows evaluated in one model batch.
         device: PyTorch device on which to run inference.
 
     Returns:
-        InferenceResult with the input window timestamps and float32
-        probabilities ordered as class 0, class 1, class 2.
+        InferenceResult with timestamps and float32 P probabilities, shape (N,).
 
     Notes:
         If the checkpoint contains a feature mask, it is applied to the full
@@ -88,10 +88,16 @@ def infer_windows(
         raise ValueError("windows.X must not have empty dimensions.")
     if not np.isfinite(X).all():
         raise ValueError("windows.X must contain only finite values.")
-    if X.shape[2] != len(FEATURE_NAMES):
+    feature_names = payload.get("feature_names")
+    expected_input_features = (
+        len(MODEL_FEATURE_NAMES)
+        if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
+        else len(FEATURE_NAMES)
+    )
+    if X.shape[2] != expected_input_features:
         raise ValueError(
-            f"windows.X must contain {len(FEATURE_NAMES)} canonical features; "
-            f"got {X.shape[2]}."
+            f"windows.X must contain {expected_input_features} features for this checkpoint "
+            f"(canonical features for canonical checkpoints); got {X.shape[2]}."
         )
 
     try:
@@ -136,11 +142,14 @@ def infer_windows(
             f"{window_duration:g}-second window."
         )
 
-    feature_names = payload.get("feature_names")
-    if feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
+    compact_features = feature_names is not None and list(feature_names) == list(ENGINEERED_FEATURE_NAMES)
+    seven_features = feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
+    if compact_features:
+        X = engineer_motion_features(X)
+    elif not seven_features and feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
         raise ValueError(
-            "Checkpoint feature_names do not match AutoCut's canonical "
-            "feature order."
+            "Checkpoint feature_names must match canonical features, the legacy "
+            "four engineered signals, or the seven-signal sequence transform."
         )
 
     feature_mask = payload.get("feature_mask")
@@ -148,7 +157,7 @@ def infer_windows(
         mask = np.asarray(feature_mask, dtype=bool)
         if mask.shape != (X.shape[2],):
             raise ValueError(
-                "Checkpoint feature_mask must match the full input feature count."
+                "Checkpoint feature_mask must match the supplied feature count."
             )
         X = X[..., mask]
 
@@ -183,21 +192,205 @@ def infer_windows(
         for start in range(0, X.shape[0], batch_size):
             batch = torch.from_numpy(X[start:start + batch_size]).to(device)
             logits = model(batch)
-            probabilities = torch.softmax(logits, dim=1)
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise RuntimeError("P/U model must return exactly one logit per window.")
+            probabilities = torch.sigmoid(logits[:, 0])
             prediction_batches.append(probabilities.cpu().numpy())
 
     probabilities = np.concatenate(prediction_batches, axis=0).astype(
         np.float32,
         copy=False,
     )
-    if probabilities.shape != (X.shape[0], 3):
-        raise RuntimeError(
-            "Model output must contain exactly three class probabilities."
-        )
+    if probabilities.shape != (X.shape[0],):
+        raise RuntimeError("Model output must contain exactly one P probability per window.")
     if not np.isfinite(probabilities).all():
-        raise RuntimeError("Inference produced non-finite class probabilities.")
+        raise RuntimeError("Inference produced non-finite P probabilities.")
 
     return InferenceResult(
         timestamps=timestamps.copy(),
         probabilities=probabilities,
+    )
+
+
+
+def infer_sequence(
+    checkpoint: str | Path | Mapping[str, Any],
+    sequence: FeatureSequence,
+    *,
+    window: float | None = None,
+    stride: float | None = None,
+    batch_size: int = 256,
+    device: str | torch.device = "cpu",
+) -> InferenceResult:
+    """Transform a full canonical sequence, window it, and infer consistently.
+
+    Use this entry point for seven-signal checkpoints because Savitzky-Golay
+    filtering must run over the continuous sequence before overlapping windows
+    are created. Legacy canonical/four-signal checkpoints remain supported.
+    """
+    if not isinstance(sequence, FeatureSequence):
+        raise TypeError("sequence must be a FeatureSequence instance.")
+    if isinstance(checkpoint, (str, Path)):
+        payload = load_checkpoint(checkpoint, map_location="cpu")
+    elif isinstance(checkpoint, Mapping):
+        payload = validate_checkpoint(dict(checkpoint))
+    else:
+        raise TypeError("checkpoint must be a path or a checkpoint mapping.")
+    data_config = payload.get("data_config", {})
+    duration = float(data_config["window"] if window is None else window)
+    step = float(data_config.get("stride", duration) if stride is None else stride)
+    feature_names = payload.get("feature_names")
+    if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES):
+        transformed = engineer_motion_sequence(sequence.features)
+        windows = build_windows_from_features(
+            transformed, sequence.timestamps, window=duration, stride=step
+        )
+    else:
+        from autocut.dataset.windows import build_windows
+        windows = build_windows(sequence, window=duration, stride=step)
+    return infer_windows(
+        payload, windows, batch_size=batch_size, device=device
+    )
+
+
+# ---------------------------------------------------------------------------
+# LightGBM multiclass inference on already-aggregated tabular windows.
+# ---------------------------------------------------------------------------
+
+from autocut.ml.checkpoint import load_lightgbm_checkpoint
+from autocut.ml.model import LightGBMClassifier, LightGBMRanker
+from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+from autocut.dataset.normalization import (
+    LIGHTGBM_FEATURE_NORMALIZATION,
+    normalize_per_video_features,
+)
+
+
+@dataclass(frozen=True)
+class LightGBMInferenceResult:
+    """Four-class probabilities and predictions aligned to window timestamps."""
+
+    timestamps: np.ndarray
+    probabilities: np.ndarray  # (N, 4), columns are class 0, 1, 2, 3
+    predictions: np.ndarray    # (N,), argmax class IDs 0..3
+
+
+@dataclass(frozen=True)
+class LightGBMRankingInferenceResult:
+    """Raw ranking scores aligned with aggregated-window timestamps."""
+
+    timestamps: np.ndarray
+    scores: np.ndarray
+
+
+def infer_lightgbm_ranking_windows(
+    checkpoint: str | Path | Mapping[str, Any],
+    windows: FeatureWindows,
+) -> LightGBMRankingInferenceResult:
+    """Score aggregated windows with a saved LambdaRank checkpoint.
+
+    Scores are relative within a query/video. Do not interpret them as class
+    probabilities or compare absolute scores across unrelated videos.
+    """
+    if not isinstance(windows, FeatureWindows):
+        raise TypeError("windows must be a FeatureWindows instance.")
+    if isinstance(checkpoint, (str, Path)):
+        payload = load_lightgbm_checkpoint(checkpoint)
+    elif isinstance(checkpoint, Mapping):
+        payload = dict(checkpoint)
+        if payload.get("checkpoint_version") != "lightgbm-1.0":
+            raise ValueError("Unsupported or invalid LightGBM checkpoint.")
+        names = payload.get("feature_names")
+        if names != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+            raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+        booster = payload.get("_booster")
+        if booster is None:
+            import lightgbm as lgb
+            model_string = payload.get("model_string")
+            if not isinstance(model_string, str) or not model_string:
+                raise ValueError("LightGBM checkpoint model_string is missing.")
+            booster = lgb.Booster(model_str=model_string)
+            payload["_booster"] = booster
+    else:
+        raise TypeError("checkpoint must be a path or a checkpoint mapping.")
+    if payload.get("model_class") != "LightGBMRanker":
+        raise ValueError("Checkpoint is not a LightGBMRanker; use infer_lightgbm_windows for legacy classifiers.")
+    if payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+    X = np.asarray(windows.X, dtype=np.float32)
+    timestamps = np.asarray(windows.timestamps, dtype=np.float64)
+    if X.ndim != 2 or X.shape[0] == 0 or X.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError(f"windows.X must have shape (N, {len(LIGHTGBM_TABULAR_FEATURE_NAMES)}).")
+    if not np.isfinite(X).all():
+        raise ValueError("windows.X must contain only finite values.")
+    if timestamps.shape != (len(X), 2) or not np.isfinite(timestamps).all():
+        raise ValueError("windows.timestamps must be a finite (N,2) array aligned with X.")
+    if np.any(timestamps[:, 1] <= timestamps[:, 0]):
+        raise ValueError("Every window end timestamp must be after its start.")
+    if len(timestamps) > 1 and np.any(np.diff(timestamps[:, 0]) <= 0):
+        raise ValueError("Window start timestamps must be strictly increasing.")
+    # New ranker checkpoints explicitly opt into per-video normalization.
+    # Older checkpoints without this metadata retain their original behavior.
+    data_config = payload.get("data_config") or {}
+    if data_config.get("feature_normalization") == LIGHTGBM_FEATURE_NORMALIZATION:
+        X = normalize_per_video_features(X)
+    model = LightGBMRanker(payload["_booster"], feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
+    scores = model.predict(X)
+    return LightGBMRankingInferenceResult(timestamps=timestamps.copy(), scores=scores)
+
+
+def infer_lightgbm_windows(
+    checkpoint: str | Path | Mapping[str, Any],
+    windows: FeatureWindows,
+) -> LightGBMInferenceResult:
+    """Predict annotation classes from tabular 48-column LightGBM windows.
+
+    This API deliberately accepts aggregated rows only. Continuous sequence
+    engineering, temporal windowing and aggregation must use the same canonical
+    functions as training before calling it.
+    """
+    if not isinstance(windows, FeatureWindows):
+        raise TypeError("windows must be a FeatureWindows instance.")
+    if isinstance(checkpoint, (str, Path)):
+        payload = load_lightgbm_checkpoint(checkpoint)
+    elif isinstance(checkpoint, Mapping):
+        payload = dict(checkpoint)
+        if payload.get("checkpoint_version") != "lightgbm-1.0":
+            raise ValueError("Unsupported or invalid LightGBM checkpoint.")
+        names = payload.get("feature_names")
+        if names != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+            raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+        booster = payload.get("_booster")
+        if booster is None:
+            import lightgbm as lgb
+            model_string = payload.get("model_string")
+            if not isinstance(model_string, str) or not model_string:
+                raise ValueError("LightGBM checkpoint model_string is missing.")
+            booster = lgb.Booster(model_str=model_string)
+            payload["_booster"] = booster
+    else:
+        raise TypeError("checkpoint must be a path or checkpoint mapping.")
+    if payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+    X = np.asarray(windows.X, dtype=np.float32)
+    timestamps = np.asarray(windows.timestamps, dtype=np.float64)
+    if X.ndim != 2 or X.shape[0] == 0 or X.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError(f"windows.X must have shape (N, {len(LIGHTGBM_TABULAR_FEATURE_NAMES)}).")
+    if not np.isfinite(X).all():
+        raise ValueError("windows.X must contain only finite values.")
+    if timestamps.shape != (len(X), 2) or not np.isfinite(timestamps).all():
+        raise ValueError("windows.timestamps must be a finite (N,2) array aligned with X.")
+    if np.any(timestamps[:, 1] <= timestamps[:, 0]):
+        raise ValueError("Every window end timestamp must be after its start.")
+    if len(timestamps) > 1 and np.any(np.diff(timestamps[:, 0]) <= 0):
+        raise ValueError("Window start timestamps must be strictly increasing.")
+    if payload.get("model_class") == "LightGBMRanker":
+        raise ValueError("Checkpoint is a LightGBMRanker; use infer_lightgbm_ranking_windows.")
+    model = LightGBMClassifier(payload["_booster"], feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
+    probabilities = model.predict_proba(X)
+    predictions = np.argmax(probabilities, axis=1).astype(np.int64)
+    return LightGBMInferenceResult(
+        timestamps=timestamps.copy(),
+        probabilities=probabilities,
+        predictions=predictions,
     )

@@ -9,7 +9,7 @@ def test_help_lists_commands(capsys):
     except SystemExit as exc:
         assert exc.code == 0
     output = capsys.readouterr().out
-    for command in ("run", "audit", "train", "validate", "test", "lovo", "models"):
+    for command in ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "lightgbm-hpo", "models"):
         assert command in output
 
 
@@ -168,3 +168,62 @@ def test_models_command_explicit_checkpoint_skips_config_loading(tmp_path, monke
     )
 
     assert main(["models", str(checkpoint), "--config", str(tmp_path / "unused.yaml")]) == 0
+
+
+
+def test_lightgbm_train_cli_dispatches_to_single_model_pipeline(tmp_path, monkeypatch, capsys):
+    from autocut.config_loader import Config
+
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("videos: []\n", encoding="utf-8")
+    config_path = tmp_path / "train.yaml"
+    config_path.write_text("logging:\n  level: INFO\n", encoding="utf-8")
+    settings = Config({
+        "data": {"manifest": str(manifest)},
+        "logging": {"level": "INFO"},
+    })
+    monkeypatch.setattr("autocut.config_loader.load_config", lambda path: settings)
+    captured = {}
+    checkpoint = tmp_path / "models" / "single.json"
+
+    def fake_train(path, loaded_settings, *, checkpoint_path=None):
+        captured.update(path=path, settings=loaded_settings, checkpoint_path=checkpoint_path)
+        return {"checkpoint_path": str(checkpoint), "training_rows": 12}
+
+    monkeypatch.setattr(
+        "autocut.pipeline.lightgbm_training.run_lightgbm_train_from_manifest",
+        fake_train,
+    )
+    assert main([
+        "lightgbm-train", "--config", str(config_path), "--checkpoint", str(checkpoint)
+    ]) == 0
+    assert captured == {
+        "path": manifest,
+        "settings": settings,
+        "checkpoint_path": checkpoint,
+    }
+    assert '"training_rows": 12' in capsys.readouterr().out
+
+
+def test_lightgbm_hpo_cli_dispatches_to_hpo_pipeline(tmp_path, monkeypatch, capsys):
+    from autocut.config_loader import Config
+
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text("videos: []\n", encoding="utf-8")
+    config_path = tmp_path / "train.yaml"
+    config_path.write_text("logging:\n  level: INFO\n", encoding="utf-8")
+    settings = Config({
+        "data": {"manifest": str(manifest)},
+        "logging": {"level": "INFO"},
+    })
+    monkeypatch.setattr("autocut.config_loader.load_config", lambda path: settings)
+    captured = {}
+
+    def fake_hpo(path, loaded_settings):
+        captured.update(manifest=path, settings=loaded_settings)
+        return {"best_trial_number": 3, "best_params": {"objective": "rank_xendcg"}}
+
+    monkeypatch.setattr("autocut.pipeline.lightgbm_hpo.run_lightgbm_hpo", fake_hpo)
+    assert main(["lightgbm-hpo", "--config", str(config_path)]) == 0
+    assert captured == {"manifest": manifest, "settings": settings}
+    assert '"objective": "rank_xendcg"' in capsys.readouterr().out

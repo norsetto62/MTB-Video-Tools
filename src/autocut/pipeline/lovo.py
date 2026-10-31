@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import csv
 import json
 import logging
 from collections.abc import Mapping
@@ -14,6 +15,14 @@ import torch
 
 from .training import _combine_records, _experiment_slug, _data_values, _path, _section, _training_config
 from ..dataset.manifest import get_unique_groups, load_manifest
+from ..dataset.sequence import build_feature_sequence
+from ..dataset.cache_paths import feature_cache_dir
+from ..dataset.windows import build_windows, build_windows_from_features
+from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
+from ..annotations import load_training_annotations
+from ..data_models import Clip
+from ..selection.candidates_generation import CandidateGenerationConfig, generate_candidates
+from ..ml.inference import InferenceResult
 from ..ml.model import MTBClassifier
 from ..ml.scaling import FeatureScaler
 from ..ml.training import targets_to_classes, train_fixed_epochs, train_single_fold
@@ -22,27 +31,41 @@ logger = logging.getLogger(__name__)
 
 
 def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, Any]:
-    """Return fixed-three-class metrics, including absent classes as zero F1."""
-    confusion = [
-        [int(np.sum((actual == truth) & (predicted == guess))) for guess in range(3)]
-        for truth in range(3)
-    ]
-    class_f1 = []
-    for class_id in range(3):
-        tp = confusion[class_id][class_id]
-        fp = sum(confusion[row][class_id] for row in range(3) if row != class_id)
-        fn = sum(confusion[class_id][col] for col in range(3) if col != class_id)
-        denom = 2 * tp + fp + fn
-        class_f1.append(float(2 * tp / denom) if denom else 0.0)
+    """Report PU selection statistics without treating unlabeled windows as negative."""
+    positive = actual == 1
+    unlabeled = actual == 0
+    predicted_positive = predicted == 1
     return {
         "windows": int(len(actual)),
-        "accuracy": float(np.mean(actual == predicted)),
-        # For single-label multiclass classification, micro-F1 equals accuracy.
-        "micro_f1": float(np.mean(actual == predicted)),
-        "macro_f1": float(np.mean(class_f1)),
-        "class_f1": {str(i): class_f1[i] for i in range(3)},
-        "confusion_matrix": confusion,
+        "positive_windows": int(np.sum(positive)),
+        "unlabeled_windows": int(np.sum(unlabeled)),
+        "positive_recall_on_P": float(np.mean(predicted_positive[positive])) if np.any(positive) else None,
+        "selected_fraction_of_U": float(np.mean(predicted_positive[unlabeled])) if np.any(unlabeled) else None,
+        "predicted_positive_fraction": float(np.mean(predicted_positive)) if len(actual) else 0.0,
     }
+
+def _threshold_sweep(
+    actual: np.ndarray,
+    probabilities: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Compute diagnostic PU metrics over fixed probability thresholds."""
+    rows: list[dict[str, Any]] = []
+    for threshold_step in range(1, 20):
+        threshold = threshold_step * 0.05
+        predicted = (probabilities >= threshold).astype(np.int64)
+        metrics = _metrics(actual, predicted)
+        recall = metrics["positive_recall_on_P"]
+        u_selection = metrics["selected_fraction_of_U"]
+        rows.append({
+            "threshold": round(threshold, 2),
+            **metrics,
+            "score": (
+                float(recall * (1.0 - u_selection))
+                if recall is not None and u_selection is not None
+                else None
+            ),
+        })
+    return rows
 
 
 def _fit_fixed_epochs(
@@ -85,31 +108,180 @@ def _predict(
     model: MTBClassifier,
     scaler: FeatureScaler,
     windows: np.ndarray,
-    c2_threshold: float = 0.50,
+    positive_threshold: float = 0.50,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Return P probabilities and binary P/U predictions."""
+    if isinstance(positive_threshold, bool) or not isinstance(positive_threshold, (int, float)) or not np.isfinite(positive_threshold) or not 0.0 <= positive_threshold <= 1.0:
+        raise ValueError("positive_threshold must be between 0 and 1.")
     transformed = scaler.transform(windows)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
-    probability_batches: list[np.ndarray] = []
+    batches: list[np.ndarray] = []
     model.eval()
     with torch.inference_mode():
         for start in range(0, len(tensor), 256):
-            batch = tensor[start : start + 256]
-            probability_batches.append(
-                torch.softmax(model(batch), dim=1).cpu().numpy()
-            )
-    probabilities = np.concatenate(probability_batches, axis=0)
+            logits = model(tensor[start:start + 256])
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise RuntimeError("P/U model must return one logit per window.")
+            batches.append(torch.sigmoid(logits[:, 0]).cpu().numpy())
+    probabilities = np.concatenate(batches, axis=0)
+    predictions = (probabilities >= float(positive_threshold)).astype(np.int64)
+    return predictions, probabilities
 
-    # --- CUSTOM HIGH-PRECISION SELECTION LOGIC ---
-    # Extract probability specifically for Class 2
-    c2_probs = probabilities[:, 2]
+def _write_selection_diagnostics(
+    path: Path,
+    *,
+    record: Any,
+    settings: Mapping[str, Any],
+    model: MTBClassifier,
+    scaler: FeatureScaler,
+    positive_threshold: float,
+    fold_metadata: Mapping[str, Any],
+) -> None:
+    """Export every source-timeline window and its candidate-selection outcome."""
+    from ..video.probe import get_video_info
 
-    # Argmax strictly among Class 0 and Class 1 (columns 0 and 1)
-    fallback_preds = probabilities[:, :2].argmax(axis=1)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
+    cache_dir = feature_cache_dir(settings)
+    declared_video, annotations = load_training_annotations(record.annotation_path)
+    if declared_video.resolve() != record.video_path.resolve():
+        raise ValueError(
+            f"Manifest entry {record.id!r} points to {record.video_path}, but "
+            f"its annotation file declares {declared_video}."
+        )
+    if not annotations:
+        raise ValueError(f"Manifest entry {record.id!r} has no annotations for diagnostics.")
 
-    # If Class 2 probability meets/exceeds threshold, pick 2; else use fallback
-    predictions = np.where(c2_probs >= c2_threshold, 2, fallback_preds).astype(np.int64)
+    video_info = get_video_info(record.video_path)
+    timeline_end = float(annotations[-1].end)
+    if timeline_end > video_info.duration + 0.05:
+        raise ValueError(
+            f"Annotation end ({timeline_end:.3f}s) exceeds video duration "
+            f"({video_info.duration:.3f}s) for {record.id!r}."
+        )
+    timeline_end = min(timeline_end, float(video_info.duration))
+    sequence = build_feature_sequence(
+        record.video_path,
+        Clip(video_name=record.id, start=0.0, end=timeline_end),
+        sample_fps=sample_fps,
+        processing_width=processing_width,
+        cache_dir=cache_dir,
+        roi_left=roi_left, roi_right=roi_right,
+        roi_bottom=roi_bottom, roi_top=roi_top,
+    )
+    model_sequence = engineer_motion_sequence(sequence.features)
+    windows = build_windows_from_features(
+        model_sequence, sequence.timestamps,
+        window=window_duration, stride=window_stride,
+    )
+    _predicted, probabilities = _predict(
+        model, scaler, windows.X, positive_threshold=positive_threshold
+    )
 
-    return predictions.astype(np.int64), probabilities
+    selection = _section(settings, "selection")
+    candidate_config = CandidateGenerationConfig(
+        positive_threshold=positive_threshold,
+        min_candidate_duration=float(selection.get("min_clip", selection.get("min_candidate_duration", 3.0))),
+        max_gap_to_merge=float(selection.get("max_gap_to_merge", 3.0)),
+        padding_seconds=float(selection.get("padding_seconds", 2.0)),
+    )
+    candidates = generate_candidates(
+        InferenceResult(timestamps=windows.timestamps, probabilities=probabilities),
+        timeline_end,
+        config=candidate_config,
+    )
+    candidate_for_window: dict[int, tuple[int, Any, bool]] = {}
+    # Map both threshold-selected evidence windows and lower-scoring windows
+    # covered only because a candidate was padded around its evidence.
+    timestamp_to_index = {
+        (round(float(start), 6), round(float(end), 6)): index
+        for index, (start, end) in enumerate(windows.timestamps)
+    }
+    for candidate_index, candidate in enumerate(candidates, start=1):
+        evidence_indices = {
+            timestamp_to_index[(round(item.start, 6), round(item.end, 6))]
+            for item in candidate.window_evidence
+            if (round(item.start, 6), round(item.end, 6)) in timestamp_to_index
+        }
+        for window_index, (start, end) in enumerate(windows.timestamps):
+            if float(start) < candidate.end and float(end) > candidate.start:
+                candidate_for_window[window_index] = (
+                    candidate_index, candidate, window_index in evidence_indices
+                )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=[
+            "trial_number", "record_id", "group_id", "source_video",
+            "window_index", "window_start_s", "window_end_s", "p_probability",
+            "threshold", "selected_by_threshold", "annotation_status",
+            "overlapping_annotation_scores", "overlapping_annotation_remarks",
+            "selection_outcome", "candidate_id", "candidate_start_s",
+            "candidate_end_s", "candidate_duration_s", "candidate_mean_probability",
+            "candidate_max_probability",
+        ])
+        if write_header:
+            writer.writeheader()
+        trial_number = fold_metadata.get("diagnostic_trial_number", "")
+        for window_index, (start, end) in enumerate(windows.timestamps):
+            overlapping = [
+                annotation for annotation in annotations
+                if min(float(end), annotation.end) - max(float(start), annotation.start) > 0.0
+            ]
+            scores = sorted({int(annotation.score) for annotation in overlapping})
+            if not overlapping:
+                annotation_status = "UNCOVERED"
+            elif len(scores) > 1:
+                annotation_status = "MIXED"
+            elif scores[0] == 3:
+                annotation_status = "P"
+            else:
+                annotation_status = "U"
+            selected = bool(probabilities[window_index] >= positive_threshold)
+            mapped = candidate_for_window.get(window_index)
+            if mapped:
+                candidate_index, candidate, is_evidence = mapped
+                outcome = "IN_FINAL_CANDIDATE" if is_evidence else "IN_CANDIDATE_PADDING"
+                candidate_id = f"{record.id}-C{candidate_index:03d}"
+                candidate_values = {
+                    "candidate_start_s": f"{candidate.start:.3f}",
+                    "candidate_end_s": f"{candidate.end:.3f}",
+                    "candidate_duration_s": f"{candidate.duration:.3f}",
+                    "candidate_mean_probability": f"{candidate.mean_probability:.6f}",
+                    "candidate_max_probability": f"{candidate.max_probability:.6f}",
+                }
+            else:
+                candidate_id = ""
+                candidate_values = {
+                    "candidate_start_s": "", "candidate_end_s": "",
+                    "candidate_duration_s": "", "candidate_mean_probability": "",
+                    "candidate_max_probability": "",
+                }
+                outcome = (
+                    "BELOW_THRESHOLD" if not selected
+                    else "THRESHOLD_SELECTED_BUT_NO_FINAL_CANDIDATE"
+                )
+            writer.writerow({
+                "trial_number": trial_number,
+                "record_id": record.id,
+                "group_id": record.group_id,
+                "source_video": str(record.video_path),
+                "window_index": window_index,
+                "window_start_s": f"{float(start):.3f}",
+                "window_end_s": f"{float(end):.3f}",
+                "p_probability": f"{float(probabilities[window_index]):.6f}",
+                "threshold": f"{positive_threshold:.6f}",
+                "selected_by_threshold": selected,
+                "annotation_status": annotation_status,
+                "overlapping_annotation_scores": "|".join(map(str, scores)),
+                "overlapping_annotation_remarks": " | ".join(
+                    annotation.remarks for annotation in overlapping if annotation.remarks
+                ),
+                "selection_outcome": outcome,
+                "candidate_id": candidate_id,
+                **candidate_values,
+            })
+
 
 
 def _resolve_group_splits(
@@ -186,8 +358,12 @@ def run_lovo(
         raise ValueError("experiment.name must be a non-empty string.")
     results_dir = _path(experiment.get("results_dir", "output/experiments"), name="experiment.results_dir")
     checkpoint_dir = _path(experiment.get("checkpoint_dir", "models/experiments"), name="experiment.checkpoint_dir")
-    _manifest, sample_fps, processing_width, window_duration, window_stride = _data_values(settings)
+    _manifest, sample_fps, processing_width, window_duration, window_stride, roi_left, roi_right, roi_bottom, roi_top = _data_values(settings)
     training_config = _training_config(settings)
+    debug_settings = _section(settings, "debug")
+    threshold_sweep_enabled = debug_settings.get("threshold_sweep", False)
+    if not isinstance(threshold_sweep_enabled, bool):
+        raise ValueError("debug.threshold_sweep must be a boolean.")
     records = load_manifest(manifest_path, verify_files=True)
     all_groups = get_unique_groups(records)
     group_splits = _resolve_group_splits(
@@ -207,8 +383,26 @@ def run_lovo(
     data_config = {
         "flow_fps": sample_fps,
         "processing_width": processing_width,
+        "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
+        "feature_names": list(MODEL_FEATURE_NAMES),
+        "feature_transform": {
+            "spike_compression_threshold": 5.0,
+            "spike_compression_slope": 0.2,
+            "savgol_window_length": 9,
+            "savgol_polyorder": 2,
+            "savgol_signals": ["u", "v", "center_residual"],
+            "savgol_applied_before_windowing": True,
+            "center_residual": "hypot(grid_1_1_u - flow_u, grid_1_1_v - flow_v)",
+        },
+        "pu_training": {
+            "objective": "non-negative PU risk",
+            "positive_prior": training_config.positive_prior,
+            "positive_score": 3,
+            "unlabeled_scores": [0, 1, 2],
+            "model_outputs": 1,
+        },
     }
     
     # Each record's windows/targets are independent of the fold. Prepare them
@@ -222,6 +416,7 @@ def run_lovo(
     folds: list[dict[str, Any]] = []
     pooled_actual: list[np.ndarray] = []
     pooled_predicted: list[np.ndarray] = []
+    fold_threshold_sweeps: list[list[dict[str, Any]]] = []
     
     for fold_index, (test_group, outer_train_groups) in enumerate(group_splits):
         outer_train_records = tuple(r for r in records if r.group_id in outer_train_groups)
@@ -303,9 +498,35 @@ def run_lovo(
         )
 
         actual = targets_to_classes(test_y)
-        c2_threshold = getattr(training_config, "c2_threshold", 0.50)
-        predicted, probabilities = _predict(model, scaler, test_X, c2_threshold=c2_threshold)
+        training_settings = _section(settings, "training")
+        positive_threshold = float(training_settings.get(
+            "positive_threshold", training_settings.get("c2_threshold", 0.50)
+        ))
+        predicted, probabilities = _predict(
+            model, scaler, test_X, positive_threshold=positive_threshold
+        )
+        diagnostics_path_value = debug_settings.get("selection_diagnostics_path")
+        if diagnostics_path_value:
+            diagnostics_path = _path(
+                diagnostics_path_value, name="debug.selection_diagnostics_path"
+            )
+            for diagnostic_record in test_records:
+                _write_selection_diagnostics(
+                    diagnostics_path,
+                    record=diagnostic_record,
+                    settings=settings,
+                    model=model,
+                    scaler=scaler,
+                    positive_threshold=positive_threshold,
+                    fold_metadata={
+                        **fold_metadata,
+                        "diagnostic_trial_number": debug_settings.get("selection_diagnostics_trial", ""),
+                    },
+                )
         metrics = _metrics(actual, predicted)
+        threshold_sweep = _threshold_sweep(actual, probabilities) if threshold_sweep_enabled else None
+        if threshold_sweep is not None:
+            fold_threshold_sweeps.append(threshold_sweep)
         pooled_actual.append(actual)
         pooled_predicted.append(predicted)
         predictions_path = fold_root / f"fold_{fold_index + 1:02d}_{_experiment_slug(test_group)}_predictions.json"
@@ -323,6 +544,8 @@ def run_lovo(
             "metrics": metrics,
             "refit": refit_summary,
         }
+        if threshold_sweep is not None:
+            fold_result["threshold_sweep"] = threshold_sweep
         predictions_path.parent.mkdir(parents=True, exist_ok=True)
         predictions_payload = {
             **fold_metadata,
@@ -334,9 +557,9 @@ def run_lovo(
                 {
                     "record_id": test_window_records[index][0],
                     "window_index": test_window_records[index][1],
-                    "actual_class": int(actual[index]),
-                    "predicted_class": int(predicted[index]),
-                    "probabilities": {str(i): float(probabilities[index, i]) for i in range(3)},
+                    "actual_pu_label": int(actual[index]),
+                    "predicted_pu_label": int(predicted[index]),
+                    "p_probability": float(probabilities[index]),
                 }
                 for index in range(len(actual))
             ],
@@ -347,8 +570,9 @@ def run_lovo(
 
         log_msg = (
             f"LOVO fold {fold_index + 1} complete: group={test_group} "
-            f"windows={metrics['windows']} accuracy={metrics['accuracy']:.4f} "
-            f"macro_f1={metrics['macro_f1']:.4f}"
+            f"windows={metrics['windows']} "
+            f"P_recall={metrics['positive_recall_on_P']} "
+            f"U_selected={metrics['selected_fraction_of_U']}"
         )
 
         # Let the logger do its job if INFO is enabled
@@ -360,6 +584,38 @@ def run_lovo(
     all_actual = np.concatenate(pooled_actual)
     all_predicted = np.concatenate(pooled_predicted)
     pooled_metrics = _metrics(all_actual, all_predicted)
+    positive_recall_values = [
+        f["metrics"]["positive_recall_on_P"] for f in folds
+        if f["metrics"]["positive_recall_on_P"] is not None
+    ]
+    u_selection_values = [
+        f["metrics"]["selected_fraction_of_U"] for f in folds
+        if f["metrics"]["selected_fraction_of_U"] is not None
+    ]
+    aggregation: dict[str, Any] = {
+        "micro": pooled_metrics,
+        "macro_group_mean": {
+            "positive_recall_on_P": float(np.mean(positive_recall_values)) if positive_recall_values else None,
+            "selected_fraction_of_U": float(np.mean(u_selection_values)) if u_selection_values else None,
+        },
+        "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group PU selection statistics; U is not treated as negative.",
+    }
+    if threshold_sweep_enabled:
+        macro_sweep: list[dict[str, Any]] = []
+        for index, threshold_row in enumerate(fold_threshold_sweeps[0] if fold_threshold_sweeps else []):
+            recalls_at_threshold = [sweep[index]["positive_recall_on_P"] for sweep in fold_threshold_sweeps if sweep[index]["positive_recall_on_P"] is not None]
+            u_rates_at_threshold = [sweep[index]["selected_fraction_of_U"] for sweep in fold_threshold_sweeps if sweep[index]["selected_fraction_of_U"] is not None]
+            mean_recall = float(np.mean(recalls_at_threshold)) if recalls_at_threshold else None
+            mean_u_rate = float(np.mean(u_rates_at_threshold)) if u_rates_at_threshold else None
+            macro_sweep.append({
+                "threshold": threshold_row["threshold"],
+                "positive_recall_on_P": mean_recall,
+                "selected_fraction_of_U": mean_u_rate,
+                "score": float(mean_recall * (1.0 - mean_u_rate)) if mean_recall is not None and mean_u_rate is not None else None,
+            })
+        aggregation["threshold_sweep"] = macro_sweep
+        aggregation["threshold_sweep_definition"] = "Diagnostic only: unweighted mean of per-fold recall and U-selection metrics at each threshold; score is mean recall * (1 - mean U selection)."
+
     result: dict[str, Any] = {
         "experiment_name": experiment_name,
         "evaluation": "proxy_group_holdout" if test_groups is not None else "nested_leave_one_group_out",
@@ -369,15 +625,7 @@ def run_lovo(
         "fold_count": len(folds),
         "training_config": asdict(training_config),
         "data_config": data_config,
-        "aggregation": {
-            "micro": pooled_metrics,
-            "macro_group_mean": {
-                "accuracy": float(np.mean([f["metrics"]["accuracy"] for f in folds])),
-                "micro_f1": float(np.mean([f["metrics"]["micro_f1"] for f in folds])),
-                "macro_f1": float(np.mean([f["metrics"]["macro_f1"] for f in folds])),
-            },
-            "macro_group_mean_definition": "Unweighted arithmetic mean of per-held-out-group scores.",
-        },
+        "aggregation": aggregation,
         "folds": folds,
     }
     result_path = fold_root / f"{slug}_lovo_summary.json"
