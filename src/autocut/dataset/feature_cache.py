@@ -315,7 +315,11 @@ def _read_valid_cache(
             return None
         if not np.allclose(np.diff(selected_timestamps), step, rtol=0.0, atol=tolerance):
             return None
-        if float(selected_timestamps[-1]) < required_end - tolerance:
+        # Feature timestamps mark the sampled frame at the end of each
+        # optical-flow pair. For a half-open interval ending at required_end,
+        # the final required feature timestamp is one sampling step earlier.
+        required_last_timestamp = required_end - step
+        if float(selected_timestamps[-1]) < required_last_timestamp - tolerance:
             return None
         return FeatureSequence(
             features=np.asarray(selected_features, dtype=np.float32),
