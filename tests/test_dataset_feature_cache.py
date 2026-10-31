@@ -181,3 +181,78 @@ def test_feature_cache_rejects_timestamps_outside_clip(tmp_path):
     )
     with pytest.raises(ValueError, match="within the clip interval"):
         save_feature_sequence(outside, video, cache_dir, clip)
+
+
+
+def test_feature_cache_reuses_covering_interval_and_slices_without_rewriting_npz(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.arange(11 * len(FEATURE_NAMES), dtype=np.float32).reshape(11, -1),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    cache_path = save_feature_sequence(cached, video, cache_dir, cached_clip)
+    original_bytes = cache_path.read_bytes()
+
+    requested = Clip(video_name="ride", start=2.0, end=4.0)
+    actual = load_feature_sequence(video, cache_dir, requested)
+
+    assert actual is not None
+    np.testing.assert_array_equal(actual.timestamps, np.asarray([2.5, 3.0, 3.5]))
+    np.testing.assert_array_equal(actual.features, cached.features[4:7])
+    assert cache_path.read_bytes() == original_bytes
+
+
+def test_feature_cache_rejects_covering_interval_with_different_sampling_phase(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.ones((11, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    # The requested start is halfway between samples on the cached lattice.
+    requested = Clip(video_name="ride", start=0.25, end=2.25)
+    assert load_feature_sequence(video, cache_dir, requested) is None
+
+
+def test_feature_cache_does_not_reuse_interval_without_full_temporal_coverage(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=1.0, end=3.0)
+    cached = FeatureSequence(
+        features=np.ones((3, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.asarray([1.5, 2.0, 2.5], dtype=np.float64),
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    requested = Clip(video_name="ride", start=1.0, end=4.0)
+    assert load_feature_sequence(video, cache_dir, requested) is None
+
+
+def test_feature_cache_indexes_and_reuses_existing_unindexed_npz(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.ones((11, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    cache_path = save_feature_sequence(cached, video, cache_dir, cached_clip)
+    original_bytes = cache_path.read_bytes()
+
+    # Simulate an NPZ copied into the canonical directory without a catalog row.
+    from autocut.dataset.cache_catalog import catalog_path
+    catalog_path(cache_dir).unlink(missing_ok=True)
+    requested = Clip(video_name="ride", start=2.0, end=4.0)
+    actual = load_feature_sequence(video, cache_dir, requested)
+
+    assert actual is not None
+    assert cache_path.read_bytes() == original_bytes
