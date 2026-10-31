@@ -229,6 +229,77 @@ def _validate_arrays(
         raise ValueError("cached timestamps must lie within the clip interval.")
 
 
+def _read_valid_cache(
+    path: Path,
+    *,
+    expected_common: dict[str, Any],
+    requested_clip: Clip,
+    sample_fps: float,
+    source_sha256: str | None,
+) -> FeatureSequence | None:
+    """Read, integrity-check and temporally slice one compatible NPZ."""
+    try:
+        with np.load(path, allow_pickle=False) as archive:
+            if set(archive.files) != {"metadata", "features", "timestamps"}:
+                return None
+            raw = archive["metadata"]
+            if raw.shape != ():
+                return None
+            metadata = json.loads(str(raw.item()))
+            features = np.array(archive["features"], copy=True)
+            timestamps = np.array(archive["timestamps"], copy=True)
+        if not isinstance(metadata, dict):
+            return None
+        digest = metadata.pop("features_sha256", None)
+        if not isinstance(digest, str) or _array_digest(features, timestamps) != digest:
+            return None
+        if any(metadata.get(key) != value for key, value in expected_common.items()):
+            return None
+        mode = metadata.get("source_fingerprint_mode")
+        if mode == "sha256":
+            if source_sha256 is None or metadata.get("source_sha256") != source_sha256:
+                return None
+        elif mode != "metadata":
+            return None
+        _validate_arrays(features, timestamps)
+        stored_clip = metadata.get("clip")
+        if not isinstance(stored_clip, dict):
+            return None
+        stored_start = float(stored_clip["start"])
+        stored_end = float(stored_clip["end"])
+        tolerance = 1e-6
+        if stored_start > requested_clip.start + tolerance or stored_end < requested_clip.end - tolerance:
+            return None
+
+        # VideoReader's feature timestamps are start + n/fps, n >= 1.
+        # Reuse is safe only when the requested interval starts on the
+        # cached sampling lattice; otherwise a fresh decode has a different
+        # sampling phase and the cached rows are not equivalent.
+        step = 1.0 / sample_fps
+        phase = (requested_clip.start - stored_start) / step
+        if abs(phase - round(phase)) > tolerance:
+            return None
+        mask = (
+            (timestamps > requested_clip.start + tolerance)
+            & (timestamps < requested_clip.end - tolerance)
+        )
+        selected_features = features[mask]
+        selected_timestamps = timestamps[mask]
+        if selected_features.shape[0] < 2:
+            return None
+        expected_first = requested_clip.start + step
+        if abs(float(selected_timestamps[0]) - expected_first) > tolerance:
+            return None
+        if not np.allclose(np.diff(selected_timestamps), step, rtol=0.0, atol=tolerance):
+            return None
+        return FeatureSequence(
+            features=np.asarray(selected_features, dtype=np.float32),
+            timestamps=np.asarray(selected_timestamps, dtype=np.float64),
+        )
+    except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError):
+        return None
+
+
 def load_feature_sequence(
     video_path: str | Path,
     cache_dir: str | Path,
@@ -243,7 +314,11 @@ def load_feature_sequence(
     roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
 ) -> FeatureSequence | None:
-    """Load a compatible cache entry; missing, stale, or corrupt entries are misses."""
+    """Load an exact or temporally covering compatible cache entry.
+
+    Exact identity is checked first. If absent, catalog candidates for the
+    same source video are validated and sliced to the requested interval.
+    """
     try:
         expected, key = _identity(
             video_path, clip, sample_fps=sample_fps,
@@ -251,60 +326,59 @@ def load_feature_sequence(
             roi_left=roi_left, roi_right=roi_right, roi_bottom=roi_bottom, roi_top=roi_top,
             source_fingerprint_mode=source_fingerprint_mode,
         )
-        target = Path(cache_dir) / f"{key}.npz"
-        from .cache_catalog import lookup_cache_file, remove_cache_entry
+        common = {name: value for name, value in expected.items() if name != "clip"}
+        source = Path(video_path).expanduser().resolve()
+        stat = source.stat()
+        common["source_path"] = str(source)
+        common["source_size_bytes"] = stat.st_size
+        common["source_mtime_ns"] = stat.st_mtime_ns
+        exact_path = Path(cache_dir) / f"{key}.npz"
 
-        catalog_valid = lookup_cache_file(cache_dir, target)
-        if not target.is_file():
-            if catalog_valid is False:
-                remove_cache_entry(cache_dir, target)
-            return None
-        # The catalog is only a rebuildable index, never the source of truth.
-        # A stale "invalid" row must not veto an existing NPZ; validate the
-        # NPZ directly and repair the row if the file proves valid.
-        if catalog_valid is False:
-            logger.warning(
-                "Cache catalog marked an existing NPZ invalid; validating file directly: %s",
-                target,
-            )
-        with np.load(target, allow_pickle=False) as archive:
-            if set(archive.files) != {"metadata", "features", "timestamps"}:
-                logger.warning("Feature cache miss: unexpected NPZ members in %s", target)
-                return None
-            raw_metadata = archive["metadata"]
-            if raw_metadata.shape != ():
-                logger.warning("Feature cache miss: malformed metadata array in %s", target)
-                return None
-            metadata = json.loads(str(raw_metadata.item()))
-            features = archive["features"]
-            timestamps = archive["timestamps"]
-        if not isinstance(metadata, dict):
-            logger.warning("Feature cache miss: metadata is not an object in %s", target)
-            return None
-        digest = metadata.pop("features_sha256", None)
-        if metadata != expected:
-            logger.warning(
-                "Feature cache miss: extraction identity mismatch in %s; expected key=%s",
-                target, key,
-            )
-            return None
-        if not isinstance(digest, str):
-            logger.warning("Feature cache miss: missing content digest in %s", target)
-            return None
-        _validate_arrays(features, timestamps, clip=clip)
-        if _array_digest(features, timestamps) != digest:
-            logger.warning("Feature cache miss: feature-array digest mismatch in %s", target)
-            return None
-        if catalog_valid is False:
+        from .cache_catalog import find_cache_candidates, index_cache_file, lookup_cache_file
+
+        candidates: list[Path] = []
+        if exact_path.is_file():
+            lookup_cache_file(cache_dir, exact_path)
+            candidates.append(exact_path)
+        for candidate in find_cache_candidates(cache_dir, source_path=source):
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        # A SHA-256 source fingerprint is computed only if at least one
+        # candidate actually uses that mode.
+        source_sha256 = None
+        for candidate in candidates:
             try:
-                from .cache_catalog import index_cache_file
-                index_cache_file(cache_dir, target)
-            except Exception as exc:
-                logger.warning("Could not repair cache catalog entry for %s: %s", target, exc)
-        return FeatureSequence(
-            features=np.array(features, dtype=np.float32, copy=True),
-            timestamps=np.array(timestamps, dtype=np.float64, copy=True),
-        )
-    except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError) as exc:
+                with np.load(candidate, allow_pickle=False) as archive:
+                    raw = archive["metadata"]
+                    if raw.shape == ():
+                        metadata = json.loads(str(raw.item()))
+                        if metadata.get("source_fingerprint_mode") == "sha256":
+                            source_sha256 = source_file_hash(source)
+                            break
+            except (OSError, ValueError, KeyError, EOFError, json.JSONDecodeError):
+                continue
+
+        for candidate in candidates:
+            result = _read_valid_cache(
+                candidate,
+                expected_common=common,
+                requested_clip=clip,
+                sample_fps=sample_fps,
+                source_sha256=source_sha256,
+            )
+            if result is not None:
+                if candidate != exact_path:
+                    logger.info(
+                        "Reusing covering feature cache %s for interval [%.3f, %.3f]",
+                        candidate, clip.start, clip.end,
+                    )
+                try:
+                    index_cache_file(cache_dir, candidate)
+                except Exception as exc:
+                    logger.warning("Could not refresh cache catalog for %s: %s", candidate, exc)
+                return result
+        return None
+    except (OSError, ValueError, TypeError) as exc:
         logger.warning("Feature cache miss: could not validate cache entry for %s: %s", video_path, exc)
         return None
