@@ -29,7 +29,7 @@ def test_top_k_is_computed_independently_per_video_and_only_class3_counts():
     assert result["videos_with_events"] == 2
     assert result["events"] == 3
     assert result["hit_events"] == 1
-    assert result["segment_recall_at_5"] == pytest.approx(0.25)
+    assert result["segment_recall_at_k"] == pytest.approx(0.25)
 
 
 def test_class2_does_not_join_or_create_class3_event():
@@ -53,7 +53,9 @@ def test_metric_rejects_misaligned_timestamps_and_group_sizes():
     with pytest.raises(ValueError, match="timestamps"):
         segment_recall_at_k(np.array([3]), np.array([1.0]), [1], np.zeros((2, 2)))
     with pytest.raises(ValueError, match="sum"):
-        segment_recall_at_k(np.array([3]), np.array([1.0]), [2], np.zeros((1, 2)))
+        segment_recall_at_k(
+            np.array([3]), np.array([1.0]), [2], np.array([[0.0, 1.0]])
+        )
 
 
 def test_lightgbm_feval_returns_higher_is_better():
