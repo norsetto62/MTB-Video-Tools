@@ -365,3 +365,43 @@ def check_cache_compatibility(
 
     return {"compatible": not reasons, "reasons": reasons}
 
+
+
+def find_cache_candidates(
+    cache_dir: str | Path,
+    *,
+    source_path: str | Path,
+) -> list[Path]:
+    """Return indexed NPZ candidates for a source video, newest/smallest first.
+
+    Existing NPZ files are discovered and indexed lazily. Indexing reads only
+    NPZ metadata/arrays; it never decodes or rewrites the source video or NPZ.
+    """
+    root = Path(cache_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    source = str(Path(source_path).expanduser().resolve())
+
+    # Reconcile files that pre-date the catalog. This is deliberately
+    # non-destructive: index_cache_file only writes SQLite rows.
+    with _connection(catalog_path(root)) as connection:
+        indexed = {
+            row["cache_path"]
+            for row in connection.execute("SELECT cache_path FROM cache_entries")
+        }
+    for candidate in root.rglob("*.npz"):
+        resolved = str(candidate.resolve())
+        if resolved not in indexed:
+            index_cache_file(root, candidate)
+
+    try:
+        with _connection(catalog_path(root)) as connection:
+            rows = connection.execute(
+                """SELECT cache_path FROM cache_entries
+                   WHERE source_path = ? AND valid = 1
+                   ORDER BY (clip_end - clip_start) ASC, cache_path ASC""",
+                (source,),
+            ).fetchall()
+        return [Path(row["cache_path"]) for row in rows]
+    except sqlite3.Error as exc:
+        logger.warning("Could not query feature-cache candidates: %s", exc)
+        return []
