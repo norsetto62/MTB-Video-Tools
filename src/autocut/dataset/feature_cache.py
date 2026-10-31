@@ -236,6 +236,8 @@ def _read_valid_cache(
     requested_clip: Clip,
     sample_fps: float,
     source_sha256: str | None,
+    window_duration: float | None = None,
+    window_stride: float | None = None,
 ) -> FeatureSequence | None:
     """Read, integrity-check and temporally slice one compatible NPZ."""
     try:
@@ -268,7 +270,28 @@ def _read_valid_cache(
         stored_start = float(stored_clip["start"])
         stored_end = float(stored_clip["end"])
         tolerance = 1e-6
-        if stored_start > requested_clip.start + tolerance or stored_end < requested_clip.end - tolerance:
+        if stored_start > requested_clip.start + tolerance:
+            return None
+
+        # A windowed inference consumer does not need feature samples in the
+        # trailing partial window. Permit a shorter cached interval only when
+        # it still contains every sample required by the final complete window.
+        required_end = requested_clip.end
+        if window_duration is not None or window_stride is not None:
+            if window_duration is None or window_stride is None:
+                return None
+            duration = requested_clip.end - requested_clip.start
+            if duration < window_duration - tolerance:
+                return None
+            last_window_index = int(np.floor(
+                (duration - window_duration + tolerance) / window_stride
+            ))
+            required_end = (
+                requested_clip.start
+                + last_window_index * window_stride
+                + window_duration
+            )
+        if stored_end < required_end - tolerance:
             return None
 
         # VideoReader's feature timestamps are start + n/fps, n >= 1.
@@ -292,6 +315,8 @@ def _read_valid_cache(
             return None
         if not np.allclose(np.diff(selected_timestamps), step, rtol=0.0, atol=tolerance):
             return None
+        if float(selected_timestamps[-1]) < required_end - tolerance:
+            return None
         return FeatureSequence(
             features=np.asarray(selected_features, dtype=np.float32),
             timestamps=np.asarray(selected_timestamps, dtype=np.float64),
@@ -313,6 +338,8 @@ def load_feature_sequence(
     roi_bottom: float = 0.50,
     roi_top: float = 0.10,
     source_fingerprint_mode: str = "metadata",
+    window_duration: float | None = None,
+    window_stride: float | None = None,
 ) -> FeatureSequence | None:
     """Load an exact or temporally covering compatible cache entry.
 
@@ -366,6 +393,8 @@ def load_feature_sequence(
                 requested_clip=clip,
                 sample_fps=sample_fps,
                 source_sha256=source_sha256,
+                window_duration=window_duration,
+                window_stride=window_stride,
             )
             if result is not None:
                 if candidate != exact_path:
