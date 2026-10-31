@@ -110,6 +110,23 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
     return space
 
 
+def _effective_params(
+    base_config: LightGBMConfig,
+    space: dict[str, dict[str, Any]],
+    suggested_params: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the complete LightGBM config, including fixed HPO parameters.
+
+    Optuna's FrozenTrial.params contains only suggested parameters; fixed
+    values from the search space must be applied explicitly over base_config.
+    Suggested values take precedence if a parameter is sampled by Optuna.
+    """
+    fixed_params = {
+        name: spec["fixed"] for name, spec in space.items() if "fixed" in spec
+    }
+    return asdict(replace(base_config, **{**fixed_params, **suggested_params}))
+
+
 def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str, Any]:
     params: dict[str, Any] = {}
     for name, spec in space.items():
@@ -287,6 +304,9 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     if not completed:
         raise RuntimeError(f"LightGBM HPO study {study_name!r} has no completed trials.")
     best = study.best_trial
+    fixed_search_params = {
+        name: spec["fixed"] for name, spec in search_space.items() if "fixed" in spec
+    }
 
     output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -300,13 +320,15 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         "completed_trials": len(completed),
         "best_trial_number": best.number,
         "best_value": best.value,
-        "best_params": asdict(replace(base_config, **best.params)),
+        "fixed_search_params": fixed_search_params,
+        "best_params": _effective_params(base_config, search_space, best.params),
         "best_fold_segment_recall_at_5": best.user_attrs.get("fold_segment_recall_at_5", {}),
         "trials": [
             {
                 "number": trial.number,
                 "value": trial.value,
                 "params": trial.params,
+                "effective_params": _effective_params(base_config, search_space, trial.params),
                 "fold_segment_recall_at_5": trial.user_attrs.get("fold_segment_recall_at_5", {}),
             }
             for trial in completed
