@@ -93,6 +93,8 @@ def build_feature_sequence(
     roi_right: float = DEFAULT_ROI_RIGHT,
     roi_bottom: float = DEFAULT_ROI_BOTTOM,
     roi_top: float = DEFAULT_ROI_TOP,
+    window_duration: float | None = None,
+    window_stride: float | None = None,
 ) -> FeatureSequence:
     """Build a motion-feature sequence for a video clip.
 
@@ -142,6 +144,8 @@ def build_feature_sequence(
             flow_config=flow_config,
             roi_left=roi_left, roi_right=roi_right,
             roi_bottom=roi_bottom, roi_top=roi_top,
+            window_duration=window_duration,
+            window_stride=window_stride,
         )
         if cached is not None:
             logger.info("Feature cache hit: %s (%d rows)", video_path, len(cached.features))
