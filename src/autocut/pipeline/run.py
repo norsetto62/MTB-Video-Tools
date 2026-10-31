@@ -75,6 +75,8 @@ def _extract_windows(
             roi_right=settings.video.roi_right,
             roi_bottom=settings.video.roi_bottom,
             roi_top=settings.video.roi_top,
+            window_duration=settings.features.window_duration,
+            window_stride=settings.features.window_stride,
         )
         # Dataset sequence timestamps are absolute; candidate windows are
         # local to this processing range and translated back by the caller.
@@ -444,6 +446,8 @@ def run_pipeline(
                 cache_dir=feature_cache_dir(settings),
                 roi_left=lightgbm_params["roi_left"], roi_right=lightgbm_params["roi_right"],
                 roi_bottom=lightgbm_params["roi_bottom"], roi_top=lightgbm_params["roi_top"],
+                window_duration=lightgbm_params["window"],
+                window_stride=lightgbm_params["stride"],
             )
             signals = engineer_lightgbm_sequence(sequence.features)
             windows = build_lightgbm_windows_from_features(
