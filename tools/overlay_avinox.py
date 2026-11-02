@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import queue
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 import sys
 from typing import Any
@@ -105,9 +107,14 @@ def _draw_imu(cv2: Any, frame: Any, samples: list[dict[str, Any]],
 
     key = "imu" + axis.upper()
     left = current - window
+    # Telemetry is time-sorted: slice only the samples visible in this
+    # scrolling window instead of scanning the entire recording for every frame.
+    first = bisect.bisect_left(times, left)
+    last = bisect.bisect_right(times, current)
     visible = [
-        (t, s.get(key)) for t, s in zip(times, samples)
-        if left <= t <= current and s.get(key) is not None
+        (t, sample.get(key))
+        for t, sample in zip(times[first:last], samples[first:last])
+        if sample.get(key) is not None
     ]
     title = f"IMU {axis.upper()}  |  raw"
     cv2.putText(frame, title, (x0 + 14, y0 + 25), cv2.FONT_HERSHEY_SIMPLEX,
@@ -224,18 +231,54 @@ def main() -> int:
     encode_cmd = _video_writer_command(width, height, fps, output, encoder, args.crf)
     decoder = subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     encoder_process = subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Keep a bounded frame pipeline: decoding, Python overlay rendering and
+    # NVENC encoding can progress concurrently without buffering the whole ride.
+    # 32 frames use about 190 MiB at 1080p or 760 MiB at 4K.
+    buffer_frames = 32
+    decoded_frames: queue.Queue[bytes | None] = queue.Queue(maxsize=buffer_frames)
+    encoded_frames: queue.Queue[bytes | None] = queue.Queue(maxsize=buffer_frames)
+    worker_errors: list[tuple[str, BaseException]] = []
     frame_bytes = width * height * 3
     frame_index = 0
     decode_error = b""
+
+    def read_frames() -> None:
+        try:
+            while True:
+                raw = decoder.stdout.read(frame_bytes)
+                if not raw:
+                    break
+                if len(raw) != frame_bytes:
+                    raise RuntimeError(
+                        f"FFmpeg returned an incomplete frame ({len(raw)} of {frame_bytes} bytes)."
+                    )
+                decoded_frames.put(raw)
+        except BaseException as exc:
+            worker_errors.append(("decoder reader", exc))
+        finally:
+            decoded_frames.put(None)
+
+    def write_frames() -> None:
+        try:
+            while True:
+                raw = encoded_frames.get()
+                if raw is None:
+                    break
+                encoder_process.stdin.write(raw)
+        except BaseException as exc:
+            worker_errors.append(("encoder writer", exc))
+        finally:
+            encoded_frames.task_done()
+
+    reader_thread = threading.Thread(target=read_frames, name="ffmpeg-reader", daemon=True)
+    writer_thread = threading.Thread(target=write_frames, name="ffmpeg-writer", daemon=True)
+    reader_thread.start()
+    writer_thread.start()
     try:
         while True:
-            raw = decoder.stdout.read(frame_bytes)
-            if not raw:
+            raw = decoded_frames.get()
+            if raw is None:
                 break
-            if len(raw) != frame_bytes:
-                raise RuntimeError(
-                    f"FFmpeg returned an incomplete frame ({len(raw)} of {frame_bytes} bytes)."
-                )
             frame = __import__("numpy").frombuffer(raw, dtype="uint8").reshape(height, width, 3).copy()
             video_time = args.start + frame_index / fps
             if video_time >= end_time:
@@ -256,18 +299,27 @@ def main() -> int:
             _draw_panel(cv2, frame, width - panel_w - 18, 18, panel_w, panel_h,
                         "GRADIENT (raw / 100)", gradient_text, True)
             _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis, args.window)
-            encoder_process.stdin.write(frame.tobytes())
+            encoded_frames.put(frame.tobytes())
             frame_index += 1
             if frame_index % max(1, int(fps * 10)) == 0:
                 print(f"Encoded {frame_index / fps:.0f}s / {end_time - args.start:.0f}s",
                       flush=True)
-    except BrokenPipeError as exc:
-        raise RuntimeError("FFmpeg encoder terminated unexpectedly.") from exc
+    except BaseException:
+        decoder.terminate()
+        encoder_process.terminate()
+        raise
     finally:
+        decoded_frames.put(None)
+        encoded_frames.put(None)
+        reader_thread.join()
+        writer_thread.join()
         if decoder.stdout:
             decoder.stdout.close()
         if encoder_process.stdin:
-            encoder_process.stdin.close()
+            try:
+                encoder_process.stdin.close()
+            except BrokenPipeError:
+                pass
         decoder.wait()
         encoder_process.wait()
         decode_error = decoder.stderr.read() if decoder.stderr else b""
@@ -276,6 +328,9 @@ def main() -> int:
             decoder.stderr.close()
         if encoder_process.stderr:
             encoder_process.stderr.close()
+    if worker_errors:
+        stage, error = worker_errors[0]
+        raise RuntimeError(f"{stage} failed: {error}") from error
     if decoder.returncode != 0:
         raise RuntimeError(f"FFmpeg decoder failed: {decode_error.decode(errors='replace')}")
     if encoder_process.returncode != 0:
