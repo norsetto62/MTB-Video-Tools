@@ -82,9 +82,12 @@ def _video_writer_command(width: int, height: int, fps: float, output: Path,
 
 def _draw_panel(cv2: Any, frame: Any, x: int, y: int, w: int, h: int,
                 label: str, value: str, align_right: bool = False) -> None:
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x, y), (x + w, y + h), (12, 15, 18), -1)
-    cv2.addWeighted(overlay, 0.72, frame, 0.28, 0, frame)
+    # Blend only this panel ROI instead of copying/blending the full frame.
+    roi = frame[y:y + h, x:x + w]
+    import numpy as np
+    background = np.empty_like(roi)
+    background[:] = (12, 15, 18)
+    cv2.addWeighted(roi, 0.28, background, 0.72, 0, roi)
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = max(0.55, min(1.15, frame.shape[1] / 1500))
     thickness = max(1, round(scale * 2))
@@ -104,9 +107,12 @@ def _draw_imu(cv2: Any, frame: Any, samples: list[dict[str, Any]],
     x0, y0 = margin, height - panel_h - margin
     x1, y1 = width - margin, height - margin
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x0, y0), (x1, y1), (8, 12, 16), -1)
-    cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
+    # Blend only the chart ROI, not the entire video frame.
+    roi = frame[y0:y1, x0:x1]
+    import numpy as np
+    background = np.empty_like(roi)
+    background[:] = (8, 12, 16)
+    cv2.addWeighted(roi, 0.22, background, 0.78, 0, roi)
 
     key = "imu" + axis.upper()
     left = current - window
@@ -131,21 +137,20 @@ def _draw_imu(cv2: Any, frame: Any, samples: list[dict[str, Any]],
              (90, 95, 100), 1, cv2.LINE_AA)
 
     if visible:
-        vals = [float(v) for _, v in visible]
-        lo, hi = min(vals), max(vals)
-        span = max(hi - lo, 0.05)
-        pad = span * 0.12
-        lo, hi = lo - pad, hi + pad
+        # Fixed scale makes values comparable across frames and axes.
+        lo, hi = -1.0, 1.0
         points = []
         for t, value in visible:
             px = graph_left + int((t - left) / window * (graph_right - graph_left))
-            py = graph_bottom - int((float(value) - lo) / (hi - lo) *
+            clipped = max(lo, min(hi, float(value)))
+            py = graph_bottom - int((clipped - lo) / (hi - lo) *
                                     (graph_bottom - graph_top))
-            points.append((px, py))
-        for a, b in zip(points, points[1:]):
-            cv2.line(frame, a, b, (70, 220, 255), 2, cv2.LINE_AA)
-        for point in points:
-            cv2.circle(frame, point, 2, (70, 220, 255), -1, cv2.LINE_AA)
+            point = (px, py)
+            if not points or point != points[-1]:
+                points.append(point)
+        if len(points) > 1:
+            cv2.polylines(frame, [np.asarray(points, dtype=np.int32)],
+                          False, (70, 220, 255), 2, cv2.LINE_AA)
         cv2.putText(frame, f"{hi:.2f}", (x0 + 8, graph_top + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (170, 175, 180), 1, cv2.LINE_AA)
         cv2.putText(frame, f"{lo:.2f}", (x0 + 8, graph_bottom),
@@ -185,6 +190,7 @@ def main() -> int:
 
     try:
         import cv2
+    import numpy as np
     except ImportError as exc:
         raise RuntimeError("OpenCV is required; install project dependencies with: python -m pip install -e .") from exc
 
@@ -239,7 +245,7 @@ def main() -> int:
     # 32 frames use about 190 MiB at 1080p or 760 MiB at 4K.
     buffer_frames = 32
     decoded_frames: queue.Queue[bytes | None] = queue.Queue(maxsize=buffer_frames)
-    encoded_frames: queue.Queue[bytes | None] = queue.Queue(maxsize=buffer_frames)
+    encoded_frames: queue.Queue[Any | None] = queue.Queue(maxsize=buffer_frames)
     worker_errors: list[tuple[str, BaseException]] = []
     decoder_stderr = bytearray()
     encoder_stderr = bytearray()
@@ -283,7 +289,7 @@ def main() -> int:
                 # block forever on a full queue and appear to hang silently.
                 if not failed:
                     try:
-                        encoder_process.stdin.write(raw)
+                        encoder_process.stdin.write(memoryview(raw))
                     except BaseException as exc:
                         worker_errors.append(("encoder writer", exc))
                         failed = True
@@ -326,7 +332,7 @@ def main() -> int:
             last_frame_at = time.monotonic()
             if frame_index == 0:
                 print("First decoded frame received; processing started.", flush=True)
-            frame = __import__("numpy").frombuffer(raw, dtype="uint8").reshape(height, width, 3).copy()
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
             video_time = args.start + frame_index / fps
             if video_time >= end_time:
                 break
@@ -346,7 +352,8 @@ def main() -> int:
             _draw_panel(cv2, frame, width - panel_w - 18, 18, panel_w, panel_h,
                         "GRADIENT (raw / 100)", gradient_text, True)
             _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis, args.window)
-            encoded_frames.put(frame.tobytes())
+            # Queue the ndarray and let the writer consume its buffer directly.
+            encoded_frames.put(frame)
             frame_index += 1
             if frame_index % max(1, int(fps * 10)) == 0:
                 print(f"Encoded {frame_index / fps:.0f}s / {end_time - args.start:.0f}s",
@@ -402,7 +409,7 @@ def main() -> int:
     print(f"Avinox start (UTC epoch): {metadata.get('start')}")
     print(f"First sample: {samples[0].get('date')}")
     print(f"Offset: {args.offset:+.3f}s (fine adjustment)")
-    print(f"IMU axis: {args.axis.upper()} | window: {args.window:g}s")
+    print(f"IMU axis: {args.axis.upper()} | fixed scale: -1.00 to +1.00 | window: {args.window:g}s")
     print(f"Frames: {frame_index} | output: {output}")
     return 0
 
