@@ -10,7 +10,6 @@ import bisect
 import json
 import shutil
 import subprocess
-import time
 from pathlib import Path
 import sys
 from typing import Any
@@ -42,6 +41,71 @@ def _probe(video: Path) -> dict[str, Any]:
         "creation_time": (data.get("format", {}).get("tags", {}).get("creation_time")
                           or stream.get("tags", {}).get("creation_time")),
     }
+
+
+
+def _ffmpeg_has_encoder(name: str) -> bool:
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True
+    )
+    return result.returncode == 0 and name in result.stdout
+
+
+def _test_nvenc() -> bool:
+    if not _ffmpeg_has_encoder("h264_nvenc"):
+        return False
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+        "-i", "color=c=black:s=64x64:d=0.1", "-frames:v", "1",
+        "-c:v", "h264_nvenc", "-f", "null", "-",
+    ]
+    try:
+        return subprocess.run(command, capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _test_cuda_decode(video: Path) -> bool:
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-hwaccel", "cuda",
+        "-hwaccel_output_format", "cuda", "-i", str(video), "-frames:v", "1",
+        "-vf", "hwdownload,format=nv12,format=bgr24", "-f", "null", "-",
+    ]
+    try:
+        return subprocess.run(command, capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _video_reader_command(video: Path, start: float, duration: float,
+                          cuda: bool) -> list[str]:
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if start > 0:
+        command += ["-ss", f"{start:.6f}"]
+    if cuda:
+        command += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+    command += ["-i", str(video)]
+    if duration > 0:
+        command += ["-t", f"{duration:.6f}"]
+    if cuda:
+        command += ["-vf", "hwdownload,format=nv12,format=bgr24"]
+    command += ["-an", "-sn", "-dn", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+    return command
+
+
+def _video_writer_command(width: int, height: int, fps: float, output: Path,
+                          encoder: str, crf: int) -> list[str]:
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+        "-r", f"{fps:.8f}", "-i", "pipe:0", "-an", "-c:v", encoder,
+    ]
+    if encoder == "h264_nvenc":
+        command += ["-preset", "p4", "-rc", "constqp", "-qp", str(crf)]
+    else:
+        command += ["-preset", "medium", "-crf", str(crf)]
+    command += ["-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output)]
+    return command
 
 
 def _draw_panel(cv2: Any, frame: Any, x: int, y: int, w: int, h: int,
@@ -179,27 +243,51 @@ def main() -> int:
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    cap = cv2.VideoCapture(str(args.video))
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {args.video}")
-    cap.set(cv2.CAP_PROP_POS_MSEC, args.start * 1000)
     width, height = info["width"], info["height"]
     fps = info["fps"]
     if fps <= 0:
         raise RuntimeError("Could not determine video frame rate.")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(output), fourcc, fps, (width, height))
-    if not writer.isOpened():
-        cap.release()
-        raise RuntimeError(f"Could not create output video: {output}")
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found. Install FFmpeg and ensure it is on PATH.")
 
+    use_cuda = args.hwaccel == "cuda" or (
+        args.hwaccel == "auto" and _test_cuda_decode(args.video)
+    )
+    if args.hwaccel == "cuda" and not _test_cuda_decode(args.video):
+        raise RuntimeError("CUDA/NVDEC decoding was requested but the FFmpeg CUDA test failed.")
+    if args.hwaccel == "auto" and not use_cuda:
+        print("CUDA decode unavailable; using CPU decoding.", flush=True)
+
+    if args.encoder == "h264_nvenc":
+        if not _test_nvenc():
+            raise RuntimeError("NVENC encoding was requested but the FFmpeg NVENC test failed.")
+        encoder = "h264_nvenc"
+    elif args.encoder == "libx264":
+        encoder = "libx264"
+    else:
+        encoder = "h264_nvenc" if _test_nvenc() else "libx264"
+        if encoder == "libx264":
+            print("NVENC unavailable; using libx264.", flush=True)
+
+    decode_cmd = _video_reader_command(
+        args.video, args.start, end_time - args.start, use_cuda
+    )
+    encode_cmd = _video_writer_command(width, height, fps, output, encoder, args.crf)
+    decoder = subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    encoder_process = subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    frame_bytes = width * height * 3
     frame_index = 0
-    first_sample_time = times[0]
+    decode_error = b""
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
+            raw = decoder.stdout.read(frame_bytes)
+            if not raw:
                 break
+            if len(raw) != frame_bytes:
+                raise RuntimeError(
+                    f"FFmpeg returned an incomplete frame ({len(raw)} of {frame_bytes} bytes)."
+                )
+            frame = __import__("numpy").frombuffer(raw, dtype="uint8").reshape(height, width, 3).copy()
             video_time = args.start + frame_index / fps
             if video_time >= end_time:
                 break
@@ -215,19 +303,36 @@ def main() -> int:
             gradient_text = f"{float(gradient):.2f}" if gradient is not None else "—"
             panel_w = max(190, width // 5)
             panel_h = max(58, height // 12)
-            _draw_panel(cv2, frame, 18, 18, panel_w, panel_h,
-                        "SPEED", speed_text)
+            _draw_panel(cv2, frame, 18, 18, panel_w, panel_h, "SPEED", speed_text)
             _draw_panel(cv2, frame, width - panel_w - 18, 18, panel_w, panel_h,
                         "GRADIENT (raw / 100)", gradient_text, True)
             _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis, args.window)
-            writer.write(frame)
+            encoder_process.stdin.write(frame.tobytes())
             frame_index += 1
             if frame_index % max(1, int(fps * 10)) == 0:
                 print(f"Encoded {frame_index / fps:.0f}s / {end_time - args.start:.0f}s",
                       flush=True)
+    except BrokenPipeError as exc:
+        raise RuntimeError("FFmpeg encoder terminated unexpectedly.") from exc
     finally:
-        cap.release()
-        writer.release()
+        if decoder.stdout:
+            decoder.stdout.close()
+        if encoder_process.stdin:
+            encoder_process.stdin.close()
+        decoder.wait()
+        encoder_process.wait()
+        decode_error = decoder.stderr.read() if decoder.stderr else b""
+        encode_error = encoder_process.stderr.read() if encoder_process.stderr else b""
+        if decoder.stderr:
+            decoder.stderr.close()
+        if encoder_process.stderr:
+            encoder_process.stderr.close()
+    if decoder.returncode != 0:
+        raise RuntimeError(f"FFmpeg decoder failed: {decode_error.decode(errors='replace')}")
+    if encoder_process.returncode != 0:
+        raise RuntimeError(f"FFmpeg encoder failed: {encode_error.decode(errors='replace')}")
+    if frame_index == 0:
+        raise RuntimeError("No video frames were decoded.")
 
     print(f"Video: {args.video}")
     print(f"MP4 creation_time: {creation_time} (Unix {video_epoch:.3f})")
