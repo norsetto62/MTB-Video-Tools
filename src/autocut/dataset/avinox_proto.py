@@ -170,7 +170,7 @@ def parse(source: bytes | bytearray | memoryview | str | Path, name: str | None 
     ride_id = struct.unpack_from("<I", view, 6)[0]
     ascent = struct.unpack_from("<f", view, 22)[0]
     descent = struct.unpack_from("<f", view, 26)[0]
-    serial = bytes(view[110:128]).split(b"\\0", 1)[0].decode("latin-1")
+    serial = bytes(view[110:128]).split(b"\0", 1)[0].decode("latin-1")
 
     metadata: dict[str, Any] = {
         "fileName": name or "Avinox ride",
