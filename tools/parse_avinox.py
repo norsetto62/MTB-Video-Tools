@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Any
@@ -36,6 +36,8 @@ def export_csv(samples: list[dict[str, Any]], destination: Path) -> Path:
         for sample in samples:
             row = dict(sample)
             if isinstance(row.get("date"), datetime):
+                # Keep the original UTC timestamp and add a local-time companion.
+                row["date_local"] = row["date"].astimezone().isoformat()
                 row["date"] = row["date"].isoformat()
             writer.writerow(row)
     return destination
@@ -96,10 +98,17 @@ def plot_ride(samples: list[dict[str, Any]], metadata: dict[str, Any],
     panel_count = 5 if has_gps else 4
     fig, axes = plt.subplots(panel_count, 1, figsize=(16, 3.0 * panel_count),
                              sharex=False)
+    start = datetime.fromtimestamp(metadata["start"], timezone.utc).astimezone() if metadata.get("start") else None
+    end = datetime.fromtimestamp(metadata["end"], timezone.utc).astimezone() if metadata.get("end") else None
+    time_range = (
+        f"Start: {start:%Y-%m-%d %H:%M:%S %Z}  |  "
+        f"End: {end:%Y-%m-%d %H:%M:%S %Z}"
+        if start and end else "Start/end time unavailable"
+    )
     fig.suptitle(
         f"{metadata.get('fileName', 'Avinox ride')} — "
-        f"{len(samples)} samples, {metadata.get('duration', 0)} s",
-        fontsize=14, fontweight="bold",
+        f"{len(samples)} samples, {metadata.get('duration', 0)} s\\n{time_range}",
+        fontsize=13, fontweight="bold",
     )
 
     ax = axes[0]
@@ -193,7 +202,11 @@ def main() -> int:
 
     gps_count = sum(s.get("latitude") is not None and s.get("longitude") is not None
                     for s in samples)
+    start = datetime.fromtimestamp(metadata["start"], timezone.utc).astimezone() if metadata.get("start") else None
+    end = datetime.fromtimestamp(metadata["end"], timezone.utc).astimezone() if metadata.get("end") else None
     print(f"Ride ID: {metadata.get('rideId')}")
+    print(f"Start (local): {start.isoformat() if start else 'n/a'}")
+    print(f"End   (local): {end.isoformat() if end else 'n/a'}")
     print(f"Samples: {len(samples)}")
     print(f"GPS fixes: {gps_count}/{len(samples)}")
     print(f"Duration: {metadata.get('duration')} s")
