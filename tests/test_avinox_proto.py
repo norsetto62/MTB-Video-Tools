@@ -48,7 +48,7 @@ def _build_proto(fields: dict[int, tuple[str, float | int]], *, ride_id=42,
     struct.pack_into("<II", header, 10, start, end)
     struct.pack_into("<ff", header, 22, ascent, 12.0)
     header[110:118] = b"AVINOX01"
-    frame = struct.pack("<HH", FRAME_TYPE, len(payload)) + payload + b"\\0\\0"
+    frame = struct.pack("<HH", FRAME_TYPE, len(payload)) + payload + b"\0\0"
     return bytes(header) + frame
 
 
