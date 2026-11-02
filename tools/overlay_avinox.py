@@ -44,39 +44,6 @@ def _probe(video: Path) -> dict[str, Any]:
 
 
 
-def _ffmpeg_has_encoder(name: str) -> bool:
-    result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True
-    )
-    return result.returncode == 0 and name in result.stdout
-
-
-def _test_nvenc() -> bool:
-    if not _ffmpeg_has_encoder("h264_nvenc"):
-        return False
-    command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
-        "-i", "color=c=black:s=64x64:d=0.1", "-frames:v", "1",
-        "-c:v", "h264_nvenc", "-f", "null", "-",
-    ]
-    try:
-        return subprocess.run(command, capture_output=True, timeout=15).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-def _test_cuda_decode(video: Path) -> bool:
-    command = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-hwaccel", "cuda",
-        "-hwaccel_output_format", "cuda", "-i", str(video), "-frames:v", "1",
-        "-vf", "hwdownload,format=nv12,format=bgr24", "-f", "null", "-",
-    ]
-    try:
-        return subprocess.run(command, capture_output=True, timeout=30).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
 def _video_reader_command(video: Path, start: float, duration: float,
                           cuda: bool) -> list[str]:
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
@@ -197,10 +164,6 @@ def main() -> int:
                         help="Optional duration to encode; useful for a short test")
     parser.add_argument("--crf", type=int, default=20,
                         help="H.264 quality: lower is higher quality (default: 20)")
-    parser.add_argument("--hwaccel", choices=("auto", "cuda", "cpu"), default="auto",
-                        help="Decoder: CUDA/NVDEC, CPU, or auto (default: auto)")
-    parser.add_argument("--encoder", choices=("auto", "h264_nvenc", "libx264"), default="auto",
-                        help="Encoder: NVENC, libx264, or auto (default: auto)")
     args = parser.parse_args()
 
     if not args.video.is_file():
@@ -250,24 +213,10 @@ def main() -> int:
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg not found. Install FFmpeg and ensure it is on PATH.")
 
-    use_cuda = args.hwaccel == "cuda" or (
-        args.hwaccel == "auto" and _test_cuda_decode(args.video)
-    )
-    if args.hwaccel == "cuda" and not _test_cuda_decode(args.video):
-        raise RuntimeError("CUDA/NVDEC decoding was requested but the FFmpeg CUDA test failed.")
-    if args.hwaccel == "auto" and not use_cuda:
-        print("CUDA decode unavailable; using CPU decoding.", flush=True)
-
-    if args.encoder == "h264_nvenc":
-        if not _test_nvenc():
-            raise RuntimeError("NVENC encoding was requested but the FFmpeg NVENC test failed.")
-        encoder = "h264_nvenc"
-    elif args.encoder == "libx264":
-        encoder = "libx264"
-    else:
-        encoder = "h264_nvenc" if _test_nvenc() else "libx264"
-        if encoder == "libx264":
-            print("NVENC unavailable; using libx264.", flush=True)
+    # This utility runs on a dedicated CUDA/NVENC workstation.
+    # Use the GPU directly; let FFmpeg report a real initialization/runtime error.
+    use_cuda = True
+    encoder = "h264_nvenc"
 
     decode_cmd = _video_reader_command(
         args.video, args.start, end_time - args.start, use_cuda
