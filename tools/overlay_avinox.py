@@ -345,12 +345,12 @@ def main() -> int:
             speed = sample.get("speed")
             gradient = sample.get("gradient")
             speed_text = f"{float(speed):.1f} km/h" if speed is not None else "—"
-            gradient_text = f"{float(gradient):.2f}" if gradient is not None else "—"
+            gradient_text = f"{float(gradient):.2f}%" if gradient is not None else "—"
             panel_w = max(190, width // 5)
             panel_h = max(58, height // 12)
             _draw_panel(cv2, frame, 18, 18, panel_w, panel_h, "SPEED", speed_text)
             _draw_panel(cv2, frame, width - panel_w - 18, 18, panel_w, panel_h,
-                        "GRADIENT (raw / 100)", gradient_text, True)
+                        "SLOPE", gradient_text, True)
             _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis, args.window)
             # Queue the ndarray and let the writer consume its buffer directly.
             encoded_frames.put(frame)
