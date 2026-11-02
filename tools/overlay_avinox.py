@@ -57,7 +57,9 @@ def _video_reader_command(video: Path, start: float, duration: float,
     if duration > 0:
         command += ["-t", f"{duration:.6f}"]
     if cuda:
-        command += ["-vf", "hwdownload,format=nv12,format=bgr24"]
+        # Let FFmpeg negotiate the decoder's actual CUDA surface format.
+        # The output pixel format requests the CPU frames OpenCV consumes.
+        command += ["-pix_fmt", "bgr24"]
     command += ["-an", "-sn", "-dn", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
     return command
 
