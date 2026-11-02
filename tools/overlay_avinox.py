@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import threading
 import time
+import numpy as np
 from pathlib import Path
 import sys
 from typing import Any
@@ -190,7 +191,6 @@ def main() -> int:
 
     try:
         import cv2
-    import numpy as np
     except ImportError as exc:
         raise RuntimeError("OpenCV is required; install project dependencies with: python -m pip install -e .") from exc
 
