@@ -10,6 +10,7 @@ import bisect
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 import sys
 from typing import Any
@@ -25,8 +26,8 @@ def _probe(video: Path) -> dict[str, Any]:
         raise RuntimeError("ffprobe not found. Install FFmpeg and ensure ffprobe is on PATH.")
     command = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate",
-        "-show_entries", "format=duration", "-of", "json", str(video),
+        "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate:stream_tags=creation_time",
+        "-show_entries", "format=duration:format_tags=creation_time", "-of", "json", str(video),
     ]
     result = subprocess.run(command, check=True, capture_output=True, text=True)
     data = json.loads(result.stdout)
@@ -38,6 +39,8 @@ def _probe(video: Path) -> dict[str, Any]:
     return {
         "width": int(stream["width"]), "height": int(stream["height"]),
         "fps": fps, "duration": float(data.get("format", {}).get("duration", 0)),
+        "creation_time": (data.get("format", {}).get("tags", {}).get("creation_time")
+                          or stream.get("tags", {}).get("creation_time")),
     }
 
 
@@ -130,6 +133,10 @@ def main() -> int:
                         help="Optional duration to encode; useful for a short test")
     parser.add_argument("--crf", type=int, default=20,
                         help="H.264 quality: lower is higher quality (default: 20)")
+    parser.add_argument("--hwaccel", choices=("auto", "cuda", "cpu"), default="auto",
+                        help="Decoder: CUDA/NVDEC, CPU, or auto (default: auto)")
+    parser.add_argument("--encoder", choices=("auto", "h264_nvenc", "libx264"), default="auto",
+                        help="Encoder: NVENC, libx264, or auto (default: auto)")
     args = parser.parse_args()
 
     if not args.video.is_file():
@@ -145,6 +152,15 @@ def main() -> int:
         raise RuntimeError("OpenCV is required; install project dependencies with: python -m pip install -e .") from exc
 
     info = _probe(args.video)
+    creation_time = info.get("creation_time")
+    if not creation_time:
+        raise RuntimeError("MP4 creation_time is missing; cannot synchronize Avinox telemetry.")
+    from datetime import datetime
+    try:
+        video_epoch = datetime.fromisoformat(creation_time.replace("Z", "+00:00")).timestamp()
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid MP4 creation_time: {creation_time!r}") from exc
+
     decoded = parse(args.recording)
     metadata, samples = decoded["metadata"], decoded["samples"]
     samples = sorted(
@@ -153,7 +169,8 @@ def main() -> int:
     )
     if not samples:
         raise RuntimeError("No timestamped telemetry samples found.")
-    times = [float(s["timestamp"] - samples[0]["timestamp"]) for s in samples]
+    avinox_start = float(metadata.get("start") or samples[0]["timestamp"])
+    times = [float(s["timestamp"]) - avinox_start for s in samples]
     end_time = min(info["duration"], args.start + args.duration) if args.duration else info["duration"]
     if args.start >= info["duration"]:
         parser.error("--start is beyond the end of the video")
@@ -186,7 +203,7 @@ def main() -> int:
             video_time = args.start + frame_index / fps
             if video_time >= end_time:
                 break
-            telemetry_time = video_time + args.offset
+            telemetry_time = video_epoch + video_time + args.offset - avinox_start
             nearest = bisect.bisect_left(times, telemetry_time)
             candidates = [i for i in (nearest - 1, nearest) if 0 <= i < len(samples)]
             sample_index = min(candidates, key=lambda i: abs(times[i] - telemetry_time)) if candidates else None
@@ -213,9 +230,11 @@ def main() -> int:
         writer.release()
 
     print(f"Video: {args.video}")
+    print(f"MP4 creation_time: {creation_time} (Unix {video_epoch:.3f})")
+    print(f"Avinox metadata start: {avinox_start:.3f} (UTC epoch)")
     print(f"Avinox start (UTC epoch): {metadata.get('start')}")
     print(f"First sample: {samples[0].get('date')}")
-    print(f"Offset: {args.offset:+.3f}s (added to video elapsed time)")
+    print(f"Offset: {args.offset:+.3f}s (fine adjustment)")
     print(f"IMU axis: {args.axis.upper()} | window: {args.window:g}s")
     print(f"Frames: {frame_index} | output: {output}")
     return 0
