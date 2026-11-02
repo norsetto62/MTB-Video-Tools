@@ -52,7 +52,7 @@ def _video_reader_command(video: Path, start: float, duration: float,
     if start > 0:
         command += ["-ss", f"{start:.6f}"]
     if cuda:
-        command += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        command += ["-hwaccel", "cuda"]
     command += ["-i", str(video)]
     if duration > 0:
         command += ["-t", f"{duration:.6f}"]
@@ -261,19 +261,26 @@ def main() -> int:
             decoded_frames.put(None)
 
     def write_frames() -> None:
-        try:
-            while True:
-                raw = encoded_frames.get()
+        failed = False
+        while True:
+            raw = encoded_frames.get()
+            try:
                 if raw is None:
                     break
-                encoder_process.stdin.write(raw)
-        except BaseException as exc:
-            worker_errors.append(("encoder writer", exc))
-        finally:
-            encoded_frames.task_done()
+                # Keep draining if FFmpeg exits: otherwise the producer can
+                # block forever on a full queue and appear to hang silently.
+                if not failed:
+                    try:
+                        encoder_process.stdin.write(raw)
+                    except BaseException as exc:
+                        worker_errors.append(("encoder writer", exc))
+                        failed = True
+            finally:
+                encoded_frames.task_done()
 
     reader_thread = threading.Thread(target=read_frames, name="ffmpeg-reader", daemon=True)
     writer_thread = threading.Thread(target=write_frames, name="ffmpeg-writer", daemon=True)
+    print("Starting CUDA decode -> OpenCV overlay -> NVENC pipeline...", flush=True)
     reader_thread.start()
     writer_thread.start()
     try:
