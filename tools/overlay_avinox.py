@@ -67,17 +67,27 @@ def _video_reader_command(video: Path, start: float, duration: float,
 
 
 def _video_writer_command(width: int, height: int, fps: float, output: Path,
-                          encoder: str, crf: int) -> list[str]:
+                          encoder: str, crf: int, source: Path,
+                          start: float, duration: float) -> list[str]:
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
-        "-r", f"{fps:.8f}", "-i", "pipe:0", "-an", "-c:v", encoder,
+        "-r", f"{fps:.8f}", "-i", "pipe:0",
     ]
+    # Re-open the original file only for its audio stream. Seek to the same
+    # source timestamp as the decoded video segment.
+    if start > 0:
+        command += ["-ss", f"{start:.6f}"]
+    command += ["-i", str(source), "-map", "0:v:0", "-map", "1:a?"]
+    if duration > 0:
+        command += ["-t", f"{duration:.6f}"]
+    command += ["-c:v", encoder]
     if encoder == "h264_nvenc":
         command += ["-preset", "p4", "-rc", "constqp", "-qp", str(crf)]
     else:
         command += ["-preset", "medium", "-crf", str(crf)]
-    command += ["-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output)]
+    command += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart", "-shortest", str(output)]
     return command
 
 
@@ -101,7 +111,8 @@ def _draw_panel(cv2: Any, frame: Any, x: int, y: int, w: int, h: int,
 
 
 def _draw_imu(cv2: Any, frame: Any, samples: list[dict[str, Any]],
-              times: list[float], current: float, axis: str, window: float) -> None:
+              times: list[float], current: float, axis: str, window: float,
+              scale_min: float, scale_max: float) -> None:
     height, width = frame.shape[:2]
     margin = max(18, width // 60)
     panel_h = max(115, height // 4)
@@ -138,8 +149,9 @@ def _draw_imu(cv2: Any, frame: Any, samples: list[dict[str, Any]],
              (90, 95, 100), 1, cv2.LINE_AA)
 
     if visible:
-        # Fixed scale makes values comparable across frames and axes.
-        lo, hi = -1.0, 1.0
+        # Bounds are computed once from the complete selected-axis recording,
+        # so the graph scale remains stable throughout the rendered video.
+        lo, hi = scale_min, scale_max
         points = []
         for t, value in visible:
             px = graph_left + int((t - left) / window * (graph_right - graph_left))
@@ -237,7 +249,24 @@ def main() -> int:
     decode_cmd = _video_reader_command(
         args.video, args.start, end_time - args.start, use_cuda
     )
-    encode_cmd = _video_writer_command(width, height, fps, output, encoder, args.crf)
+    axis_key = "imu" + args.axis.upper()
+    axis_values = [float(sample[axis_key]) for sample in samples
+                   if sample.get(axis_key) is not None]
+    if not axis_values:
+        raise RuntimeError(f"No IMU {args.axis.upper()} samples found.")
+    imu_min, imu_max = min(axis_values), max(axis_values)
+    if imu_max - imu_min < 1e-9:
+        imu_min -= 0.05
+        imu_max += 0.05
+    else:
+        padding = (imu_max - imu_min) * 0.05
+        imu_min -= padding
+        imu_max += padding
+
+    encode_cmd = _video_writer_command(
+        width, height, fps, output, encoder, args.crf,
+        args.video, args.start, end_time - args.start,
+    )
     decoder = subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     encoder_process = subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     # Keep a bounded frame pipeline: decoding, Python overlay rendering and
@@ -351,7 +380,8 @@ def main() -> int:
             _draw_panel(cv2, frame, 18, 18, panel_w, panel_h, "SPEED", speed_text)
             _draw_panel(cv2, frame, width - panel_w - 18, 18, panel_w, panel_h,
                         "SLOPE", gradient_text, True)
-            _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis, args.window)
+            _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis,
+                      args.window, imu_min, imu_max)
             # Queue the ndarray and let the writer consume its buffer directly.
             encoded_frames.put(frame)
             frame_index += 1
@@ -409,7 +439,7 @@ def main() -> int:
     print(f"Avinox start (UTC epoch): {metadata.get('start')}")
     print(f"First sample: {samples[0].get('date')}")
     print(f"Offset: {args.offset:+.3f}s (fine adjustment)")
-    print(f"IMU axis: {args.axis.upper()} | fixed scale: -1.00 to +1.00 | window: {args.window:g}s")
+    print(f"IMU axis: {args.axis.upper()} | scale: {imu_min:.3f} to {imu_max:.3f} | window: {args.window:g}s")
     print(f"Frames: {frame_index} | output: {output}")
     return 0
 
