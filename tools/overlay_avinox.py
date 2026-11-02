@@ -12,6 +12,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 import sys
 from typing import Any
@@ -240,9 +241,20 @@ def main() -> int:
     decoded_frames: queue.Queue[bytes | None] = queue.Queue(maxsize=buffer_frames)
     encoded_frames: queue.Queue[bytes | None] = queue.Queue(maxsize=buffer_frames)
     worker_errors: list[tuple[str, BaseException]] = []
+    decoder_stderr = bytearray()
+    encoder_stderr = bytearray()
     frame_bytes = width * height * 3
     frame_index = 0
     decode_error = b""
+
+    def drain_stderr(stream: Any, target: bytearray, stage: str) -> None:
+        try:
+            while chunk := stream.read(65536):
+                target.extend(chunk)
+                if len(target) > 1_000_000:
+                    del target[:-1_000_000]
+        except BaseException as exc:
+            worker_errors.append((f"{stage} stderr reader", exc))
 
     def read_frames() -> None:
         try:
@@ -280,14 +292,40 @@ def main() -> int:
 
     reader_thread = threading.Thread(target=read_frames, name="ffmpeg-reader", daemon=True)
     writer_thread = threading.Thread(target=write_frames, name="ffmpeg-writer", daemon=True)
+    decoder_log_thread = threading.Thread(
+        target=drain_stderr, args=(decoder.stderr, decoder_stderr, "decoder"),
+        name="ffmpeg-decoder-log", daemon=True,
+    )
+    encoder_log_thread = threading.Thread(
+        target=drain_stderr, args=(encoder_process.stderr, encoder_stderr, "encoder"),
+        name="ffmpeg-encoder-log", daemon=True,
+    )
     print("Starting CUDA decode -> OpenCV overlay -> NVENC pipeline...", flush=True)
+    print("Launching FFmpeg decoder...", flush=True)
+    decoder_log_thread.start()
+    encoder_log_thread.start()
     reader_thread.start()
     writer_thread.start()
+    last_frame_at = time.monotonic()
     try:
         while True:
-            raw = decoded_frames.get()
+            try:
+                raw = decoded_frames.get(timeout=1.0)
+            except queue.Empty:
+                if decoder.poll() is not None and not reader_thread.is_alive():
+                    break
+                if time.monotonic() - last_frame_at > 60:
+                    raise RuntimeError(
+                        "FFmpeg decoder produced no frame for 60 seconds. "
+                        f"Decoder status: {decoder.poll()}; stderr: "
+                        f"{decoder_stderr.decode(errors='replace')[-4000:]}"
+                    )
+                continue
             if raw is None:
                 break
+            last_frame_at = time.monotonic()
+            if frame_index == 0:
+                print("First decoded frame received; processing started.", flush=True)
             frame = __import__("numpy").frombuffer(raw, dtype="uint8").reshape(height, width, 3).copy()
             video_time = args.start + frame_index / fps
             if video_time >= end_time:
@@ -318,10 +356,19 @@ def main() -> int:
         encoder_process.terminate()
         raise
     finally:
-        decoded_frames.put(None)
-        encoded_frames.put(None)
-        reader_thread.join()
-        writer_thread.join()
+        # Stop workers without waiting forever on a full bounded queue.
+        if reader_thread.is_alive():
+            decoder.terminate()
+        try:
+            decoded_frames.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
+            encoded_frames.put_nowait(None)
+        except queue.Full:
+            pass
+        reader_thread.join(timeout=10)
+        writer_thread.join(timeout=10)
         if decoder.stdout:
             decoder.stdout.close()
         if encoder_process.stdin:
@@ -331,8 +378,10 @@ def main() -> int:
                 pass
         decoder.wait()
         encoder_process.wait()
-        decode_error = decoder.stderr.read() if decoder.stderr else b""
-        encode_error = encoder_process.stderr.read() if encoder_process.stderr else b""
+        decoder_log_thread.join(timeout=5)
+        encoder_log_thread.join(timeout=5)
+        decode_error = bytes(decoder_stderr)
+        encode_error = bytes(encoder_stderr)
         if decoder.stderr:
             decoder.stderr.close()
         if encoder_process.stderr:
