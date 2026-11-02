@@ -9,13 +9,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 import sys
 from typing import Any
 
-# Allow running this file directly from a source checkout without requiring
-# an editable install.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -29,7 +27,7 @@ def _json_default(value: Any) -> str:
 
 
 def export_csv(samples: list[dict[str, Any]], destination: Path) -> Path:
-    """Write one row per telemetry sample, preserving all decoded channels."""
+    """Write all decoded channels, one telemetry sample per row."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     columns = list(dict.fromkeys(key for sample in samples for key in sample))
     with destination.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -54,12 +52,14 @@ def export_metadata(metadata: dict[str, Any], destination: Path) -> Path:
 
 def plot_ride(samples: list[dict[str, Any]], metadata: dict[str, Any],
               destination: Path, *, show: bool = False) -> Path:
-    """Create a diagnostic overview of the main ride channels and GPS track."""
+    """Save separate time-series panels and a GPS track when coordinates exist."""
     try:
         import matplotlib
         if not show:
             matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
+        from matplotlib.collections import LineCollection
+        from matplotlib.colors import Normalize
     except ImportError as exc:
         raise ImportError(
             "Visualization requires matplotlib. Install it with: "
@@ -75,71 +75,91 @@ def plot_ride(samples: list[dict[str, Any]], metadata: dict[str, Any],
         for i, sample in enumerate(samples)
     ]
 
-    def series(key: str) -> list[float]:
-        values = []
+    def values(key: str) -> list[float]:
+        result = []
         for sample in samples:
             value = sample.get(key)
-            values.append(float("nan") if value is None else float(value))
-        return values
+            result.append(float("nan") if value is None else float(value))
+        return result
 
-    fig, axes = plt.subplots(4, 1, figsize=(16, 12), sharex=True)
+    gps = [
+        (i, float(sample["longitude"]), float(sample["latitude"]))
+        for i, sample in enumerate(samples)
+        if sample.get("longitude") is not None
+        and sample.get("latitude") is not None
+        and -180 <= float(sample["longitude"]) <= 180
+        and -90 <= float(sample["latitude"]) <= 90
+    ]
+    has_gps = len(gps) >= 2
+
+    # GPS gets its own map-like panel; otherwise use four telemetry panels.
+    panel_count = 5 if has_gps else 4
+    fig, axes = plt.subplots(panel_count, 1, figsize=(16, 3.0 * panel_count),
+                             sharex=False)
     fig.suptitle(
         f"{metadata.get('fileName', 'Avinox ride')} — "
         f"{len(samples)} samples, {metadata.get('duration', 0)} s",
         fontsize=14, fontweight="bold",
     )
 
-    axes[0].plot(times, series("speed"), label="Speed")
-    axes[0].set_ylabel("Speed (km/h)")
-    axes[0].legend(loc="upper right")
-    axes[0].grid(alpha=0.25)
+    ax = axes[0]
+    ax.plot(times, values("speed"), label="Speed")
+    ax.set_ylabel("Speed (km/h)")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.25)
 
-    axes[1].plot(times, series("riderPower"), label="Rider power")
-    axes[1].plot(times, series("motorPower"), label="Motor power")
-    axes[1].plot(times, series("totalPower"), label="Total power", alpha=0.75)
-    axes[1].set_ylabel("Power (W)")
-    axes[1].legend(loc="upper right")
-    axes[1].grid(alpha=0.25)
+    ax = axes[1]
+    ax.plot(times, values("riderPower"), label="Rider power")
+    ax.plot(times, values("motorPower"), label="Motor power")
+    ax.plot(times, values("totalPower"), label="Total power", alpha=0.75)
+    ax.set_ylabel("Power (W)")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.25)
 
-    axes[2].plot(times, series("imuX"), label="IMU X")
-    axes[2].plot(times, series("imuY"), label="IMU Y")
-    axes[2].plot(times, series("imuZ"), label="IMU Z")
-    axes[2].plot(times, series("gradient"), label="Recorded gradient", alpha=0.8)
-    axes[2].set_ylabel("Raw IMU / gradient")
-    axes[2].legend(loc="upper right", ncol=4)
-    axes[2].grid(alpha=0.25)
+    ax = axes[2]
+    ax.plot(times, values("gradient"), label="Recorded gradient")
+    ax.set_ylabel("Gradient (raw / 100)")
+    ax.set_title("Recorded gradient — physical unit not yet verified", loc="left")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.25)
 
-    latitudes, longitudes = series("latitude"), series("longitude")
-    gps_valid = [
-        i for i, (lat, lon) in enumerate(zip(latitudes, longitudes))
-        if lat == lat and lon == lon and -90 <= lat <= 90 and -180 <= lon <= 180
-    ]
-    if gps_valid:
-        axes[3].plot(
-            [longitudes[i] for i in gps_valid],
-            [latitudes[i] for i in gps_valid],
-            linewidth=1.2,
-        )
-        axes[3].scatter(longitudes[gps_valid[0]], latitudes[gps_valid[0]],
-                        marker="o", label="Start")
-        axes[3].scatter(longitudes[gps_valid[-1]], latitudes[gps_valid[-1]],
-                        marker="x", label="End")
-        axes[3].legend(loc="best")
-        axes[3].set_ylabel("Latitude")
-        axes[3].set_xlabel("Longitude")
-        axes[3].set_aspect("equal", adjustable="datalim")
-    else:
-        axes[3].text(0.5, 0.5, "No valid GPS samples",
-                     ha="center", va="center", transform=axes[3].transAxes)
-        axes[3].set_axis_off()
+    ax = axes[3]
+    ax.plot(times, values("imuX"), label="IMU X")
+    ax.plot(times, values("imuY"), label="IMU Y")
+    ax.plot(times, values("imuZ"), label="IMU Z")
+    ax.set_ylabel("IMU raw float32")
+    ax.set_title("IMU axes — raw values, independent scale", loc="left")
+    ax.legend(loc="upper right", ncol=3)
+    ax.grid(alpha=0.25)
+    ax.set_xlabel("Elapsed time (s)")
 
-    if gps_valid:
-        axes[3].grid(alpha=0.25)
-    else:
-        axes[2].set_xlabel("Elapsed time (s)")
-    if gps_valid:
-        for axis in axes[:3]:
-            axis.set_xlabel("Elapsed time (s)")
+    if has_gps:
+        ax = axes[4]
+        lons = [p[1] for p in gps]
+        lats = [p[2] for p in gps]
+        points = list(zip(lons, lats))
+        if len(points) >= 2:
+            segments = [[points[i], points[i + 1]] for i in range(len(points) - 1)]
+            elapsed = [times[p[0]] for p in gps]
+            collection = LineCollection(
+                segments, cmap="viridis",
+                norm=Normalize(min(elapsed), max(elapsed) or 1),
+                linewidth=2.0,
+            )
+            collection.set_array((__import__("numpy").asarray(elapsed[:-1]) +
+                                  __import__("numpy").asarray(elapsed[1:])) / 2)
+            ax.add_collection(collection)
+            fig.colorbar(collection, ax=ax, label="Elapsed time (s)")
+        ax.scatter(lons[0], lats[0], marker="o", s=55, label="Start", zorder=3)
+        ax.scatter(lons[-1], lats[-1], marker="X", s=65, label="Finish", zorder=3)
+        ax.set_xlim(min(lons), max(lons)) if min(lons) != max(lons) else ax.set_xlim(lons[0] - 0.0001, lons[0] + 0.0001)
+        ax.set_ylim(min(lats), max(lats)) if min(lats) != max(lats) else ax.set_ylim(lats[0] - 0.0001, lats[0] + 0.0001)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+        ax.set_title(f"GPS track — {len(gps)} valid fixes", loc="left")
+        ax.legend(loc="best")
+        ax.grid(alpha=0.25)
 
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -164,16 +184,18 @@ def main() -> int:
         parser.error(f"Recording does not exist: {args.recording}")
 
     result = parse(args.recording)
-    metadata = result["metadata"]
-    samples = result["samples"]
+    metadata, samples = result["metadata"], result["samples"]
     stem = args.recording.stem
     csv_path = export_csv(samples, args.output_dir / f"{stem}.csv")
     json_path = export_metadata(metadata, args.output_dir / f"{stem}_metadata.json")
     plot_path = plot_ride(samples, metadata, args.output_dir / f"{stem}_overview.png",
                           show=args.show)
 
+    gps_count = sum(s.get("latitude") is not None and s.get("longitude") is not None
+                    for s in samples)
     print(f"Ride ID: {metadata.get('rideId')}")
     print(f"Samples: {len(samples)}")
+    print(f"GPS fixes: {gps_count}/{len(samples)}")
     print(f"Duration: {metadata.get('duration')} s")
     print(f"CSV: {csv_path}")
     print(f"Metadata: {json_path}")
