@@ -149,8 +149,8 @@ def _draw_imu(cv2: Any, frame: Any, samples: list[dict[str, Any]],
              (90, 95, 100), 1, cv2.LINE_AA)
 
     if visible:
-        # Bounds are computed once from the complete selected-axis recording,
-        # so the graph scale remains stable throughout the rendered video.
+        # Bounds are computed once from the selected video interval, so the
+        # graph scale remains stable throughout the rendered video.
         lo, hi = scale_min, scale_max
         points = []
         for t, value in visible:
@@ -250,10 +250,22 @@ def main() -> int:
         args.video, args.start, end_time - args.start, use_cuda
     )
     axis_key = "imu" + args.axis.upper()
-    axis_values = [float(sample[axis_key]) for sample in samples
-                   if sample.get(axis_key) is not None]
+    # Match the IMU scale to the exact video interval being rendered. The
+    # telemetry timestamps are relative to avinox_start, just like times.
+    telemetry_start = video_epoch + args.start + args.offset - avinox_start
+    telemetry_end = video_epoch + end_time + args.offset - avinox_start
+    first_sample = bisect.bisect_left(times, telemetry_start)
+    last_sample = bisect.bisect_right(times, telemetry_end)
+    axis_values = [
+        float(sample[axis_key])
+        for sample in samples[first_sample:last_sample]
+        if sample.get(axis_key) is not None
+    ]
     if not axis_values:
-        raise RuntimeError(f"No IMU {args.axis.upper()} samples found.")
+        raise RuntimeError(
+            f"No IMU {args.axis.upper()} samples found in the rendered interval "
+            f"({args.start:.3f}s to {end_time:.3f}s of video)."
+        )
     imu_min, imu_max = min(axis_values), max(axis_values)
     if imu_max - imu_min < 1e-9:
         imu_min -= 0.05
