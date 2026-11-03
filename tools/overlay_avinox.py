@@ -178,8 +178,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("video", type=Path, help="Source video")
     parser.add_argument("recording", type=Path, help="Avinox .proto recording")
-    parser.add_argument("--axis", choices=("x", "y", "z"), default="x",
-                        help="IMU axis to plot (default: x)")
+    parser.add_argument("--axis", choices=("x", "y", "z"), default=None,
+                        help="Optional IMU axis to plot (x, y or z); omit to disable IMU rendering")
     parser.add_argument("--offset", type=float, default=0.0,
                         help="Seconds added to video elapsed time to locate telemetry (default: 0)")
     parser.add_argument("--window", type=float, default=12.0,
@@ -229,8 +229,9 @@ def main() -> int:
     end_time = min(info["duration"], args.start + args.duration) if args.duration else info["duration"]
     if args.start >= info["duration"]:
         parser.error("--start is beyond the end of the video")
+    output_suffix = f"_avinox_{args.axis}" if args.axis else "_avinox"
     output = args.output or args.video.with_name(
-        f"{args.video.stem}_avinox_{args.axis}.mp4"
+        f"{args.video.stem}{output_suffix}.mp4"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -249,31 +250,32 @@ def main() -> int:
     decode_cmd = _video_reader_command(
         args.video, args.start, end_time - args.start, use_cuda
     )
-    axis_key = "imu" + args.axis.upper()
-    # Match the IMU scale to the exact video interval being rendered. The
-    # telemetry timestamps are relative to avinox_start, just like times.
-    telemetry_start = video_epoch + args.start + args.offset - avinox_start
-    telemetry_end = video_epoch + end_time + args.offset - avinox_start
-    first_sample = bisect.bisect_left(times, telemetry_start)
-    last_sample = bisect.bisect_right(times, telemetry_end)
-    axis_values = [
-        float(sample[axis_key])
-        for sample in samples[first_sample:last_sample]
-        if sample.get(axis_key) is not None
-    ]
-    if not axis_values:
-        raise RuntimeError(
-            f"No IMU {args.axis.upper()} samples found in the rendered interval "
-            f"({args.start:.3f}s to {end_time:.3f}s of video)."
-        )
-    imu_min, imu_max = min(axis_values), max(axis_values)
-    if imu_max - imu_min < 1e-9:
-        imu_min -= 0.05
-        imu_max += 0.05
-    else:
-        padding = (imu_max - imu_min) * 0.05
-        imu_min -= padding
-        imu_max += padding
+    imu_min = imu_max = None
+    if args.axis is not None:
+        axis_key = "imu" + args.axis.upper()
+        # Match the IMU scale to the exact video interval being rendered.
+        telemetry_start = video_epoch + args.start + args.offset - avinox_start
+        telemetry_end = video_epoch + end_time + args.offset - avinox_start
+        first_sample = bisect.bisect_left(times, telemetry_start)
+        last_sample = bisect.bisect_right(times, telemetry_end)
+        axis_values = [
+            float(sample[axis_key])
+            for sample in samples[first_sample:last_sample]
+            if sample.get(axis_key) is not None
+        ]
+        if not axis_values:
+            raise RuntimeError(
+                f"No IMU {args.axis.upper()} samples found in the rendered interval "
+                f"({args.start:.3f}s to {end_time:.3f}s of video)."
+            )
+        imu_min, imu_max = min(axis_values), max(axis_values)
+        if imu_max - imu_min < 1e-9:
+            imu_min -= 0.05
+            imu_max += 0.05
+        else:
+            padding = (imu_max - imu_min) * 0.05
+            imu_min -= padding
+            imu_max += padding
 
     encode_cmd = _video_writer_command(
         width, height, fps, output, encoder, args.crf,
@@ -392,8 +394,9 @@ def main() -> int:
             _draw_panel(cv2, frame, 18, 18, panel_w, panel_h, "SPEED", speed_text)
             _draw_panel(cv2, frame, width - panel_w - 18, 18, panel_w, panel_h,
                         "SLOPE", gradient_text, True)
-            _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis,
-                      args.window, imu_min, imu_max)
+            if args.axis is not None:
+                _draw_imu(cv2, frame, samples, times, telemetry_time, args.axis,
+                          args.window, imu_min, imu_max)
             # Queue the ndarray and let the writer consume its buffer directly.
             encoded_frames.put(frame)
             frame_index += 1
@@ -451,7 +454,10 @@ def main() -> int:
     print(f"Avinox start (UTC epoch): {metadata.get('start')}")
     print(f"First sample: {samples[0].get('date')}")
     print(f"Offset: {args.offset:+.3f}s (fine adjustment)")
-    print(f"IMU axis: {args.axis.upper()} | scale: {imu_min:.3f} to {imu_max:.3f} | window: {args.window:g}s")
+    if args.axis is not None:
+        print(f"IMU axis: {args.axis.upper()} | scale: {imu_min:.3f} to {imu_max:.3f} | window: {args.window:g}s")
+    else:
+        print("IMU overlay: disabled")
     print(f"Frames: {frame_index} | output: {output}")
     return 0
 
