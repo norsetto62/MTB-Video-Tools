@@ -179,7 +179,7 @@ def main() -> int:
     parser.add_argument("video", type=Path, help="Source video")
     parser.add_argument("recording", type=Path, help="Avinox .proto recording")
     parser.add_argument("--axis", choices=("x", "y", "z"), default=None,
-                        help="IMU axis to plot (default: None)")
+                        help="Optional IMU axis to plot (x, y or z); omit to disable IMU rendering")
     parser.add_argument("--offset", type=float, default=0.0,
                         help="Seconds added to video elapsed time to locate telemetry (default: 0)")
     parser.add_argument("--window", type=float, default=12.0,
@@ -229,8 +229,9 @@ def main() -> int:
     end_time = min(info["duration"], args.start + args.duration) if args.duration else info["duration"]
     if args.start >= info["duration"]:
         parser.error("--start is beyond the end of the video")
+    output_suffix = f"_avinox_{args.axis}" if args.axis else "_avinox"
     output = args.output or args.video.with_name(
-        f"{args.video.stem}_avinox_{args.axis}.mp4"
+        f"{args.video.stem}{output_suffix}.mp4"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -249,11 +250,10 @@ def main() -> int:
     decode_cmd = _video_reader_command(
         args.video, args.start, end_time - args.start, use_cuda
     )
-
+    imu_min = imu_max = None
     if args.axis is not None:
         axis_key = "imu" + args.axis.upper()
-        # Match the IMU scale to the exact video interval being rendered. The
-        # telemetry timestamps are relative to avinox_start, just like times.
+        # Match the IMU scale to the exact video interval being rendered.
         telemetry_start = video_epoch + args.start + args.offset - avinox_start
         telemetry_end = video_epoch + end_time + args.offset - avinox_start
         first_sample = bisect.bisect_left(times, telemetry_start)
@@ -456,6 +456,8 @@ def main() -> int:
     print(f"Offset: {args.offset:+.3f}s (fine adjustment)")
     if args.axis is not None:
         print(f"IMU axis: {args.axis.upper()} | scale: {imu_min:.3f} to {imu_max:.3f} | window: {args.window:g}s")
+    else:
+        print("IMU overlay: disabled")
     print(f"Frames: {frame_index} | output: {output}")
     return 0
 
