@@ -131,18 +131,14 @@ def create_power_widget(power, assist, height):
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Fattore di scala basato su un'altezza di riferimento di 200px
+    # Fattore di scala basato su un'altezza di riferimento di 200px.
     scale = height / 200.0
-
-    # Dimensioni dell'arco rese relative all'altezza
-    radius = int(100 * scale)  # Raggio del semicerchio
-    arc_width = max(2, int(14 * scale))  # Spessore dell'arco
+    radius = int(100 * scale)
+    arc_width = max(2, int(14 * scale))
+    outline_width = max(2, int(5 * scale))
     center_x = width // 2
-    center_y_arc = int(
-        120 * scale
-    )  # Centro geometrico del cerchio di riferimento
+    center_y_arc = int(120 * scale)
 
-    # Box dell'arco calcolato dinamicamente
     arc_box = [
         center_x - radius,
         center_y_arc - radius,
@@ -150,25 +146,36 @@ def create_power_widget(power, assist, height):
         center_y_arc + radius,
     ]
 
+    # Bordo scuro sotto l'arco: mantiene il tachimetro leggibile anche
+    # quando il video sottostante è molto chiaro.
     draw.arc(
         arc_box,
         start=180,
         end=360,
-        fill=(255, 255, 255, 120),
+        fill=(0, 0, 0, 235),
+        width=arc_width + outline_width * 2,
+    )
+    draw.arc(
+        arc_box,
+        start=180,
+        end=360,
+        fill=(255, 255, 255, 175),
         width=arc_width,
     )
 
     if power is not None:
-
-        # Calcola l'angolo attivo in base ai Watt (da 180° a 360°)
         current_watt = max(0, min(power, MAX_WATT))
-        # Mappa i Watt sull'arco di 180 gradi
         current_angle = 180 + (current_watt / MAX_WATT) * 180
-        # Colore dinamico in base allo sforzo
         gauge_color = get_color_for_watt(current_watt)
 
-        # Disegna l'arco attivo (la parte che si riempie)
         if current_angle > 180:
+            draw.arc(
+                arc_box,
+                start=180,
+                end=current_angle,
+                fill=(0, 0, 0, 235),
+                width=arc_width + outline_width * 2,
+            )
             draw.arc(
                 arc_box,
                 start=180,
@@ -177,8 +184,9 @@ def create_power_widget(power, assist, height):
                 width=arc_width,
             )
 
-    # Scrivi il valore numerico al centro (es. "280W")
     _, font_small = load_fonts_for_size(height)
+    text_stroke = max(1, int(2 * scale))
+    text_outline = (0, 0, 0, 255)
     power_text = "----" if power is None else f"{power:.0f}W"
 
     draw.text(
@@ -187,25 +195,46 @@ def create_power_widget(power, assist, height):
         fill=(255, 255, 255, 255),
         anchor="mm",
         font=font_small,
+        stroke_width=text_stroke,
+        stroke_fill=text_outline,
     )
 
-    # Scrivi l'etichetta "POWER" sotto il numero
-    draw.text(
-        (center_x, center_y_arc + int(25 * scale)),
-        "POWER",
-        fill=(255, 255, 255, 180),
-        anchor="mm",
-        font=font_small,
+    # Saetta disegnata vettorialmente: non dipende dai glifi disponibili nel font.
+    bolt_cx = center_x
+    bolt_cy = center_y_arc + int(25 * scale)
+    bolt_w = int(13 * scale)
+    bolt_h = int(21 * scale)
+    bolt_points = [
+        (bolt_cx + int(2 * scale), bolt_cy - bolt_h),
+        (bolt_cx - bolt_w, bolt_cy + int(1 * scale)),
+        (bolt_cx - int(2 * scale), bolt_cy + int(1 * scale)),
+        (bolt_cx - int(1 * scale), bolt_cy + bolt_h),
+        (bolt_cx + bolt_w, bolt_cy - int(3 * scale)),
+        (bolt_cx + int(3 * scale), bolt_cy - int(3 * scale)),
+    ]
+    draw.polygon(
+        bolt_points,
+        fill=(255, 210, 45, 255),
+        outline=(0, 0, 0, 255),
+    )
+    # Rinforza il contorno della saetta alle dimensioni video più grandi.
+    draw.line(
+        bolt_points + [bolt_points[0]],
+        fill=(0, 0, 0, 255),
+        width=max(1, int(1.5 * scale)),
+        joint="curve",
     )
 
-    # Scrivi l'assist level sotto "POWER"
-    if assist != None:
+    if assist is not None and 0 <= assist < len(ASSIST_LVL):
+        assist_color = ASSIST_CLR[assist] if assist < len(ASSIST_CLR) else (180, 180, 180, 255)
         draw.text(
             (center_x, center_y_arc - int(45 * scale)),
-            ASSIST_LVL[assist],
-            fill=ASSIST_CLR[assist],
+            ASSIST_LVL[assist].upper(),
+            fill=assist_color,
             anchor="mm",
             font=font_small,
+            stroke_width=text_stroke,
+            stroke_fill=text_outline,
         )
 
     return img
