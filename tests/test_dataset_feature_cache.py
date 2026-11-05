@@ -99,6 +99,25 @@ def test_feature_cache_key_includes_clip_and_extraction_settings(tmp_path):
     assert load_feature_sequence(video, cache_dir, clip, flow_config=changed_flow) is None
 
 
+
+def test_feature_cache_key_includes_roi_settings(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    original = feature_cache_path(video, cache_dir, clip)
+    changed = feature_cache_path(video, cache_dir, clip, roi_left=0.20)
+    assert original != changed
+    save_feature_sequence(sequence, video, cache_dir, clip)
+    assert load_feature_sequence(video, cache_dir, clip, roi_left=0.20) is None
+
+
+def test_feature_cache_key_includes_sampling_rate_but_not_window_geometry(tmp_path):
+    video, clip, sequence, cache_dir = _fixture(tmp_path)
+    original = feature_cache_path(video, cache_dir, clip, sample_fps=2.0)
+    assert original != feature_cache_path(video, cache_dir, clip, sample_fps=4.0)
+    # Window duration and stride are intentionally downstream of the raw
+    # feature cache; build_windows applies both on every invocation.
+    assert original == feature_cache_path(video, cache_dir, clip, sample_fps=2.0)
+
+
 def test_feature_cache_rejects_incompatible_version(tmp_path):
     video, clip, sequence, cache_dir = _fixture(tmp_path)
     path = save_feature_sequence(sequence, video, cache_dir, clip)
@@ -162,3 +181,127 @@ def test_feature_cache_rejects_timestamps_outside_clip(tmp_path):
     )
     with pytest.raises(ValueError, match="within the clip interval"):
         save_feature_sequence(outside, video, cache_dir, clip)
+
+
+
+def test_feature_cache_reuses_covering_interval_and_slices_without_rewriting_npz(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.arange(11 * len(FEATURE_NAMES), dtype=np.float32).reshape(11, -1),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    cache_path = save_feature_sequence(cached, video, cache_dir, cached_clip)
+    original_bytes = cache_path.read_bytes()
+
+    requested = Clip(video_name="ride", start=2.0, end=4.0)
+    actual = load_feature_sequence(video, cache_dir, requested)
+
+    assert actual is not None
+    np.testing.assert_array_equal(actual.timestamps, np.asarray([2.5, 3.0, 3.5]))
+    np.testing.assert_array_equal(actual.features, cached.features[4:7])
+    assert cache_path.read_bytes() == original_bytes
+
+
+def test_feature_cache_rejects_covering_interval_with_different_sampling_phase(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.ones((11, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    # The requested start is halfway between samples on the cached lattice.
+    requested = Clip(video_name="ride", start=0.25, end=2.25)
+    assert load_feature_sequence(video, cache_dir, requested) is None
+
+
+def test_feature_cache_does_not_reuse_interval_without_full_temporal_coverage(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=1.0, end=3.0)
+    cached = FeatureSequence(
+        features=np.ones((3, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.asarray([1.5, 2.0, 2.5], dtype=np.float64),
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    requested = Clip(video_name="ride", start=1.0, end=4.0)
+    assert load_feature_sequence(video, cache_dir, requested) is None
+
+
+def test_feature_cache_indexes_and_reuses_existing_unindexed_npz(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=6.0)
+    cached = FeatureSequence(
+        features=np.ones((11, len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=np.arange(0.5, 6.0, 0.5, dtype=np.float64),
+    )
+    cache_path = save_feature_sequence(cached, video, cache_dir, cached_clip)
+    original_bytes = cache_path.read_bytes()
+
+    # Simulate an NPZ copied into the canonical directory without a catalog row.
+    from autocut.dataset.cache_catalog import catalog_path
+    catalog_path(cache_dir).unlink(missing_ok=True)
+    requested = Clip(video_name="ride", start=2.0, end=4.0)
+    actual = load_feature_sequence(video, cache_dir, requested)
+
+    assert actual is not None
+    assert cache_path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize(
+    ("requested_end", "expected_reuse"),
+    [(821.77095, True), (822.01, False)],
+)
+def test_window_aware_cache_reuses_only_when_complete_windows_are_covered(
+    tmp_path, requested_end, expected_reuse
+):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=821.0)
+    cached_timestamps = np.arange(0.5, 821.0, 0.5, dtype=np.float64)
+    cached = FeatureSequence(
+        features=np.ones((len(cached_timestamps), len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=cached_timestamps,
+    )
+    cache_path = save_feature_sequence(cached, video, cache_dir, cached_clip)
+    original_bytes = cache_path.read_bytes()
+
+    requested = Clip(video_name="ride", start=0.0, end=requested_end)
+    actual = load_feature_sequence(
+        video, cache_dir, requested,
+        sample_fps=2.0,
+        window_duration=4.0,
+        window_stride=2.0,
+    )
+
+    assert (actual is not None) is expected_reuse
+    if expected_reuse:
+        assert actual.timestamps[-1] >= 820.0 - 1e-6
+        assert cache_path.read_bytes() == original_bytes
+
+
+def test_window_aware_cache_still_requires_full_coverage_without_window_contract(tmp_path):
+    video = tmp_path / "ride.mp4"
+    video.write_bytes(b"video bytes")
+    cache_dir = tmp_path / "feature-cache"
+    cached_clip = Clip(video_name="ride", start=0.0, end=821.0)
+    cached_timestamps = np.arange(0.5, 821.0, 0.5, dtype=np.float64)
+    cached = FeatureSequence(
+        features=np.ones((len(cached_timestamps), len(FEATURE_NAMES)), dtype=np.float32),
+        timestamps=cached_timestamps,
+    )
+    save_feature_sequence(cached, video, cache_dir, cached_clip)
+
+    requested = Clip(video_name="ride", start=0.0, end=821.77095)
+    assert load_feature_sequence(video, cache_dir, requested) is None

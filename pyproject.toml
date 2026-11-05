@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python",
     "librosa",
     "PyYAML",
+    "scipy",
 ]
 
 [tool.setuptools.packages.find]
@@ -23,9 +24,11 @@ dev = [
 ]
 ml = [
     "torch",
+    "lightgbm>=4.0.0",
 ]
 plot = [
     "matplotlib",
+    "plotly",
 ]
 hpo = [
     "optuna>=3.0.0",

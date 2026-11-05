@@ -11,6 +11,7 @@ from autocut.ml.inference import InferenceResult, infer_windows
 from autocut.ml.model import MTBClassifier
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
+from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES
 
 
 def _windows(seed=5, count=7, steps=8):
@@ -36,16 +37,16 @@ def _checkpoint(*, scaler=None, feature_mask=None):
     )
 
 
-def test_inference_returns_timestamps_and_three_probabilities():
+def test_inference_returns_timestamps_and_p_probability():
     windows = _windows()
     result = infer_windows(_checkpoint(), windows, batch_size=3)
 
     assert isinstance(result, InferenceResult)
     np.testing.assert_array_equal(result.timestamps, windows.timestamps)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
     assert result.probabilities.dtype == np.float32
     assert np.isfinite(result.probabilities).all()
-    np.testing.assert_allclose(result.probabilities.sum(axis=1), 1.0, atol=1e-6)
+    assert np.all((result.probabilities >= 0.0) & (result.probabilities <= 1.0))
 
 
 def test_inference_accepts_checkpoint_file(tmp_path):
@@ -55,7 +56,7 @@ def test_inference_accepts_checkpoint_file(tmp_path):
     save_checkpoint(path, model, data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0})
 
     result = infer_windows(path, windows)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
 
 
 def test_inference_reuses_checkpoint_scaler():
@@ -71,14 +72,14 @@ def test_inference_reuses_checkpoint_scaler():
     )
 
     result = infer_windows(payload, windows)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
 
 
 def test_inference_applies_checkpoint_feature_mask():
     windows = _windows()
     mask = [index % 2 == 0 for index in range(54)]
     result = infer_windows(_checkpoint(feature_mask=mask), windows)
-    assert result.probabilities.shape == (len(windows.X), 3)
+    assert result.probabilities.shape == (len(windows.X),)
 
 
 @pytest.mark.parametrize(
@@ -112,3 +113,23 @@ def test_inference_rejects_non_feature_windows_input():
 def test_inference_does_not_return_argmax_or_selection_fields():
     result = infer_windows(_checkpoint(), _windows())
     assert set(vars(result)) == {"timestamps", "probabilities"}
+
+
+
+def test_inference_derives_four_engineered_features_from_canonical_windows():
+    windows = _windows()
+    model = MTBClassifier(feature_dim=4, hidden_dim=4, classifier_mid_dim=5, dropout=0.0)
+    scaler = FeatureScaler(strategy="robust").fit(
+        np.random.default_rng(17).normal(size=(10, 8, 4)).astype(np.float32)
+    )
+    payload = build_checkpoint(
+        model,
+        scaler=scaler,
+        feature_names=ENGINEERED_FEATURE_NAMES,
+        data_config={"flow_fps": 2.0, "window": 4.0, "stride": 2.0},
+    )
+
+    result = infer_windows(payload, windows)
+
+    assert result.probabilities.shape == (len(windows.X),)
+    assert np.isfinite(result.probabilities).all()

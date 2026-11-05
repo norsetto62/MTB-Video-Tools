@@ -95,7 +95,6 @@ def _rebuild_timeline(
             output_end=cursor + duration,
             mandatory=clip.mandatory,
             score=clip.score,
-            tier=clip.tier,
             annotation_order=clip.annotation_order,
         ))
         cursor += duration

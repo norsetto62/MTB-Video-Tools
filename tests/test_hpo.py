@@ -27,7 +27,7 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
             "lr": 1e-4,
             "weight_decay": 1e-3,
             "dropout": 0.3,
-            "class_weights": [0.5, 1.0, 5.0],
+            "positive_prior": 0.1,
             "hidden_dim": 64,
             "epochs": 1,
             "batch_size": 2,
@@ -45,10 +45,9 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
                 "lr": {"low": 1e-5, "high": 1e-3, "log": True},
                 "weight_decay": {"low": 1e-4, "high": 1e-1, "log": True},
                 "dropout": {"low": 0.2, "high": 0.6},
-                "class_weight_0": {"low": 0.1, "high": 0.6},
-                "class_weight_2": {"low": 2.0, "high": 10.0},
+                "positive_prior": {"low": 0.05, "high": 0.3},
                 "hidden_dim": {"choices": [32, 64, 128]},
-                "c2_threshold": {"low": 0.5, "high": 0.95, "step": 0.05},
+                
             },
         },
         "logging": {"level": "INFO"},
@@ -72,7 +71,8 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
                 {
                     "selected_epochs": 1,
                     "metrics": {
-                        "per_class_f1": [0.70, 0.80, 0.75]
+                        "positive_recall_on_P": 0.70,
+                        "selected_fraction_of_U": 0.20
                     }
                 }
             ]
@@ -110,7 +110,7 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
     assert "train_groups" not in lovo_calls[2]
 
     # Check that the JSON export file was created successfully under output/hpo/
-    expected_json_path = tmp_path / "output" / "hpo" / "test_autocut_study_best_params.json"
+    expected_json_path = tmp_path / "output" / "hpo" / "test_autocut_study_pareto_results.json"
     assert expected_json_path.exists()
 
     # Verify JSON content structure and values
@@ -118,8 +118,89 @@ def test_run_hpo_orchestrates_study_and_exports_json(tmp_path, monkeypatch):
         payload = json.load(f)
 
     assert payload["study_name"] == "test_autocut_study"
-    assert "best_value" in payload
-    assert "best_params" in payload
-    assert "best_metrics" in payload
-    assert payload["best_metrics"]["macro_f1"] == 0.75
-    assert payload["best_metrics"]["class_0_f1"] == 0.70
+    assert payload["objectives"] == [
+        {"name": "positive_recall_on_P", "direction": "maximize"},
+        {"name": "selected_fraction_of_U", "direction": "minimize"},
+    ]
+    assert payload["pareto_front"]
+    assert "production_params" in payload
+    assert "production_metrics" in payload
+    assert payload["production_metrics"]["positive_recall_on_P"] == 0.70
+    assert payload["production_metrics"]["selected_fraction_of_U"] == 0.20
+
+
+def test_run_hpo_diagnostics_reuses_stored_trial_without_optimizing(tmp_path, monkeypatch):
+    class StoredTrial:
+        number = 27
+        state = hpo.optuna.trial.TrialState.COMPLETE
+        values = (0.66, 0.63)
+        params = {
+            "lr": 0.007,
+            "weight_decay": 0.0006,
+            "dropout": 0.18,
+            "hidden_dim": 128,
+            "positive_prior": 0.17,
+            "positive_threshold": 0.11,
+        }
+
+    class StoredStudy:
+        trials = [StoredTrial()]
+
+    settings = Config({
+        "paths": {"cache_dir": str(tmp_path / "cache")},
+        "data": {
+            "train_groups": ["ascoli", "castelli", "mentorella", "other"],
+            "validation_groups": ["ascoli"],
+        },
+        "training": {
+            "seed": 42,
+            "lr": 1e-3,
+            "weight_decay": 1e-3,
+            "dropout": 0.3,
+            "positive_prior": 0.1,
+            "positive_threshold": 0.5,
+            "hidden_dim": 64,
+            "epochs": 1,
+            "batch_size": 2,
+        },
+        "hpo": {
+            "study_name": "existing_study",
+            "proxy_test_groups": ["ascoli", "castelli", "mentorella"],
+            "search_space": {
+                "lr": {"low": 1e-5, "high": 1e-2, "log": True},
+                "weight_decay": {"low": 1e-5, "high": 1e-2, "log": True},
+                "dropout": {"low": 0.0, "high": 0.5},
+                "positive_prior": {"low": 0.05, "high": 0.3},
+                "positive_threshold": {"low": 0.05, "high": 0.5},
+                "hidden_dim": {"choices": [64, 128]},
+            },
+        },
+        "experiment": {"name": "diagnostic_test"},
+    })
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(hpo.optuna, "load_study", lambda **kwargs: StoredStudy())
+    captured = {}
+
+    def fake_run_lovo(manifest_path, settings, **kwargs):
+        captured["settings"] = settings
+        captured["kwargs"] = kwargs
+        output = Path(settings.debug.selection_diagnostics_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("diagnostic csv", encoding="utf-8")
+        return {"folds": []}
+
+    monkeypatch.setattr(hpo, "run_lovo", fake_run_lovo)
+    report = hpo.run_hpo_diagnostics(
+        tmp_path / "manifest.yaml",
+        settings,
+        trial_number=27,
+    )
+
+    assert report == Path("output/hpo/existing_study_trial_27_selection_diagnostics.csv")
+    assert report.read_text(encoding="utf-8") == "diagnostic csv"
+    assert captured["kwargs"]["test_groups"] == ("ascoli", "castelli", "mentorella")
+    assert captured["kwargs"]["train_groups"] == ("other",)
+    assert captured["settings"].training.positive_threshold == 0.11
+    assert captured["settings"].training.positive_prior == 0.17
+    assert captured["settings"].debug.selection_diagnostics_trial == 27

@@ -183,3 +183,6 @@ Save and verify the production checkpoint and its metadata.
 Verify the CLI can take the videos, annotations, model checkpoint, and music through to a finished highlight video.
 Run the complete workflow with a trained model, first without music and then with music. Validate the final rendered videos.
 The validation experiments should compare the relevant choices, including 2 FPS versus 10 FPS, class weighting, and retrieval behavior for the MTB class. Keep each held-out video out of training for its evaluation. Do not use the held-out results to repeatedly tune against that same video.
+
+## 17 - Database
+Implement one shared cache manager backed by SQLite, standardize storage under data/cache/features/ and data/cache/audio/, and make every pipeline and audit tool use it. Add commands to inspect entries, show disk usage, and perform dry-run cleanup. Keep the feature arrays as .npz files for now; moving those into SQLite would add complexity without a clear benefit.
