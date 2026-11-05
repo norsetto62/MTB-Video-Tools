@@ -201,9 +201,9 @@ def create_power_widget(power, assist, height):
 
     # Saetta disegnata vettorialmente: non dipende dai glifi disponibili nel font.
     bolt_cx = center_x
-    bolt_cy = center_y_arc + int(25 * scale)
-    bolt_w = int(13 * scale)
-    bolt_h = int(21 * scale)
+    bolt_cy = center_y_arc + int(26 * scale)
+    bolt_w = int(12 * scale)
+    bolt_h = int(20 * scale)
     bolt_points = [
         (bolt_cx + int(2 * scale), bolt_cy - bolt_h),
         (bolt_cx - bolt_w, bolt_cy + int(1 * scale)),
