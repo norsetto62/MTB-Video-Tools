@@ -1,6 +1,9 @@
 from __future__ import annotations
 import argparse
 from pathlib import Path
+import shutil
+import statistics
+import subprocess
 from PIL import Image, ImageDraw, ImageFont
 from autocut.dataset.avinox_proto import parse
 
@@ -239,143 +242,319 @@ def create_power_widget(power, assist, height):
 
     return img
 
+class WebMWriter:
+    """Stream RGBA frames directly to FFmpeg and encode a transparent VP9 WebM."""
+
+    def __init__(self, output: Path, width: int, height: int, fps: float, crf: int):
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError(
+                "ffmpeg non trovato. Installa FFmpeg e assicurati che sia nel PATH."
+            )
+
+        self.output = output
+        self.width = width
+        self.height = height
+        # VP9 4:2:0 requires even dimensions. Pad with transparent pixels
+        # rather than cropping or rescaling the widget.
+        self.encoded_width = width + (width % 2)
+        self.encoded_height = height + (height % 2)
+
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo",
+            "-pixel_format", "rgba",
+            "-video_size", f"{self.encoded_width}x{self.encoded_height}",
+            "-framerate", f"{fps:.8f}",
+            "-i", "pipe:0",
+            "-an",
+            "-c:v", "libvpx-vp9",
+            "-pix_fmt", "yuva420p",
+            "-crf", str(crf),
+            "-b:v", "0",
+            "-auto-alt-ref", "0",
+            "-metadata:s:v:0", "alpha_mode=1",
+            "-deadline", "good",
+            "-cpu-used", "2",
+            str(output),
+        ]
+        self.process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        if self.process.stdin is None:
+            raise RuntimeError("Impossibile aprire lo stream di input di FFmpeg.")
+
+    def write(self, frame: Image.Image) -> None:
+        if frame.mode != "RGBA":
+            frame = frame.convert("RGBA")
+        if frame.size != (self.width, self.height):
+            raise ValueError(
+                f"Dimensione frame inattesa: {frame.size}, "
+                f"attesa {(self.width, self.height)}"
+            )
+
+        if (self.encoded_width, self.encoded_height) != frame.size:
+            padded = Image.new(
+                "RGBA",
+                (self.encoded_width, self.encoded_height),
+                (0, 0, 0, 0),
+            )
+            padded.paste(frame, (0, 0))
+            frame = padded
+
+        try:
+            self.process.stdin.write(frame.tobytes())
+        except BrokenPipeError as exc:
+            error = self.process.stderr.read().decode(errors="replace")
+            raise RuntimeError(f"FFmpeg ha interrotto la codifica di {self.output}: {error}") from exc
+
+    def close(self) -> None:
+        if self.process.stdin and not self.process.stdin.closed:
+            self.process.stdin.close()
+        error = self.process.stderr.read().decode(errors="replace")
+        return_code = self.process.wait()
+        if return_code != 0:
+            raise RuntimeError(
+                f"FFmpeg non è riuscito a generare {self.output}: {error}"
+            )
+
+
+def estimate_fps(samples: list[dict]) -> float:
+    """Estimate the source cadence from positive timestamp deltas."""
+    timestamps = [float(sample["timestamp"]) for sample in samples]
+    deltas = [
+        later - earlier
+        for earlier, later in zip(timestamps, timestamps[1:])
+        if later > earlier
+    ]
+    if not deltas:
+        return 1.0
+    return 1.0 / statistics.median(deltas)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Genera widget PNG dai campioni del file .proto Avinox")
+    parser = argparse.ArgumentParser(
+        description="Genera overlay WebM trasparenti dai campioni Avinox"
+    )
     parser.add_argument("recording", nargs="?", type=Path, help="File .proto Avinox")
-    parser.add_argument("--output-dir", type=Path, default=Path("output_widgets"), help="Cartella output")
-    parser.add_argument("--list-widgets", action="store_true", help="Mostra la lista dei widget disponibili ed esce")
+    parser.add_argument("--output-dir", type=Path, default=Path("output_widgets"),
+                        help="Cartella dei WebM generati")
+    parser.add_argument("--list-widgets", action="store_true",
+                        help="Mostra la lista dei widget disponibili ed esce")
     parser.add_argument(
-        "--widgets", 
-        type=str, 
-        default="speed,slope,alt,track,elevation,power", 
+        "--widgets", type=str,
+        default="speed,slope,alt,track,elevation,power",
         help="Widget da generare separati da virgola. Default: tutti."
     )
+    parser.add_argument("--size", type=int, default=110,
+                        help="Altezza di riferimento in pixel per i widget. Default: 110.")
+    parser.add_argument("--start", type=float, default=0.0,
+                        help="Secondo di inizio della registrazione")
+    parser.add_argument("--duration", type=float, default=None,
+                        help="Durata in secondi da esportare")
     parser.add_argument(
-        "--size", 
-        type=int, 
-        default=110, 
-        help="Altezza di riferimento in pixel per i widget. Default: 110."
+        "--track-mode", type=str, choices=["full", "window"], default="full",
+        help="Modalità traccia/altimetria: intero percorso o solo intervallo esportato."
     )
-    parser.add_argument("--start", type=float, default=0.0, help="Secondo di inizio della registrazione")
-    parser.add_argument("--duration", type=float, default=None, help="Durata in secondi da esportare")
     parser.add_argument(
-        "--track-mode", 
-        type=str, 
-        choices=["full", "window"], 
-        default="full", 
-        help="Modalità traccia/altimetria: 'full' (intero percorso) o 'window' (solo intervallo start-duration). Default: full."
+        "--fps", type=float, default=None,
+        help="FPS del WebM. Default: cadenza mediana dei campioni sorgente."
     )
-    
+    parser.add_argument(
+        "--crf", type=int, default=30,
+        help="Qualità VP9: valori più bassi producono file più grandi e qualità maggiore (default: 30)."
+    )
+
     args = parser.parse_args()
 
     if args.list_widgets:
         print("\n📋 Widget disponibili:")
         for name, desc in AVAILABLE_WIDGETS.items():
             print(f"  - {name: <12} : {desc}")
-        print("\nEsempio d'uso: python script.py file.proto --track-mode window --start 30 --duration 120\n")
+        print("\nEsempio d'uso: python tools/overlay_widgets.py file.proto --widgets power,speed\n")
         return
 
     if not args.recording:
-        parser.error("❌ Errore: Devi specificare il file .proto di registrazione (oppure usa --list-widgets).")
+        parser.error("Devi specificare il file .proto di registrazione (oppure usa --list-widgets).")
+    if not args.recording.is_file():
+        parser.error(f"File Avinox non trovato: {args.recording}")
+    if args.size <= 0:
+        parser.error("--size deve essere maggiore di zero.")
+    if args.fps is not None and args.fps <= 0:
+        parser.error("--fps deve essere maggiore di zero.")
+    if not 0 <= args.crf <= 63:
+        parser.error("--crf deve essere compreso tra 0 e 63.")
+    if not shutil.which("ffmpeg"):
+        parser.error("ffmpeg non trovato. Installa FFmpeg e assicurati che sia nel PATH.")
 
-    selected_widgets = [w.strip().lower() for w in args.widgets.split(",")]
-    for w in selected_widgets:
-        if w not in AVAILABLE_WIDGETS:
-            parser.error(f"❌ Errore: Widget sconosciuto '{w}'. Usa --list-widgets per vedere quelli disponibili.")
+    selected_widgets = list(dict.fromkeys(
+        widget.strip().lower() for widget in args.widgets.split(",") if widget.strip()
+    ))
+    for widget in selected_widgets:
+        if widget not in AVAILABLE_WIDGETS:
+            parser.error(
+                f"Widget sconosciuto '{widget}'. Usa --list-widgets per vedere quelli disponibili."
+            )
+    if not selected_widgets:
+        parser.error("Seleziona almeno un widget con --widgets.")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     decoded = parse(args.recording)
     all_samples = sorted(
-        (s for s in decoded["samples"] if s.get("timestamp") is not None),
-        key=lambda s: s["timestamp"],
+        (sample for sample in decoded["samples"] if sample.get("timestamp") is not None),
+        key=lambda sample: sample["timestamp"],
     )
-    
-    avinox_start = float(decoded["metadata"].get("start") or all_samples[0]["timestamp"])
-    
-    # Campi corretti: latitude e longitude
-    all_lats = [float(s["latitude"]) for s in all_samples if "latitude" in s and s["latitude"] is not None]
-    all_lons = [float(s["longitude"]) for s in all_samples if "longitude" in s and s["longitude"] is not None]
-    all_alts = [float(s.get("altitude", 0.0)) for s in all_samples]
+    if not all_samples:
+        parser.error("Il file Avinox non contiene campioni con timestamp.")
 
-    # Filtraggio dei campioni per intervallo temporale
+    avinox_start = float(decoded["metadata"].get("start") or all_samples[0]["timestamp"])
+
+    # Keep only complete GPS fixes, so latitude and longitude remain paired.
+    gps_samples = [
+        sample for sample in all_samples
+        if sample.get("latitude") is not None and sample.get("longitude") is not None
+    ]
+    all_lats = [float(sample["latitude"]) for sample in gps_samples]
+    all_lons = [float(sample["longitude"]) for sample in gps_samples]
+    all_alts = [
+        float(sample["altitude"]) if sample.get("altitude") is not None else 0.0
+        for sample in all_samples
+    ]
+
     filtered_samples = []
-    for s in all_samples:
-        sample_time = float(s["timestamp"]) - avinox_start
+    for sample in all_samples:
+        sample_time = float(sample["timestamp"]) - avinox_start
         if sample_time < args.start:
             continue
-        if args.duration is not None and sample_time > (args.start + args.duration):
+        if args.duration is not None and sample_time > args.start + args.duration:
             break
-        filtered_samples.append(s)
+        filtered_samples.append(sample)
 
     if not filtered_samples:
-        print("❌ Nessun campione trovato nell'intervallo temporale specificato.")
+        print("Nessun campione trovato nell'intervallo temporale specificato.")
         return
 
-    print(f"Generazione di {len(filtered_samples)} campioni (track-mode: {args.track_mode}) in {args.output_dir}...")
-    
-    for idx_out, sample in enumerate(filtered_samples):
-        global_idx = all_samples.index(sample)
+    fps = args.fps or estimate_fps(filtered_samples)
+    print(
+        f"Generazione di {len(filtered_samples)} frame per widget a {fps:.3f} FPS "
+        f"(track-mode: {args.track_mode}) in {args.output_dir}..."
+    )
 
-        # Selezioniamo i dati in base alla modalità scelta (full o window)
-        if args.track_mode == "full":
-            track_lats, track_lons = all_lats, all_lons
-            track_alts = all_alts
-            track_idx = global_idx
-        else:
-            # Modalità window: estrae solo la porzione dell'intervallo
-            window_lats_lons = [(float(s["latitude"]), float(s["longitude"]))
-                                for s in filtered_samples 
-                                if s.get("latitude") is not None and s.get("longitude") is not None
-                                ]
-            track_lats = [lat for lat, lon in window_lats_lons]
-            track_lons = [lon for lat, lon in window_lats_lons]
-            track_alts = [float(s.get("altitude", 0.0)) for s in filtered_samples]
-            track_idx = idx_out
-
-        if "speed" in selected_widgets:
-            raw_speed = sample.get("speed", 0.0)
-            speed = float(raw_speed) if raw_speed is not None else None
-            speed_text = "----" if speed is None else f"{speed:.1f}"
-            img_speed = create_single_widget("VELOCITY", speed_text, "km/h", height=args.size)
-            img_speed.save(args.output_dir / f"speed_{idx_out:06d}.png", "PNG")
-
-        if "power" in selected_widgets:
-            raw_power = sample.get("totalPower", 0.0)
-            raw_assist = sample.get("assist", 0.0)
-            power = float(raw_power) if raw_power is not None else None
-            assist = int(raw_assist) if raw_power is not None else None
-            img_pow = create_power_widget(power, assist, args.size)
-            img_pow.save(args.output_dir / f"power_{idx_out:06d}.png", "PNG")
-
-        if "slope" in selected_widgets:
-            raw_gradient = sample.get("gradient", 0.0)
-            gradient = float(raw_gradient) if raw_gradient is not None else None
-            if gradient is None:
-                slope_color = (70, 220, 100, 255)
-                slope_text = "----"
+    writers: dict[str, WebMWriter] = {}
+    try:
+        # Start one encoder per widget: each resulting WebM remains independently
+        # positionable in the downstream video editor.
+        for widget in selected_widgets:
+            if widget == "speed" or widget == "slope" or widget == "alt":
+                width = int(args.size * 2.36)
+            elif widget == "track":
+                width = int(args.size * 1.55)
+            elif widget == "elevation":
+                width = int(args.size * 2.2)
             else:
-                slope_color = (70, 220, 100, 255) if gradient >= 0 else (240, 100, 90, 255)
-                slope_text = f"{gradient:+.1f}"
-            img_slope = create_single_widget("SLOPE", slope_text, "%", height=args.size, value_color=slope_color)
-            img_slope.save(args.output_dir / f"slope_{idx_out:06d}.png", "PNG")
+                width = int(args.size * 1.5)
+            writers[widget] = WebMWriter(
+                args.output_dir / f"{widget}.webm",
+                width, args.size, fps, args.crf,
+            )
 
-        if "alt" in selected_widgets:
-            raw_altitude = sample.get("altitude", 0.0)
-            altitude = float(raw_altitude) if raw_altitude is not None else None
-            alt_text = "----" if altitude is None else f"{int(altitude)}"
-            img_alt = create_single_widget("ALTITUDE", alt_text, "m", height=args.size)
-            img_alt.save(args.output_dir / f"alt_{idx_out:06d}.png", "PNG")
+        for idx_out, sample in enumerate(filtered_samples):
+            global_idx = all_samples.index(sample)
 
-        if "track" in selected_widgets:
-            img_track = create_track_widget(track_lats, track_lons, current_idx=track_idx, height=args.size)
-            img_track.save(args.output_dir / f"output_widgets/track_{idx_out:06d}.png" if False else args.output_dir / f"track_{idx_out:06d}.png", "PNG")
+            if args.track_mode == "full":
+                track_lats, track_lons = all_lats, all_lons
+                track_alts = all_alts
+                # GPS cursor index counts valid GPS fixes, not all telemetry rows.
+                current_fix = sample.get("latitude") is not None and sample.get("longitude") is not None
+                track_idx = sum(
+                    1 for prior in all_samples[:global_idx]
+                    if prior.get("latitude") is not None and prior.get("longitude") is not None
+                ) if current_fix else -1
+                elev_idx = global_idx
+            else:
+                window_fixes = [
+                    item for item in filtered_samples
+                    if item.get("latitude") is not None and item.get("longitude") is not None
+                ]
+                track_lats = [float(item["latitude"]) for item in window_fixes]
+                track_lons = [float(item["longitude"]) for item in window_fixes]
+                track_alts = [
+                    float(item["altitude"]) if item.get("altitude") is not None else 0.0
+                    for item in filtered_samples
+                ]
+                current_fix = sample.get("latitude") is not None and sample.get("longitude") is not None
+                track_idx = sum(
+                    1 for prior in filtered_samples[:idx_out]
+                    if prior.get("latitude") is not None and prior.get("longitude") is not None
+                ) if current_fix else -1
+                elev_idx = idx_out
 
-        if "elevation" in selected_widgets:
-            img_elev = create_elevation_widget(track_alts, current_idx=track_idx, height=args.size)
-            img_elev.save(args.output_dir / f"elevation_{idx_out:06d}.png", "PNG")
+            if "speed" in writers:
+                raw_speed = sample.get("speed", 0.0)
+                speed = float(raw_speed) if raw_speed is not None else None
+                speed_text = "----" if speed is None else f"{speed:.1f}"
+                writers["speed"].write(
+                    create_single_widget("VELOCITY", speed_text, "km/h", height=args.size)
+                )
 
-    print(f"Esportazione completata con successo!")
+            if "power" in writers:
+                raw_power = sample.get("totalPower", 0.0)
+                raw_assist = sample.get("assist")
+                power = float(raw_power) if raw_power is not None else None
+                assist = int(raw_assist) if raw_assist is not None else None
+                writers["power"].write(create_power_widget(power, assist, args.size))
 
+            if "slope" in writers:
+                raw_gradient = sample.get("gradient", 0.0)
+                gradient = float(raw_gradient) if raw_gradient is not None else None
+                if gradient is None:
+                    slope_color = (70, 220, 100, 255)
+                    slope_text = "----"
+                else:
+                    slope_color = (70, 220, 100, 255) if gradient >= 0 else (240, 100, 90, 255)
+                    slope_text = f"{gradient:+.1f}"
+                writers["slope"].write(
+                    create_single_widget(
+                        "SLOPE", slope_text, "%", height=args.size, value_color=slope_color
+                    )
+                )
+
+            if "alt" in writers:
+                raw_altitude = sample.get("altitude", 0.0)
+                altitude = float(raw_altitude) if raw_altitude is not None else None
+                alt_text = "----" if altitude is None else f"{int(altitude)}"
+                writers["alt"].write(
+                    create_single_widget("ALTITUDE", alt_text, "m", height=args.size)
+                )
+
+            if "track" in writers:
+                writers["track"].write(
+                    create_track_widget(track_lats, track_lons, current_idx=track_idx, height=args.size)
+                )
+
+            if "elevation" in writers:
+                writers["elevation"].write(
+                    create_elevation_widget(track_alts, current_idx=elev_idx, height=args.size)
+                )
+
+            if (idx_out + 1) % max(1, int(fps * 10)) == 0:
+                print(f"Generati {idx_out + 1}/{len(filtered_samples)} frame...", flush=True)
+
+        for writer in writers.values():
+            writer.close()
+        writers.clear()
+
+    finally:
+        # Close or terminate every outstanding FFmpeg process on failure.
+        for writer in writers.values():
+            if writer.process.poll() is None:
+                writer.process.terminate()
+                writer.process.wait()
+
+    print("Esportazione WebM completata:")
+    for widget in selected_widgets:
+        print(f"  - {args.output_dir / (widget + '.webm')}")
+    print(f"Frame per widget: {len(filtered_samples)} | FPS: {fps:.3f}")
+    
 if __name__ == "__main__":
     main()
