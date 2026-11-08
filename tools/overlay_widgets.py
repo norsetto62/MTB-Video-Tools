@@ -22,6 +22,7 @@ AVAILABLE_WIDGETS = {
     "datetime": "Data e ora"
 }
 
+
 ASSIST_LVL = ["off", "eco", "trail", "turbo", "auto", "boost", "walk"]
 ASSIST_CLR = [(0, 0, 0, 255), (46, 204, 113, 255), (241, 196, 15, 255), (231, 76, 60, 255), (128, 0, 128, 255), (255, 165, 0, 255)]
 # Parametri del tachimetro
@@ -546,23 +547,24 @@ def main():
 
     print(f"Generazione di {len(filtered_samples)} frame (track-mode: {args.track_mode}) in {args.output_dir}...")
 
+    widget_widths = {
+        "speed": int(args.size * 2.36),
+        "slope": int(args.size * 2.36),
+        "alt": int(args.size * 2.36),
+        "pitch": int(args.size * 2.36),
+        "track": int(args.size * 1.55),
+        "elevation": int(args.size * 2.2),
+        "gear": args.size,
+        "power": int(args.size * 1.5),
+        "datetime": int(args.size * 4.72),
+    }
+    
     writers: dict[str, WebMWriter] = {}
     try:
         # Start one encoder per widget: each resulting WebM remains independently
         # positionable in the downstream video editor.
         for widget in selected_widgets:
-            if widget == "speed" or widget == "slope" or widget == "alt" or widget == "pitch":
-                width = int(args.size * 2.36)
-            elif widget == "track":
-                width = int(args.size * 1.55)
-            elif widget == "elevation":
-                width = int(args.size * 2.2)
-            elif widget == "gear":
-                width = args.size
-            elif widget == "datetime":
-                width = int(args.size * 4.72)
-            else:
-                width = int(args.size * 1.5)
+            width = widget_widths[widget]
             writers[widget] = WebMWriter(
                 args.output_dir / f"{widget}.webm",
                 width, args.size, fps, args.crf,
@@ -612,7 +614,7 @@ def main():
                 speed = float(raw_speed) if raw_speed is not None else 0.0
                 speed_text = "----" if speed is None else f"{speed:.1f}"
                 writers["speed"].write(
-                    create_single_widget("VELOCITY", speed_text, "km/h", height=args.size, width=int(args.size * 2.36))
+                    create_single_widget("VELOCITY", speed_text, "km/h", height=args.size, width=widget_widths["speed"],)
                 )
 
             if "power" in writers:
@@ -633,7 +635,7 @@ def main():
                     slope_text = f"{gradient:+.1f}"
                 writers["slope"].write(
                     create_single_widget(
-                        "SLOPE", slope_text, "%", height=args.size, width=int(args.size * 2.36), value_color=slope_color
+                        "SLOPE", slope_text, "%", height=args.size, width=widget_widths["slope"], value_color=slope_color
                     )
                 )
 
@@ -653,7 +655,7 @@ def main():
                             f"{date_str} {time_str}",
                             "",
                             height=args.size,
-                            width=int(args.size * 4.72),
+                            width=widget_widths["datetime"],
                             value_color=(255, 255, 255, 255)
                         )
                     )
@@ -679,7 +681,7 @@ def main():
                     pitch_color = (70, 220, 100, 255) if pitch >= 0 else (240, 100, 90, 255)
                 writers["pitch"].write(
                     create_single_widget(
-                        "PITCH", pitch_text, "°", height=args.size, width=int(args.size * 2.36), value_color=pitch_color
+                        "PITCH", pitch_text, "°", height=args.size, width=widget_widths["pitch"], value_color=pitch_color
                     )
                 )
 
@@ -688,7 +690,7 @@ def main():
                 altitude = float(raw_altitude) if raw_altitude is not None else None
                 alt_text = "----" if altitude is None else f"{int(altitude)}"
                 writers["alt"].write(
-                    create_single_widget("ALTITUDE", alt_text, "m", height=args.size, width=int(args.size * 2.36))
+                    create_single_widget("ALTITUDE", alt_text, "m", height=args.size, width=widget_widths["alt"],)
                 )
 
             if "gear" in writers:
