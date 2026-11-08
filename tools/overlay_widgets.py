@@ -4,11 +4,10 @@ from pathlib import Path
 import shutil
 import statistics
 import subprocess
+import math
+from scipy.spatial.transform import Rotation as R
 from PIL import Image, ImageDraw, ImageFont
 from autocut.dataset.avinox_proto import parse
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-FONT_PATH = SCRIPT_DIR / "Fredoka-Bold.ttf"
 
 AVAILABLE_WIDGETS = {
     "speed": "Velocità corrente (km/h)",
@@ -16,7 +15,9 @@ AVAILABLE_WIDGETS = {
     "alt": "Altitudine numerica (m)",
     "track": "Traccia GPS con cursore in movimento",
     "elevation": "Profilo altimetrico grafico con cursore e area sfumata",
-    "power": "Power totale numerica, con livello assistenza e tachimetro grafico"
+    "power": "Power totale numerica, con livello assistenza e tachimetro grafico",
+    "pitch": "Angolo di beccheggio",
+    "gear": "Marcia corrente (1-12)"
 }
 
 ASSIST_LVL = ["off", "eco", "trail", "turbo", "auto", "boost", "walk"]
@@ -24,6 +25,8 @@ ASSIST_CLR = [(0, 0, 0, 255), (46, 204, 113, 255), (241, 196, 15, 255), (231, 76
 # Parametri del tachimetro
 MAX_WATT = 1000  # Valore massimo della scala (es. 1000W)
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+FONT_PATH = SCRIPT_DIR / "Fredoka-Bold.ttf"
 if not FONT_PATH.exists():
     raise FileNotFoundError(f"❌ ERRORE CRITICO: Non trovo il file del font in: {FONT_PATH}")
 
@@ -37,17 +40,28 @@ def load_fonts_for_size(height: int):
         raise RuntimeError(f"❌ Errore durante il parsing del font TrueType: {e}")
 
 
+def lerp_color(color1, color2, t):
+    """
+    Linearly interpolates between two RGB colors.
+    :param color1: Tuple/list of (R, G, B) from 0-255 or 0.0-1.0
+    :param color2: Tuple/list of (R, G, B) from 0-255 or 0.0-1.0
+    :param t: Scalar from 0.0 to 1.0
+    :return: Interpolated (R, G, B) color
+    """
+    return tuple(int(a + (b - a) * t) for a, b in zip(color1, color2))
+
+
 def get_color_for_watt(watt):
   """Restituisce il colore in base alle zone di potenza"""
   if watt < 300:
-    return (46, 204, 113, 255)  # Verde (Agile / Z1-Z2)
+    return lerp_color((0, 0, 0, 255), (46, 204, 113, 255), watt/300)  # Verde (Agile / Z1-Z2)
   elif watt < 600:
-    return (241, 196, 15, 255)  # Giallo (Soglia / Z3-Z4)
+    return lerp_color((46, 204, 113, 255), (195, 196, 15, 255), (watt-300)/300)  # Giallo (Soglia / Z3-Z4)
   else:
-    return (231, 76, 60, 255)  # Rosso (Fuorigiri / Z5)
-  
-def create_single_widget(label, value_str, unit, height, value_color=(255, 255, 255, 255)):
-    width = int(height * 2.36)
+    return lerp_color((195, 196, 15, 255), (231, 76, 60, 255), (watt-600)/(MAX_WATT-600))  # Rosso (Fuorigiri / Z5)
+
+
+def create_single_widget(label, value_str, unit, height, width, value_color=(255, 255, 255, 255)):
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
@@ -57,6 +71,53 @@ def create_single_widget(label, value_str, unit, height, value_color=(255, 255, 
     draw.text((int(width * 0.05), int(height * 0.08)), label, fill=(160, 165, 175, 255), font=font_small)
     draw.text((int(width * 0.05), int(height * 0.30)), value_str, fill=value_color, font=font_large, stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
     draw.text((int(width * 0.65), int(height * 0.52)), unit, fill=(180, 185, 195, 255), font=font_small)
+    return img
+
+
+def create_gear_widget(gear_val, height):
+    """Disegna una silhouette di un pignone stilizzato con dentro il numero della marcia."""
+    width = height  # Widget quadrato
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    scale = height / 100.0
+    cx, cy = width // 2, height // 2
+    r_outer = int(36 * scale)
+    r_inner = int(26 * scale)
+
+    # 1. Disegno dei "denti" del pignone geometrici attorno al cerchio
+    num_teeth = 10
+    for i in range(num_teeth):
+        angle = i * (2 * math.pi / num_teeth)
+        # Coordinate per ogni dentino del pignone
+        x1 = cx + int((r_outer + 4 * scale) * math.cos(angle - 0.15))
+        y1 = cy + int((r_outer + 6 * scale) * math.sin(angle - 0.15))
+        x2 = cx + int((r_outer + 4 * scale) * math.cos(angle + 0.15))
+        y2 = cy + int((r_outer + 6 * scale) * math.sin(angle + 0.15))
+        x3 = cx + int(r_outer * math.cos(angle + 0.25))
+        y3 = cy + int(r_outer * math.sin(angle + 0.25))
+        x4 = cx + int(r_outer * math.cos(angle - 0.25))
+        y4 = cy + int(r_outer * math.sin(angle - 0.25))
+        draw.polygon([(x1, y1), (x2, y2), (x3, y3), (x4, y4)], fill=(40, 40, 45, 230), outline=(0, 0, 0, 255))
+
+    # 2. Corpo centrale del pignone (cerchio pieno con bordo scuro)
+    draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer], fill=(50, 55, 60, 240), outline=(0, 0, 0, 255), width=max(2, int(3 * scale)))
+    draw.ellipse([cx - r_inner, cy - r_inner, cx + r_inner, cy + r_inner], fill=(20, 22, 25, 0), outline=(80, 85, 90, 255), width=max(1, int(2 * scale)))
+
+    # 3. Testo della marcia al centro
+    gear_text = "--" if gear_val is None else f"{int(gear_val)}"
+    font_large, _ = load_fonts_for_size(int(height * 1.1))  # Font proporzionato per il cerchio
+    
+    draw.text(
+        (cx, cy - int(2 * scale)),
+        gear_text,
+        fill=(255, 255, 255, 255),
+        anchor="mm",
+        font=font_large,
+        stroke_width=max(2, int(3 * scale)),
+        stroke_fill=(0, 0, 0, 255),
+    )
+
     return img
 
 
@@ -331,6 +392,39 @@ def estimate_fps(samples: list[dict]) -> float:
     return 1.0 / statistics.median(deltas)
 
 
+def upsample_samples(samples: list[dict], target_fps: float) -> list[dict]:
+    """Interpola linearmente i campioni del proto per raggiungere il target_fps desiderato."""
+    if len(samples) < 2:
+        return samples
+
+    upsampled = []
+    # Assumiamo che i campioni originali distino 1 secondo l'uno dall'altro
+    # Calcoliamo quanti sotto-frame generare per ogni intervallo di 1 secondo
+    steps_per_sec = int(round(target_fps))
+    
+    for i in range(len(samples) - 1):
+        s_curr = samples[i]
+        s_next = samples[i + 1]
+        
+        for step in range(steps_per_sec):
+            alpha = step / float(steps_per_sec)
+            
+            # Creiamo un campione interpolato clonando il corrente
+            interpolated = s_curr.copy()
+            
+            # Interpolazione lineare dei campi numerici principali
+            for key in ["speed", "gradient", "altitude", "totalPower", "latitude", "longitude"]:
+                val_curr = s_curr.get(key)
+                val_next = s_next.get(key)
+                if val_curr is not None and val_next is not None:
+                    interpolated[key] = val_curr + (val_next - val_curr) * alpha
+                    
+            upsampled.append(interpolated)
+            
+    # Aggiungiamo l'ultimo campione
+    upsampled.append(samples[-1])
+    return upsampled
+
 def main():
     parser = argparse.ArgumentParser(
         description="Genera overlay WebM trasparenti dai campioni Avinox"
@@ -342,7 +436,7 @@ def main():
                         help="Mostra la lista dei widget disponibili ed esce")
     parser.add_argument(
         "--widgets", type=str,
-        default="speed,slope,alt,track,elevation,power",
+        default="speed,slope,pitch,alt,track,elevation,power",
         help="Widget da generare separati da virgola. Default: tutti."
     )
     parser.add_argument("--size", type=int, default=110,
@@ -435,22 +529,34 @@ def main():
         return
 
     fps = args.fps or estimate_fps(filtered_samples)
+
     print(
-        f"Generazione di {len(filtered_samples)} frame per widget a {fps:.3f} FPS "
-        f"(track-mode: {args.track_mode}) in {args.output_dir}..."
+        f"Upsamplig di {len(filtered_samples)} frame per widget @ {fps:.3f} FPS "
     )
+    if fps > 1.0:
+        filtered_samples = upsample_samples(filtered_samples, fps)
+
+    # Preparazione liste globali per traccia e altimetria (sull'intero file o sulla finestra)
+    gps_samples = [s for s in all_samples if s.get("latitude") is not None and s.get("longitude") is not None]
+    all_lats = [float(s["latitude"]) for s in gps_samples]
+    all_lons = [float(s["longitude"]) for s in gps_samples]
+    all_alts = [float(s.get("altitude", 0.0)) if s.get("altitude") is not None else 0.0 for s in all_samples]
+
+    print(f"Generazione di {len(filtered_samples)} frame (track-mode: {args.track_mode}) in {args.output_dir}...")
 
     writers: dict[str, WebMWriter] = {}
     try:
         # Start one encoder per widget: each resulting WebM remains independently
         # positionable in the downstream video editor.
         for widget in selected_widgets:
-            if widget == "speed" or widget == "slope" or widget == "alt":
+            if widget == "speed" or widget == "slope" or widget == "alt" or widget == "pitch":
                 width = int(args.size * 2.36)
             elif widget == "track":
                 width = int(args.size * 1.55)
             elif widget == "elevation":
                 width = int(args.size * 2.2)
+            elif widget == "gear":
+                width = args.size
             else:
                 width = int(args.size * 1.5)
             writers[widget] = WebMWriter(
@@ -459,18 +565,22 @@ def main():
             )
 
         for idx_out, sample in enumerate(filtered_samples):
-            global_idx = all_samples.index(sample)
+            # Calcolo posizione cursore GPS / Altimetria in base al timestamp corrente
+            curr_t = float(sample["timestamp"])
 
             if args.track_mode == "full":
                 track_lats, track_lons = all_lats, all_lons
                 track_alts = all_alts
-                # GPS cursor index counts valid GPS fixes, not all telemetry rows.
-                current_fix = sample.get("latitude") is not None and sample.get("longitude") is not None
-                track_idx = sum(
-                    1 for prior in all_samples[:global_idx]
-                    if prior.get("latitude") is not None and prior.get("longitude") is not None
-                ) if current_fix else -1
-                elev_idx = global_idx
+                # Trova il fix GPS valido più vicino temporalmente nel dataset completo
+                valid_gps = [
+                    (i, abs(float(s["timestamp"]) - curr_t)) 
+                    for i, s in enumerate(all_samples) 
+                    if s.get("latitude") is not None and s.get("longitude") is not None
+                ]
+                track_idx = min(valid_gps, key=lambda x: x[1])[0] if valid_gps else -1
+                
+                # Indice altimetrico globale più vicino
+                elev_idx = min(range(len(all_samples)), key=lambda i: abs(float(all_samples[i]["timestamp"]) - curr_t))
             else:
                 window_fixes = [
                     item for item in filtered_samples
@@ -479,22 +589,26 @@ def main():
                 track_lats = [float(item["latitude"]) for item in window_fixes]
                 track_lons = [float(item["longitude"]) for item in window_fixes]
                 track_alts = [
-                    float(item["altitude"]) if item.get("altitude") is not None else 0.0
+                    float(item.get("altitude", 0.0)) if item.get("altitude") is not None else 0.0
                     for item in filtered_samples
                 ]
-                current_fix = sample.get("latitude") is not None and sample.get("longitude") is not None
-                track_idx = sum(
-                    1 for prior in filtered_samples[:idx_out]
-                    if prior.get("latitude") is not None and prior.get("longitude") is not None
-                ) if current_fix else -1
+                window_gps_indices = [
+                    i for i, item in enumerate(filtered_samples) 
+                    if item.get("latitude") is not None and item.get("longitude") is not None
+                ]
+                if window_gps_indices:
+                    closest_w_idx = min(window_gps_indices, key=lambda i: abs(float(filtered_samples[i]["timestamp"]) - curr_t))
+                    track_idx = window_gps_indices.index(closest_w_idx)
+                else:
+                    track_idx = -1
                 elev_idx = idx_out
 
             if "speed" in writers:
                 raw_speed = sample.get("speed", 0.0)
-                speed = float(raw_speed) if raw_speed is not None else None
+                speed = float(raw_speed) if raw_speed is not None else 0.0
                 speed_text = "----" if speed is None else f"{speed:.1f}"
                 writers["speed"].write(
-                    create_single_widget("VELOCITY", speed_text, "km/h", height=args.size)
+                    create_single_widget("VELOCITY", speed_text, "km/h", height=args.size, width=int(args.size * 2.36))
                 )
 
             if "power" in writers:
@@ -515,7 +629,31 @@ def main():
                     slope_text = f"{gradient:+.1f}"
                 writers["slope"].write(
                     create_single_widget(
-                        "SLOPE", slope_text, "%", height=args.size, value_color=slope_color
+                        "SLOPE", slope_text, "%", height=args.size, width=int(args.size * 2.36), value_color=slope_color
+                    )
+                )
+
+            if "pitch" in writers:
+                raw_imu_x = sample.get("imuX", 0.0)
+                raw_imu_y = sample.get("imuY", 0.0)
+                raw_imu_z = sample.get("imuZ", 0.0)
+                imu_x = float(raw_imu_x) if raw_imu_x is not None else None
+                imu_y = float(raw_imu_y) if raw_imu_y is not None else None
+                imu_z = float(raw_imu_z) if raw_imu_z is not None else None
+
+                if imu_x is None or imu_y is None or imu_z is None:
+                    pitch_color = (70, 220, 100, 255)
+                    pitch_text = "---"
+                else:
+                    w = math.sqrt(1.0 - (imu_x * imu_x + imu_y * imu_y + imu_z * imu_z))
+                    r = R.from_quat((imu_x, imu_y, imu_z, w))
+                    _, pitch,_ = r.as_euler('XZY', degrees=True)
+                    pitch += 50.7 #TBD bias to be computed automatically
+                    pitch_text = f"{pitch:.1f}"
+                    pitch_color = (70, 220, 100, 255) if pitch >= 0 else (240, 100, 90, 255)
+                writers["pitch"].write(
+                    create_single_widget(
+                        "PITCH", pitch_text, "°", height=args.size, width=int(args.size * 2.36), value_color=pitch_color
                     )
                 )
 
@@ -524,8 +662,13 @@ def main():
                 altitude = float(raw_altitude) if raw_altitude is not None else None
                 alt_text = "----" if altitude is None else f"{int(altitude)}"
                 writers["alt"].write(
-                    create_single_widget("ALTITUDE", alt_text, "m", height=args.size)
+                    create_single_widget("ALTITUDE", alt_text, "m", height=args.size, width=int(args.size * 2.36))
                 )
+
+            if "gear" in writers:
+                raw_gear = sample.get("gear")
+                gear_val = int(raw_gear) if raw_gear is not None else None
+                writers["gear"].write(create_gear_widget(gear_val, args.size))
 
             if "track" in writers:
                 writers["track"].write(
