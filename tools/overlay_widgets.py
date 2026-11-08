@@ -6,6 +6,7 @@ import statistics
 import subprocess
 import math
 from scipy.spatial.transform import Rotation as R
+from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 from autocut.dataset.avinox_proto import parse
 
@@ -17,7 +18,8 @@ AVAILABLE_WIDGETS = {
     "elevation": "Profilo altimetrico grafico con cursore e area sfumata",
     "power": "Power totale numerica, con livello assistenza e tachimetro grafico",
     "pitch": "Angolo di beccheggio",
-    "gear": "Marcia corrente (1-12)"
+    "gear": "Marcia corrente (1-12)",
+    "datetime": "Data e ora"
 }
 
 ASSIST_LVL = ["off", "eco", "trail", "turbo", "auto", "boost", "walk"]
@@ -436,7 +438,7 @@ def main():
                         help="Mostra la lista dei widget disponibili ed esce")
     parser.add_argument(
         "--widgets", type=str,
-        default="speed,slope,pitch,alt,track,elevation,power",
+        default="speed,slope,pitch,alt,track,elevation,power,datetime",
         help="Widget da generare separati da virgola. Default: tutti."
     )
     parser.add_argument("--size", type=int, default=110,
@@ -557,6 +559,8 @@ def main():
                 width = int(args.size * 2.2)
             elif widget == "gear":
                 width = args.size
+            elif widget == "datetime":
+                width = int(args.size * 4.72)
             else:
                 width = int(args.size * 1.5)
             writers[widget] = WebMWriter(
@@ -632,6 +636,28 @@ def main():
                         "SLOPE", slope_text, "%", height=args.size, width=int(args.size * 2.36), value_color=slope_color
                     )
                 )
+
+
+            if "datetime" in writers:
+                timestamp = sample.get("timestamp")
+
+                if timestamp is not None:
+                    dt = datetime.fromtimestamp(timestamp).astimezone()
+
+                    date_str = dt.strftime("%d/%m/%Y")
+                    time_str = dt.strftime("%H:%M")
+
+                    writers["datetime"].write(
+                        create_single_widget(
+                            "",
+                            f"{date_str} {time_str}",
+                            "",
+                            height=args.size,
+                            width=int(args.size * 4.72),
+                            value_color=(255, 255, 255, 255)
+                        )
+                    )
+
 
             if "pitch" in writers:
                 raw_imu_x = sample.get("imuX", 0.0)
