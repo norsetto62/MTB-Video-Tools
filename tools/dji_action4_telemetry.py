@@ -358,11 +358,39 @@ def _string(data: bytes, field: int) -> Optional[str]:
     return v.decode("utf-8", "replace") if v is not None else None
 
 
+def _raw_varints(data: bytes):
+    """Decode consecutive protobuf varints from an opaque byte payload.
+
+    DJI stores rational values as two raw varints inside a length-delimited
+    field. This payload is NOT itself a protobuf message.
+    """
+    values = []
+    p = 0
+    while p < len(data):
+        value = 0
+        shift = 0
+        while p < len(data):
+            byte = data[p]
+            p += 1
+            value |= (byte & 0x7f) << shift
+            if not (byte & 0x80):
+                values.append(value)
+                break
+            shift += 7
+            if shift >= 70:
+                raise ValueError("Invalid varint in DJI rational payload")
+        else:
+            raise ValueError("Truncated varint in DJI rational payload")
+    return values
+
+
 def _rational(data: bytes, field: int):
+    # Match Rust get_rational(): the length-delimited value contains two
+    # consecutive raw varints (numerator and denominator), not a submessage.
     v = next(_values(data, field, 2), None)
     if v is None:
         return None
-    vals = list(_values(v, 1, 0))
+    vals = _raw_varints(v)
     return (vals[0], vals[1]) if len(vals) >= 2 and vals[1] else None
 
 
