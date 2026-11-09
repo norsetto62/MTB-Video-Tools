@@ -781,7 +781,7 @@ def main():
         ap.error(f"File not found: {args.video}")
     if args.axes != "auto" and (len(args.axes)!=3 or set(args.axes.upper())!={"X","Y","Z"}):
         ap.error("--axes must be 'auto' or a permutation such as 'yxz'")
-    axes=args.axes.upper()
+    axes="auto" if args.axes.lower()=="auto" else args.axes.upper()
     invert=[x.strip().lower() for x in args.invert.split(",") if x.strip()]
     if any(x not in ("lateral","longitudinal","vertical") for x in invert):
         ap.error("--invert accepts lateral,longitudinal,vertical")
