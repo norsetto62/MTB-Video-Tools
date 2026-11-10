@@ -5,10 +5,13 @@ import shutil
 import statistics
 import subprocess
 import math
+import bisect
 from scipy.spatial.transform import Rotation as R
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 from autocut.dataset.avinox_proto import parse
+from dji_action4_telemetry import extract_clip, process
+
 
 AVAILABLE_WIDGETS = {
     "speed": "Velocità corrente (km/h)",
@@ -460,7 +463,10 @@ def main():
         "--crf", type=int, default=30,
         help="Qualità VP9: valori più bassi producono file più grandi e qualità maggiore (default: 30)."
     )
-
+    parser.add_argument(
+        "--video", type=Path, default=None,
+        help="File video, only for the pitch widget"
+    )
     args = parser.parse_args()
 
     if args.list_widgets:
@@ -497,6 +503,18 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     decoded = parse(args.recording)
+
+    if "pitch" in selected_widgets:
+        if not args.video.is_file():
+            parser.error(f"File not found: {args.video}")
+        print("Processing IMU data from MP4...")
+        samples,_ = extract_clip(args.video)
+        print(f"Extracted {len(samples)} samples.")
+        rows,_=process(samples, "quat", 1.0, True,"auto",())
+        log_times = [r["sample"]["t"] for r in rows]
+        max_log_idx = len(rows) - 1
+        print(f"Processed {len(samples)} samples.")
+
     all_samples = sorted(
         (sample for sample in decoded["samples"] if sample.get("timestamp") is not None),
         key=lambda sample: sample["timestamp"],
@@ -609,6 +627,7 @@ def main():
                     track_idx = -1
                 elev_idx = idx_out
 
+
             if "speed" in writers:
                 raw_speed = sample.get("speed", 0.0)
                 speed = float(raw_speed) if raw_speed is not None else 0.0
@@ -662,28 +681,28 @@ def main():
 
 
             if "pitch" in writers:
-                raw_imu_x = sample.get("imuX", 0.0)
-                raw_imu_y = sample.get("imuY", 0.0)
-                raw_imu_z = sample.get("imuZ", 0.0)
-                imu_x = float(raw_imu_x) if raw_imu_x is not None else None
-                imu_y = float(raw_imu_y) if raw_imu_y is not None else None
-                imu_z = float(raw_imu_z) if raw_imu_z is not None else None
-
-                if imu_x is None or imu_y is None or imu_z is None:
-                    pitch_color = (70, 220, 100, 255)
-                    pitch_text = "---"
+                current_time = idx_out / fps
+                log_idx = bisect.bisect_left(log_times, current_time)
+                if log_idx == 0:
+                    best_idx = 0
+                elif log_idx > max_log_idx:
+                    best_idx = max_log_idx
                 else:
-                    w = math.sqrt(1.0 - (imu_x * imu_x + imu_y * imu_y + imu_z * imu_z))
-                    r = R.from_quat((imu_x, imu_y, imu_z, w))
-                    _, pitch,_ = r.as_euler('XZY', degrees=True)
-                    pitch += 50.7 #TBD bias to be computed automatically
-                    pitch_text = f"{pitch:.1f}"
-                    pitch_color = (70, 220, 100, 255) if pitch >= 0 else (240, 100, 90, 255)
+                    t_before = log_times[log_idx - 1]
+                    t_after = log_times[log_idx]
+                    if abs(current_time - t_before) <= abs(current_time - t_after):
+                        best_idx = log_idx - 1
+                    else:
+                        best_idx = log_idx
+                pitch = rows[best_idx]["pitch"]
+                pitch_text = f"{pitch:.1f}"
+                pitch_color = (70, 220, 100, 255) if pitch >= 0 else (240, 100, 90, 255)
                 writers["pitch"].write(
                     create_single_widget(
-                        "PITCH", pitch_text, "°", height=args.size, width=widget_widths["pitch"], value_color=pitch_color
+                        "CAMERA PITCH", pitch_text, "°", height=args.size, width=widget_widths["pitch"], value_color=pitch_color
                     )
                 )
+
 
             if "alt" in writers:
                 raw_altitude = sample.get("altitude", 0.0)
