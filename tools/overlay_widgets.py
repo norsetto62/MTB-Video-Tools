@@ -744,7 +744,7 @@ def main():
     decoded = parse(args.recording)
 
     if "pitch" in selected_widgets:
-        if not args.video.is_file():
+        if args.video is None or not args.video.is_file():
             parser.error(f"File not found: {args.video}")
         print("Processing IMU data from MP4...")
         samples,_ = extract_clip(args.video)
