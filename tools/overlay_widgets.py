@@ -6,6 +6,8 @@ import statistics
 import subprocess
 import math
 import bisect
+import re
+import html
 from scipy.spatial.transform import Rotation as R
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
@@ -24,6 +26,222 @@ AVAILABLE_WIDGETS = {
     "gear": "Marcia corrente (1-12)",
     "datetime": "Data e ora"
 }
+
+
+
+DJI_WIDGETS = {
+    "rel_alt": "Altitudine relativa al punto di decollo (m)",
+    "abs_alt": "Altitudine assoluta stimata (m)",
+    "camera": "Impostazioni camera: ISO, shutter, apertura, EV, temperatura colore",
+    "track": "Traccia GPS DJI con cursore in movimento",
+    "datetime": "Data e ora registrate dalla camera",
+    "pitch": "Angolo di beccheggio ricavato dal video",
+}
+_SRT_TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$")
+
+
+def _srt_seconds(value: str) -> float:
+    match = _SRT_TIME_RE.match(value.strip())
+    if not match:
+        raise ValueError(f"Timestamp SRT non valido: {value!r}")
+    h, m, s, ms = map(int, match.groups())
+    return h * 3600 + m * 60 + s + ms / 1000.0
+
+
+def _number(value: str | None) -> float | None:
+    try:
+        number = float(value.strip()) if value is not None else None
+        return number if number is not None and math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_dji_srt(path: Path) -> list[dict]:
+    """Parse DJI SRT records, retaining original start and end timestamps."""
+    raw = path.read_text(encoding="utf-8-sig", errors="replace")
+    samples = []
+    for block in re.split(r"\r?\n\s*\r?\n", raw.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 3:
+            continue
+        timing = re.match(r"^(.+?)\s*-->\s*(.+?)$", lines[1])
+        if not timing:
+            continue
+        try:
+            start, end = _srt_seconds(timing.group(1)), _srt_seconds(timing.group(2))
+        except ValueError:
+            continue
+        if end <= start:
+            continue
+
+        body = html.unescape(re.sub(r"</?font[^>]*>", "", " ".join(lines[2:])))
+        frame_match = re.search(r"FrameCnt:\s*(\d+)", body)
+        camera_time_match = re.search(
+            r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)", body
+        )
+        recording_datetime = None
+        if camera_time_match:
+            try:
+                recording_datetime = datetime.strptime(
+                    camera_time_match.group(1), "%Y-%m-%d %H:%M:%S.%f"
+                )
+            except ValueError:
+                pass
+
+        def field(name: str) -> str | None:
+            match = re.search(
+                rf"\[{re.escape(name)}:\s*([^\]]*)\]", body, re.IGNORECASE
+            )
+            return match.group(1).strip() if match else None
+
+        altitude_match = re.search(
+            r"\[rel_alt:\s*([-+\d.]+)\s+abs_alt:\s*([-+\d.]+)", body, re.IGNORECASE
+        )
+        samples.append({
+            "timestamp": start,
+            "end_timestamp": end,
+            "frame": int(frame_match.group(1)) if frame_match else None,
+            "recording_datetime": recording_datetime,
+            "iso": _number(field("iso")),
+            "shutter": field("shutter"),
+            "aperture": _number(field("fnum")),
+            "ev": _number(field("ev")),
+            "color_temperature": _number(field("ct")),
+            "latitude": _number(field("latitude")),
+            "longitude": _number(field("longitude")),
+            "relative_altitude": _number(altitude_match.group(1)) if altitude_match else None,
+            "absolute_altitude": _number(altitude_match.group(2)) if altitude_match else None,
+            "eis": field("eis"),
+        })
+
+    samples.sort(key=lambda sample: sample["timestamp"])
+    if not samples:
+        raise ValueError(f"Nessun record SRT DJI valido trovato in {path}")
+    if any(b["timestamp"] <= a["timestamp"] for a, b in zip(samples, samples[1:])):
+        raise ValueError("I timestamp iniziali dei record SRT DJI devono essere crescenti.")
+    return samples
+
+
+def estimate_srt_fps(samples: list[dict]) -> float:
+    """Average over the covered SRT interval so 33/34 ms rounding cancels out."""
+    elapsed = samples[-1]["end_timestamp"] - samples[0]["timestamp"]
+    return len(samples) / elapsed if elapsed > 0 else 1.0
+
+
+def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
+    try:
+        samples = parse_dji_srt(args.recording)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+
+    if "pitch" in selected_widgets:
+        if args.video is None or not args.video.is_file():
+            parser.error("Per il widget pitch DJI devi specificare un video valido con --video.")
+        imu_samples, _ = extract_clip(args.video)
+        rows, _ = process(imu_samples, "quat", 1.0, True, "auto", ())
+        log_times = [row["sample"]["t"] for row in rows]
+        max_log_idx = len(rows) - 1
+        if max_log_idx < 0:
+            parser.error("Il video non contiene campioni IMU utilizzabili per il widget pitch.")
+
+    filtered = [
+        sample for sample in samples
+        if sample["timestamp"] >= args.start
+        and (args.duration is None or sample["timestamp"] <= args.start + args.duration)
+    ]
+    if not filtered:
+        parser.error("Nessun record SRT nell'intervallo temporale richiesto.")
+
+    fps = args.fps or estimate_srt_fps(filtered)
+    gps_samples = [
+        sample for sample in samples
+        if sample["latitude"] is not None and sample["longitude"] is not None
+    ]
+    size = args.size
+    widths = {
+        "rel_alt": int(size * 2.36), "abs_alt": int(size * 2.36),
+        "camera": int(size * 4.2), "track": int(size * 1.55),
+        "datetime": int(size * 4.72), "pitch": int(size * 2.36),
+    }
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    writers = {}
+    try:
+        for widget in selected_widgets:
+            writers[widget] = WebMWriter(
+                args.output_dir / f"{widget}.webm", widths[widget], size, fps, args.crf
+            )
+
+        for sample in filtered:
+            if "rel_alt" in writers:
+                value = sample["relative_altitude"]
+                writers["rel_alt"].write(create_single_widget(
+                    "RELATIVE ALTITUDE", "----" if value is None else f"{value:.1f}",
+                    "m", size, widths["rel_alt"],
+                ))
+            if "abs_alt" in writers:
+                value = sample["absolute_altitude"]
+                writers["abs_alt"].write(create_single_widget(
+                    "ABSOLUTE ALTITUDE", "----" if value is None else f"{value:.1f}",
+                    "m", size, widths["abs_alt"],
+                ))
+            if "camera" in writers:
+                iso = "—" if sample["iso"] is None else f"ISO {sample['iso']:.0f}"
+                shutter = sample["shutter"] or "—"
+                aperture = "—" if sample["aperture"] is None else f"f/{sample['aperture']:.1f}"
+                ev = "—" if sample["ev"] is None else f"EV {sample['ev']:+.1f}"
+                cct = sample["color_temperature"]
+                unit = "" if cct is None else f"{cct:.0f} K"
+                writers["camera"].write(create_single_widget(
+                    "CAMERA", f"{iso}  {shutter}  {aperture}  {ev}",
+                    unit, size, widths["camera"],
+                ))
+            if "datetime" in writers:
+                dt = sample["recording_datetime"]
+                value = "----" if dt is None else dt.strftime("%d/%m/%Y %H:%M:%S")
+                writers["datetime"].write(create_single_widget(
+                    "", value, "", size, widths["datetime"],
+                ))
+            if "track" in writers:
+                track_source = (
+                    [item for item in filtered if item["latitude"] is not None and item["longitude"] is not None]
+                    if args.track_mode == "window" else gps_samples
+                )
+                lats = [item["latitude"] for item in track_source]
+                lons = [item["longitude"] for item in track_source]
+                track_idx = (
+                    min(range(len(track_source)), key=lambda i: abs(track_source[i]["timestamp"] - sample["timestamp"]))
+                    if track_source else -1
+                )
+                writers["track"].write(create_track_widget(lats, lons, track_idx, size))
+            if "pitch" in writers:
+                current_time = sample["timestamp"]
+                log_idx = bisect.bisect_left(log_times, current_time)
+                if log_idx == 0:
+                    best_idx = 0
+                elif log_idx > max_log_idx:
+                    best_idx = max_log_idx
+                else:
+                    before, after = log_times[log_idx - 1], log_times[log_idx]
+                    best_idx = log_idx - 1 if abs(current_time - before) <= abs(current_time - after) else log_idx
+                pitch = rows[best_idx]["pitch"]
+                pitch_text = "----" if pitch is None else f"{pitch:.1f}"
+                pitch_color = (70, 220, 100, 255) if pitch is None or pitch >= 0 else (240, 100, 90, 255)
+                writers["pitch"].write(create_single_widget(
+                    "CAMERA PITCH", pitch_text, "°", size, widths["pitch"], pitch_color,
+                ))
+
+        for writer in writers.values():
+            writer.close()
+        writers.clear()
+    finally:
+        for writer in writers.values():
+            if writer.process.poll() is None:
+                writer.process.terminate()
+                writer.process.wait()
+
+    print(f"Esportazione DJI SRT completata: {len(filtered)} frame @ {fps:.3f} FPS")
+    for widget in selected_widgets:
+        print(f"  - {args.output_dir / (widget + '.webm')}")
 
 
 ASSIST_LVL = ["off", "eco", "trail", "turbo", "auto", "boost", "walk"]
@@ -433,17 +651,17 @@ def upsample_samples(samples: list[dict], target_fps: float) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Genera overlay WebM trasparenti dai campioni Avinox"
+        description="Genera overlay WebM trasparenti da telemetria Avinox (.proto) o DJI (.srt)"
     )
-    parser.add_argument("recording", nargs="?", type=Path, help="File .proto Avinox")
+    parser.add_argument("recording", nargs="?", type=Path, help="File telemetria .proto Avinox oppure .srt DJI")
     parser.add_argument("--output-dir", type=Path, default=Path("output_widgets"),
                         help="Cartella dei WebM generati")
     parser.add_argument("--list-widgets", action="store_true",
                         help="Mostra la lista dei widget disponibili ed esce")
     parser.add_argument(
         "--widgets", type=str,
-        default="speed,slope,pitch,alt,track,elevation,power,datetime",
-        help="Widget da generare separati da virgola. Default: tutti."
+        default=None,
+        help="Widget da generare separati da virgola. Se omesso, usa i default della sorgente."
     )
     parser.add_argument("--size", type=int, default=110,
                         help="Altezza di riferimento in pixel per i widget. Default: 110.")
@@ -471,15 +689,20 @@ def main():
 
     if args.list_widgets:
         print("\n📋 Widget disponibili:")
+        print("\nAvinox (.proto):")
         for name, desc in AVAILABLE_WIDGETS.items():
             print(f"  - {name: <12} : {desc}")
-        print("\nEsempio d'uso: python tools/overlay_widgets.py file.proto --widgets power,speed\n")
+        print("\nDJI (.srt):")
+        for name, desc in DJI_WIDGETS.items():
+            print(f"  - {name: <12} : {desc}")
+        print("\nEsempi: python tools/overlay_widgets.py ride.proto --widgets power,speed")
+        print("        python tools/overlay_widgets.py drone.srt --widgets rel_alt,abs_alt,camera,track\n")
         return
 
     if not args.recording:
-        parser.error("Devi specificare il file .proto di registrazione (oppure usa --list-widgets).")
+        parser.error("Specifica un file .proto Avinox o .srt DJI (oppure usa --list-widgets).")
     if not args.recording.is_file():
-        parser.error(f"File Avinox non trovato: {args.recording}")
+        parser.error(f"File di telemetria non trovato: {args.recording}")
     if args.size <= 0:
         parser.error("--size deve essere maggiore di zero.")
     if args.fps is not None and args.fps <= 0:
@@ -489,16 +712,32 @@ def main():
     if not shutil.which("ffmpeg"):
         parser.error("ffmpeg non trovato. Installa FFmpeg e assicurati che sia nel PATH.")
 
+    source_suffix = args.recording.suffix.lower()
+    if source_suffix == ".srt":
+        widget_registry = DJI_WIDGETS
+        default_widgets = "rel_alt,abs_alt,camera,track,datetime"
+    elif source_suffix == ".proto":
+        widget_registry = AVAILABLE_WIDGETS
+        default_widgets = "speed,slope,pitch,alt,track,elevation,power,datetime"
+    else:
+        parser.error("Formato non supportato: usa un file .proto Avinox o .srt DJI.")
+
+    requested_widgets = args.widgets if args.widgets is not None else default_widgets
     selected_widgets = list(dict.fromkeys(
-        widget.strip().lower() for widget in args.widgets.split(",") if widget.strip()
+        widget.strip().lower() for widget in requested_widgets.split(",") if widget.strip()
     ))
     for widget in selected_widgets:
-        if widget not in AVAILABLE_WIDGETS:
+        if widget not in widget_registry:
             parser.error(
-                f"Widget sconosciuto '{widget}'. Usa --list-widgets per vedere quelli disponibili."
+                f"Widget '{widget}' non disponibile per la sorgente {source_suffix}. "
+                "Usa --list-widgets per vedere quelli disponibili."
             )
     if not selected_widgets:
         parser.error("Seleziona almeno un widget con --widgets.")
+
+    if source_suffix == ".srt":
+        run_dji_widgets(args, parser, selected_widgets)
+        return
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
