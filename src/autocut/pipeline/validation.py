@@ -16,7 +16,10 @@ from .training import _data_values, _path, _section
 from ..data_models import Clip
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import build_feature_sequence
-from ..dataset.windows import build_windows
+from ..dataset.cache_paths import feature_cache_dir
+from ..dataset.windows import build_windows, build_windows_from_features
+from ..motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, engineer_motion_features, engineer_motion_sequence
+from ..motion.features import FEATURE_NAMES
 from ..ml.checkpoint import load_checkpoint, restore_model
 from ..ml.scaling import FeatureScaler
 
@@ -32,7 +35,12 @@ def _predict_record(
     checkpoint: dict[str, Any],
     batch_size: int,
 ) -> dict[str, Any]:
-    """Extract every complete window from a record and predict its class."""
+    """Extract complete windows and predict P probability and binary P/U label."""
+    if record.annotation_path is None:
+        raise ValueError(
+            f"Manifest entry {record.id!r} has no annotations and cannot be used "
+            "as a labeled validation record."
+        )
     annotation_video, _ = load_training_annotations(record.annotation_path)
     if annotation_video.resolve() != record.video_path.resolve():
         raise ValueError(
@@ -45,13 +53,17 @@ def _predict_record(
     info = get_video_info(record.video_path)
     clip = Clip(video_name=record.id, start=0.0, end=info.duration)
     data_config = checkpoint.get("data_config") or {}
-    _manifest, configured_fps, configured_width, configured_window, configured_stride = _data_values(settings)
+    _manifest, configured_fps, configured_width, configured_window, configured_stride, configured_roi_left, configured_roi_right, configured_roi_bottom, configured_roi_top = _data_values(settings)
     flow_fps = float(data_config.get("flow_fps", configured_fps))
     processing_width = int(data_config.get("processing_width", configured_width))
     window = float(data_config.get("window", configured_window))
     stride = float(data_config.get("stride", configured_stride))
-    paths = _section(settings, "paths")
-    cache_dir = _path(paths.get("cache_dir", "data/cache"), name="paths.cache_dir")
+    roi = data_config.get("roi") or {}
+    roi_left = float(roi.get("left", configured_roi_left))
+    roi_right = float(roi.get("right", configured_roi_right))
+    roi_bottom = float(roi.get("bottom", configured_roi_bottom))
+    roi_top = float(roi.get("top", configured_roi_top))
+    cache_dir = feature_cache_dir(settings)
 
     logger.info(
         "Record %s: extracting features at %.3f fps, width %d",
@@ -63,9 +75,25 @@ def _predict_record(
         sample_fps=flow_fps,
         processing_width=processing_width,
         cache_dir=cache_dir,
+        roi_left=roi_left,
+        roi_right=roi_right,
+        roi_bottom=roi_bottom,
+        roi_top=roi_top,
     )
-    windows = build_windows(sequence, window=window, stride=stride)
-    X = windows.X
+    feature_names = checkpoint.get("feature_names")
+    if feature_names == list(MODEL_FEATURE_NAMES):
+        model_sequence = engineer_motion_sequence(sequence.features)
+        windows = build_windows_from_features(
+            model_sequence, sequence.timestamps, window=window, stride=stride
+        )
+        X = windows.X
+    else:
+        windows = build_windows(sequence, window=window, stride=stride)
+        X = windows.X
+        if feature_names == list(ENGINEERED_FEATURE_NAMES):
+            X = engineer_motion_features(X)
+        elif feature_names is not None and feature_names != list(FEATURE_NAMES):
+            raise ValueError(f"Unsupported checkpoint feature schema: {feature_names!r}.")
 
     feature_mask = checkpoint.get("feature_mask")
     if feature_mask is not None:
@@ -85,33 +113,34 @@ def _predict_record(
 
     transformed = scaler.transform(X)
     tensor = torch.from_numpy(np.ascontiguousarray(transformed, dtype=np.float32))
-    predictions: list[np.ndarray] = []
     probabilities: list[np.ndarray] = []
     model.eval()
     with torch.inference_mode():
         for start in range(0, len(tensor), batch_size):
             logits = model(tensor[start : start + batch_size])
-            probs = torch.softmax(logits, dim=1)
-            probabilities.append(probs.cpu().numpy())
-            predictions.append(probs.argmax(dim=1).cpu().numpy())
+            if logits.ndim != 2 or logits.shape[1] != 1:
+                raise RuntimeError("P/U checkpoint must return one logit per window.")
+            probabilities.append(torch.sigmoid(logits[:, 0]).cpu().numpy())
 
-    predicted_classes = np.concatenate(predictions)
-    predicted_probabilities = np.concatenate(probabilities)
-    class_mapping = checkpoint.get("class_mapping") or {}
+    p_probabilities = np.concatenate(probabilities)
+    training_config = checkpoint.get("training_config") or {}
+    threshold = training_config.get(
+        "positive_threshold", training_config.get("positive_threshold", 0.5)
+    )
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise ValueError("Checkpoint positive threshold must be finite and between 0 and 1.")
+    predicted_labels = (p_probabilities >= float(threshold)).astype(np.int64)
     rows = []
-    for index, ((start, end), class_id, probs) in enumerate(
-        zip(windows.timestamps, predicted_classes, predicted_probabilities, strict=True)
+    for index, ((start, end), label, probability) in enumerate(
+        zip(windows.timestamps, predicted_labels, p_probabilities, strict=True)
     ):
         rows.append({
             "window_index": index,
             "start": round(float(start), 6),
             "end": round(float(end), 6),
-            "predicted_class": int(class_id),
-            "predicted_label": class_mapping.get(str(int(class_id)), str(int(class_id))),
-            "probabilities": {
-                str(class_index): float(probability)
-                for class_index, probability in enumerate(probs)
-            },
+            "predicted_pu_label": "P" if int(label) == 1 else "U",
+            "predicted_pu_label_id": int(label),
+            "p_probability": float(probability),
         })
 
     return {
@@ -192,7 +221,7 @@ def run_validation(
         "group_id": group_id.strip(),
         "records": record_results,
         "total_windows": sum(item["window_count"] for item in record_results),
-        "class_mapping": checkpoint.get("class_mapping") or {},
+        "pu_labels": {"0": "U_unlabeled", "1": "P_positive"},
     }
 
     experiment = _section(settings, "experiment")

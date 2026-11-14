@@ -8,8 +8,12 @@ __pycache__/
 .vscode/
 .idea/
 
+# Inputs
+End_to_end.txt
+
 # Generated analysis data
 data/
+lr_finder_plot.png
 
 # Generated output
 output/
@@ -23,6 +27,14 @@ config/
 
 # Tools
 tools/scores.py
+tools/analyze_top_windows.py
+tools/compare_global_segment_rankings.py
+tools/parse_avinox_imu.py
+tools/dji-telemetry-export.exe
+tools/compare_imu.py
+
+# Widgets
+output_widgets/
 
 # Python tooling
 .pytest_cache/

@@ -333,3 +333,13 @@ def test_input_features_are_not_modified():
         sequence.features,
         original,
     )
+
+
+def test_build_windows_from_transformed_features_preserves_overlap():
+    from autocut.dataset.windows import build_windows_from_features
+
+    timestamps = 0.5 + np.arange(16, dtype=np.float64) * 0.5
+    features = np.arange(16 * 7, dtype=np.float32).reshape(16, 7)
+    result = build_windows_from_features(features, timestamps, window=4.0, stride=2.0)
+    assert result.X.shape == (3, 8, 7)
+    np.testing.assert_array_equal(result.X[0, 4:], result.X[1, :4])

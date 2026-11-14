@@ -39,7 +39,6 @@ def clip(name="ride.mp4", start=0.9, end=2.1, out_start=0.0,
         output_end=out_start + end - start,
         mandatory=mandatory,
         score=None if mandatory else score,
-        tier=None if mandatory else "high_action",
     )
 
 
@@ -56,7 +55,6 @@ def timeline(clips):
             output_end=cursor + duration,
             mandatory=item.mandatory,
             score=item.score,
-            tier=item.tier,
         ))
         cursor += duration
     return Timeline(tuple(placed), cursor)

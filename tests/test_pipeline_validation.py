@@ -51,14 +51,14 @@ def test_run_validation_predicts_windows_and_writes_json(tmp_path, monkeypatch):
             return self
 
         def __call__(self, batch):
-            return torch.tensor([[0.0, 2.0, 1.0]] * len(batch), dtype=torch.float32)
+            return torch.tensor([[2.0]] * len(batch), dtype=torch.float32)
 
     checkpoint = {
-        "data_config": {"flow_fps": 2.0, "window": 4.0, "stride": 2.0},
+        "data_config": {"flow_fps": 2.0, "window": 4.0, "stride": 2.0,},
         "scaler_state": FeatureScaler(enabled=False).state_dict(),
         "feature_mask": None,
         "feature_dim": 54,
-        "class_mapping": {"0": "negative", "1": "ordinary", "2": "interesting"},
+        "class_mapping": {"0": "P_vs_U_logit"},
     }
     monkeypatch.setattr(pipeline_validation, "load_checkpoint", lambda *a, **k: checkpoint)
     monkeypatch.setattr(pipeline_validation, "restore_model", lambda *a, **k: FakeModel())
@@ -93,6 +93,7 @@ def test_run_validation_predicts_windows_and_writes_json(tmp_path, monkeypatch):
     )
 
     assert result["total_windows"] == 3
-    assert [row["predicted_class"] for row in result["records"][0]["windows"]] == [1, 1, 1]
+    assert [row["predicted_pu_label"] for row in result["records"][0]["windows"]] == ["P", "P", "P"]
+    assert all(row["p_probability"] > 0.5 for row in result["records"][0]["windows"])
     assert result["records"][0]["windows"][0]["start"] == 0.0
     assert Path(result["results_path"]).is_file()
