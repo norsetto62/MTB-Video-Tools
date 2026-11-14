@@ -31,6 +31,7 @@ tools/analyze_top_windows.py
 tools/compare_global_segment_rankings.py
 tools/parse_avinox_imu.py
 tools/dji-telemetry-export.exe
+tools/compare_imu.py
 
 # Widgets
 output_widgets/
