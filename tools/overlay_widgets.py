@@ -128,6 +128,60 @@ def estimate_srt_fps(samples: list[dict]) -> float:
     return len(samples) / elapsed if elapsed > 0 else 1.0
 
 
+
+def create_dji_altitude_widget(label: str, value: float | None, height: int, width: int) -> Image.Image:
+    """Draw a DJI altitude value with its unit aligned to the value baseline."""
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    font_large, font_small = load_fonts_for_size(height)
+    stroke_w = max(2, int(height * 0.04))
+    x = int(width * 0.05)
+    draw.text((x, int(height * 0.08)), label, fill=(160, 165, 175, 255), font=font_small)
+    value_text = "----" if value is None else f"{value:.1f}"
+    value_y = int(height * 0.30)
+    draw.text((x, value_y), value_text, fill=(255, 255, 255, 255), font=font_large,
+              stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
+    bbox = draw.textbbox((x, value_y), value_text, font=font_large, stroke_width=stroke_w)
+    unit_font = ImageFont.truetype(str(FONT_PATH), int(height * 0.30))
+    unit_y = bbox[3] - unit_font.getbbox("m")[3] - int(height * 0.01)
+    unit_x = bbox[2] + max(5, int(height * 0.06))
+    draw.text((unit_x, unit_y), "m", fill=(220, 225, 235, 255), font=unit_font,
+              stroke_width=max(1, int(height * 0.015)), stroke_fill=(0, 0, 0, 255))
+    return img
+
+
+def create_dji_camera_widget(sample: dict, height: int, width: int) -> Image.Image:
+    """Render camera telemetry on two uncluttered rows, including EIS and color temp."""
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    label_font = ImageFont.truetype(str(FONT_PATH), max(12, int(height * 0.18)))
+    value_font = ImageFont.truetype(str(FONT_PATH), max(14, int(height * 0.30)))
+    label_color = (160, 165, 175, 255)
+    value_color = (255, 255, 255, 255)
+    stroke_w = max(1, int(height * 0.012))
+
+    iso = "—" if sample["iso"] is None else f"ISO {sample['iso']:.0f}"
+    shutter = sample["shutter"] or "—"
+    aperture = "—" if sample["aperture"] is None else f"f/{sample['aperture']:.1f}"
+    ev = "—" if sample["ev"] is None else f"EV {sample['ev']:+.1f}"
+    eis = sample["eis"] or "—"
+    cct = sample["color_temperature"]
+    color_temp = "—" if cct is None else f"{cct:.0f} K"
+
+    rows = [
+        (("ISO", iso), ("SHUTTER", shutter), ("APERTURE", aperture)),
+        (("EV", ev), ("EIS", eis), ("COLOR", color_temp)),
+    ]
+    col_x = [int(width * 0.04), int(width * 0.36), int(width * 0.68)]
+    row_y = [int(height * 0.08), int(height * 0.53)]
+    for y, row in zip(row_y, rows):
+        for x, (label, value) in zip(col_x, row):
+            draw.text((x, y), label, fill=label_color, font=label_font)
+            draw.text((x, y + int(height * 0.19)), value, fill=value_color, font=value_font,
+                      stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
+    return img
+
+
 def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
     try:
         samples = parse_dji_srt(args.recording)
@@ -159,8 +213,8 @@ def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
     ]
     size = args.size
     widths = {
-        "rel_alt": int(size * 2.36), "abs_alt": int(size * 2.36),
-        "camera": int(size * 4.2), "track": int(size * 1.55),
+        "rel_alt": int(size * 3.0), "abs_alt": int(size * 3.0),
+        "camera": int(size * 4.8), "track": int(size * 1.55),
         "datetime": int(size * 4.72), "pitch": int(size * 2.36),
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -174,26 +228,17 @@ def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
         for sample in filtered:
             if "rel_alt" in writers:
                 value = sample["relative_altitude"]
-                writers["rel_alt"].write(create_single_widget(
-                    "RELATIVE ALTITUDE", "----" if value is None else f"{value:.1f}",
-                    "m", size, widths["rel_alt"],
+                writers["rel_alt"].write(create_dji_altitude_widget(
+                    "RELATIVE ALTITUDE", value, size, widths["rel_alt"],
                 ))
             if "abs_alt" in writers:
                 value = sample["absolute_altitude"]
-                writers["abs_alt"].write(create_single_widget(
-                    "ABSOLUTE ALTITUDE", "----" if value is None else f"{value:.1f}",
-                    "m", size, widths["abs_alt"],
+                writers["abs_alt"].write(create_dji_altitude_widget(
+                    "ABSOLUTE ALTITUDE", value, size, widths["abs_alt"],
                 ))
             if "camera" in writers:
-                iso = "—" if sample["iso"] is None else f"ISO {sample['iso']:.0f}"
-                shutter = sample["shutter"] or "—"
-                aperture = "—" if sample["aperture"] is None else f"f/{sample['aperture']:.1f}"
-                ev = "—" if sample["ev"] is None else f"EV {sample['ev']:+.1f}"
-                cct = sample["color_temperature"]
-                unit = "" if cct is None else f"{cct:.0f} K"
-                writers["camera"].write(create_single_widget(
-                    "CAMERA", f"{iso}  {shutter}  {aperture}  {ev}",
-                    unit, size, widths["camera"],
+                writers["camera"].write(create_dji_camera_widget(
+                    sample, size, widths["camera"],
                 ))
             if "datetime" in writers:
                 dt = sample["recording_datetime"]
