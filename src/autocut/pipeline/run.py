@@ -30,6 +30,11 @@ from ..audio.analysis import AudioAnalysis, analyze_audio
 
 logger = logging.getLogger(__name__)
 
+# Patchable legacy-backend hooks, resolved only when the PU path is used.
+load_checkpoint = None
+validate_checkpoint = None
+infer_windows = None
+
 
 def _merge_ranges(clips: Iterable[object]) -> list[tuple[float, float]]:
     """Return sorted, merged processing ranges for a video's requested clips."""
@@ -481,8 +486,15 @@ def run_pipeline(
             })
             continue
 
-        from ..ml.inference import infer_windows, InferenceResult
-        from ..ml.checkpoint import load_checkpoint, validate_checkpoint
+        from ..ml.inference import InferenceResult
+        global load_checkpoint, validate_checkpoint, infer_windows
+        if load_checkpoint is None or validate_checkpoint is None:
+            from ..ml import checkpoint as _checkpoint
+            load_checkpoint = _checkpoint.load_checkpoint
+            validate_checkpoint = _checkpoint.validate_checkpoint
+        if infer_windows is None:
+            from ..ml import inference as _inference
+            infer_windows = _inference.infer_windows
         from ..motion.engineered import MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_sequence
         from ..motion.dji import append_pitch_rate_rms, pitch_rate_rms_for_windows
         if isinstance(settings.model.checkpoint, (str, Path)):
