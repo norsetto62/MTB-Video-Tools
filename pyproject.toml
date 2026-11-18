@@ -23,7 +23,6 @@ dev = [
     "pytest",
 ]
 ml = [
-    "torch",
     "lightgbm>=4.0.0",
 ]
 plot = [
