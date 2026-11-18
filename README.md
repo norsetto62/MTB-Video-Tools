@@ -201,7 +201,7 @@ is persisted in `data/db/lightgbm_hpo.db` and the trial table plus best
 parameters are exported to `output/hpo/lightgbm_ranking_hpo_results.json`.
 
 ```powershell
-python -m autocut lightgbm-hpo --config config/train.yaml
+python -m autocut hpo --config config/train.yaml
 ```
 
 Optional configuration belongs in a `lightgbm_hpo` YAML section:
