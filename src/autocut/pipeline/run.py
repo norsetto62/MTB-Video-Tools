@@ -158,12 +158,8 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
         "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc", "resolution": "2.7k",
                    "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
-        "model": {"checkpoint": "models/best_model.pt", "inference_batch_size": 256},
-        "selection": {
-            "min_clip": 3.0, "max_clip_duration": 0.0,
-            "min_candidate_duration": 3.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0,
-            "positive_threshold": 0.5,
-        },
+        "model": {"checkpoint": "models/lightgbm/ranker.json"},
+        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0},
         "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0},
         "logging": {"level": "INFO"},
     }
@@ -171,7 +167,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
         "paths": {"data_dir", "models_dir", "output_dir", "cache_dir"},
         "video": {"sampling_fps", "processing_width", "encoder", "resolution", "roi_left", "roi_right", "roi_bottom", "roi_top"},
         "features": {"window_duration", "window_stride"},
-        "model": {"checkpoint", "inference_batch_size"},
+        "model": {"checkpoint"},
         "selection": set(defaults["selection"]),
         "audio": {"sync_mode", "max_synced_clip_duration", "fade_duration"},
         "logging": {"level"},
@@ -222,9 +218,6 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
     width = raw["video"]["processing_width"]
     if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
         raise ValueError("video.processing_width must be a positive integer.")
-    batch_size = raw["model"]["inference_batch_size"]
-    if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
-        raise ValueError("model.inference_batch_size must be a positive integer.")
     if raw["video"]["encoder"] not in {"h264_nvenc", "libx264"}:
         raise ValueError("video.encoder must be h264_nvenc or libx264.")
     if raw["video"]["resolution"] not in {"4k", "2.7k", "1080p"}:
@@ -562,7 +555,7 @@ def run_pipeline(
 
     if backend == "lightgbm":
         from ..selection.lightgbm_candidates import select_ranked_segments
-        from ..selection.candidates_generation import CandidateClip, WindowEvidence
+        from ..selection.candidate_types import CandidateClip, WindowEvidence
         for video_name, batches in lightgbm_windows_by_video.items():
             timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
             scores = np.concatenate([batch[1] for batch in batches], axis=0)
