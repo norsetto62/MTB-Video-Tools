@@ -57,6 +57,7 @@ def test_effective_config_prefers_checkpoint_preprocessing():
         "roi_right": 0.9,
         "roi_bottom": 0.6,
         "roi_top": 0.2,
+        "pitch_time_offset": 0.0,
     }
 
 
@@ -74,6 +75,8 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
     sequence = FeatureSequence(
         features=np.zeros((12, 54), dtype=np.float32),
         timestamps=np.arange(12, dtype=np.float64) * 0.5,
+        pitch_timestamps=np.arange(0.0, 8.1, 0.1, dtype=np.float64),
+        pitch_rate=np.ones(81, dtype=np.float64),
     )
 
     monkeypatch.setattr(report, "load_lightgbm_checkpoint", lambda path: {
