@@ -248,15 +248,9 @@ The scale is a scalar interest measure. Annotation descriptions are audit metada
 
 ## 13. Window Target Generation
 
-A window may overlap several annotation intervals. Its target is therefore derived from temporal overlap rather than from a single point or arbitrary annotation.
+LightGBM uses ordinal relevance grades 0–3. For each temporal window, annotation overlap duration is accumulated independently for each grade. The window receives the grade with the greatest covered duration; ties are assigned to the higher grade. Windows with no annotated overlap are omitted.
 
-The accepted formulation is duration-weighted interest:
-
-```text
-target = sum(overlap_duration_i * annotation_value_i) / window_duration
-```
-
-Accordingly, generated targets may be intermediate values between 0 and 3. This represents continuous temporal interest even though the human annotation scale uses integer levels.
+This target policy preserves the MTB annotation scale and supports pairwise/listwise ranking within each video's query. It does not map grades 0–2 into an unlabeled PU class.
 
 ---
 
