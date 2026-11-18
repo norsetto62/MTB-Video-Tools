@@ -102,6 +102,9 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         data.get("roi_bottom", DEFAULT_ROI_BOTTOM),
         data.get("roi_top", DEFAULT_ROI_TOP),
     )
+    pitch_time_offset = data.get("pitch_time_offset", 0.0)
+    if isinstance(pitch_time_offset, bool) or not isinstance(pitch_time_offset, (int, float)) or not np.isfinite(float(pitch_time_offset)):
+        raise ValueError("data.pitch_time_offset must be a finite number.")
     return {
         "sampling_fps": sample_fps,
         "processing_width": processing_width,
