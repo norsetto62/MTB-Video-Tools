@@ -6,7 +6,6 @@ apply candidate-selection thresholds, or merge/select segments.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,24 +13,13 @@ import numpy as np
 import torch
 
 from autocut.data_models import FeatureSequence, FeatureWindows
+from autocut.ml.inference_types import InferenceResult
 from autocut.ml.checkpoint import load_checkpoint, restore_model, validate_checkpoint
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
 from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_features, engineer_motion_sequence
 from autocut.dataset.windows import build_windows_from_features
 
-
-@dataclass(frozen=True)
-class InferenceResult:
-    """Predictions aligned with the input windows.
-
-    Attributes:
-        timestamps: Window start/end times in seconds, shape (N, 2).
-        probabilities: Probability of membership in P, shape (N,).
-    """
-
-    timestamps: np.ndarray
-    probabilities: np.ndarray
 
 
 def infer_windows(
