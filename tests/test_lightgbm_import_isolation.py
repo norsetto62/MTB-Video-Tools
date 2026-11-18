@@ -1,4 +1,4 @@
-"""Regression tests for the optional LightGBM/PyTorch dependency boundary."""
+"""Regression tests ensuring the LightGBM runtime has no PyTorch dependency."""
 
 from __future__ import annotations
 
