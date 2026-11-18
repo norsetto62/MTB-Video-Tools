@@ -20,7 +20,7 @@ from autocut.config_loader import load_config
 from autocut.data_models import Clip
 from autocut.dataset.feature_cache import load_feature_sequence
 from autocut.dataset.sequence import build_feature_sequence
-from autocut.pipeline.training import _data_values
+from autocut.pipeline.lightgbm_training import _data_config
 from autocut.video.probe import get_video_info
 from plot_motion_experiments import derive_signals
 
@@ -131,8 +131,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise FileNotFoundError(f"Video not found: {video_path}")
 
     settings = load_config(args.config)
-    (_, sample_fps, processing_width, _, _, roi_left, roi_right,
-     roi_bottom, roi_top) = _data_values(settings)
+    data_config = _data_config(settings)
+    sample_fps = data_config["sampling_fps"]
+    processing_width = data_config["processing_width"]
+    roi_left = data_config["roi_left"]
+    roi_right = data_config["roi_right"]
+    roi_bottom = data_config["roi_bottom"]
+    roi_top = data_config["roi_top"]
     cache_dir = Path(settings.get("paths", {}).get("cache_dir", "data/cache")).expanduser()
     video_info = get_video_info(video_path)
     clip = Clip(video_name=video_path.stem, start=0.0, end=float(video_info.duration))
