@@ -15,8 +15,7 @@ from ..audio.config import AudioConfig
 import numpy as np
 
 from ..annotations import load_annotations
-from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
-from ..dataset.windows import build_windows
+from ..data_models import Clip, VideoInfo
 from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
@@ -41,101 +40,6 @@ def _merge_ranges(clips: Iterable[object]) -> list[tuple[float, float]]:
             previous_start, previous_end = merged[-1]
             merged[-1] = (previous_start, max(previous_end, end))
     return merged
-
-
-def _extract_windows(
-    video_path: Path,
-    start: float,
-    end: float,
-    settings: Config,
-    *,
-    feature_names: list[str] | tuple[str, ...] | None = None,
-) -> FeatureWindows | None:
-    """Use the canonical dataset sequence builder, then construct windows."""
-    from ..dataset.sequence import build_feature_sequence
-
-    cache_clip = Clip(
-        video_name=str(video_path),
-        start=float(start),
-        end=float(end),
-        mandatory=False,
-    )
-    try:
-        sequence = build_feature_sequence(
-            video_path,
-            cache_clip,
-            sample_fps=settings.video.sampling_fps,
-            processing_width=settings.video.processing_width,
-            cache_dir=feature_cache_dir(settings),
-            roi_left=settings.video.roi_left,
-            roi_right=settings.video.roi_right,
-            roi_bottom=settings.video.roi_bottom,
-            roi_top=settings.video.roi_top,
-            window_duration=settings.features.window_duration,
-            window_stride=settings.features.window_stride,
-        )
-        # Dataset sequence timestamps are absolute; candidate windows are
-        # local to this processing range and translated back by the caller.
-        sequence = FeatureSequence(
-            features=sequence.features,
-            timestamps=np.asarray(sequence.timestamps - start, dtype=np.float64),
-        )
-        # Engineered model signals are transformed over the continuous sequence
-        # before overlapping windows are formed (especially Savitzky-Golay).
-        if feature_names is not None and list(feature_names) in (
-            list(MODEL_FEATURE_NAMES), list(MODEL_FEATURE_NAMES_WITH_DJI)
-        ):
-            transformed = engineer_motion_sequence(sequence.features)
-            from ..dataset.windows import build_windows_from_features
-
-            windows = build_windows_from_features(
-                transformed,
-                sequence.timestamps,
-                window=settings.features.window_duration,
-                stride=settings.features.window_stride,
-            )
-            if list(feature_names) == list(MODEL_FEATURE_NAMES_WITH_DJI):
-                rms = pitch_rate_rms_for_windows(
-                    video_path, windows.timestamps, time_offset=start
-                )
-                windows = FeatureWindows(
-                    X=append_pitch_rate_rms(windows.X, rms),
-                    timestamps=windows.timestamps,
-                )
-            return windows
-        return build_windows(
-            sequence,
-            window=settings.features.window_duration,
-            stride=settings.features.window_stride,
-        )
-    except ValueError as exc:
-        if end - start < settings.features.window_duration:
-            logger.info(
-                "Skipping candidate inference for short range %s [%.3f, %.3f): %s",
-                video_path, start, end, exc,
-            )
-            return None
-        raise
-
-def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
-    """Translate a range-local candidate and its evidence to source timestamps."""
-    from ..selection.candidate_types import WindowEvidence
-
-    return CandidateClip(
-        start=candidate.start + offset,
-        end=candidate.end + offset,
-        duration=candidate.duration,
-        mean_probability=candidate.mean_probability,
-        max_probability=candidate.max_probability,
-        window_evidence=tuple(
-            WindowEvidence(
-                start=window.start + offset,
-                end=window.end + offset,
-                probability=window.probability,
-            )
-            for window in candidate.window_evidence
-        ),
-    )
 
 
 def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
@@ -459,95 +363,6 @@ def run_pipeline(
                 "score_semantics": "raw LambdaRank score",
             })
             continue
-
-        from ..ml.inference import InferenceResult
-        global load_checkpoint, validate_checkpoint, infer_windows
-        if load_checkpoint is None or validate_checkpoint is None:
-            from ..ml import checkpoint as _checkpoint
-            load_checkpoint = _checkpoint.load_checkpoint
-            validate_checkpoint = _checkpoint.validate_checkpoint
-        if infer_windows is None:
-            from ..ml import inference as _inference
-            infer_windows = _inference.infer_windows
-        from ..motion.engineered import MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_sequence
-        from ..motion.dji import append_pitch_rate_rms, pitch_rate_rms_for_windows
-        if isinstance(settings.model.checkpoint, (str, Path)):
-            payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
-        elif isinstance(settings.model.checkpoint, Mapping):
-            payload = validate_checkpoint(dict(settings.model.checkpoint))
-        else:
-            raise TypeError("checkpoint must be a path or a checkpoint mapping.")
-        data_config = payload.get("data_config", {})
-        checkpoint_feature_names = payload.get("feature_names")
-        trained_roi = data_config.get("roi") if isinstance(data_config, Mapping) else None
-        if not isinstance(trained_roi, Mapping):
-            raise ValueError(
-                "Checkpoint has no ROI metadata. Retrain the model with the current "
-                "ROI-aware feature pipeline before inference."
-            )
-        settings = settings.with_overrides({
-            "data.roi_left": trained_roi["left"],
-            "data.roi_right": trained_roi["right"],
-            "data.roi_bottom": trained_roi["bottom"],
-            "data.roi_top": trained_roi["top"],
-        })
-        windows = _extract_windows(
-            Path(video_name), start, end, settings,
-            feature_names=checkpoint_feature_names,
-        )
-        if windows is None:
-            inference_summaries.append({
-                "video": video_name,
-                "annotation_order": annotation_order,
-                "range_start": start,
-                "range_end": end,
-                "window_count": 0,
-                "candidate_count": 0,
-                "status": "skipped_insufficient_features",
-            })
-            continue
-        logger.info(
-            "Running model inference on %d window(s) from %s [%.1f, %.1f]s "
-            "(annotation #%d).",
-            int(windows.X.shape[0]), Path(video_name).name, start, end,
-            annotation_order,
-        )
-        inference = infer_windows(
-            settings.model.checkpoint,
-            windows,
-            batch_size=settings.model.inference_batch_size,
-        )
-        cleaned_inference = InferenceResult(
-            timestamps=inference.timestamps,
-            probabilities=inference.probabilities,
-        )
-        candidates = generate_candidates(
-            cleaned_inference,
-            clip_duration=end - start,
-            config=candidate_config,
-        )
-        logger.info(
-            "Annotation #%d result: %d inference window(s), %d candidate clip(s).",
-            annotation_order, int(windows.X.shape[0]), len(candidates),
-        )
-        inference_summaries.append({
-            "video": video_name,
-            "annotation_order": annotation_order,
-            "range_start": start,
-            "range_end": end,
-            "window_count": int(windows.X.shape[0]),
-            "candidate_count": len(candidates),
-            "status": "processed",
-        })
-        all_candidates.extend(
-            SelectionCandidate(
-                video_name=video_name,
-                video_order=order,
-                candidate=_offset_candidate(candidate, start),
-                annotation_order=annotation_order,
-            )
-            for candidate in candidates
-        )
 
     if backend == "lightgbm":
         from ..selection.lightgbm_candidates import select_ranked_segments
