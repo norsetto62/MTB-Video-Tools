@@ -80,15 +80,11 @@ Instead, the model estimates a continuous **interest score** on a 0–3 scale:
 
 Training windows may overlap adjacent annotation intervals. A window is retained only when every annotation interval overlapping it has the same score; a window crossing a class boundary is discarded, even if one score covers most of its duration.
 
-Training uses positive-unlabeled (PU) learning:
+Training uses **ordinal learning-to-rank** with LightGBM LambdaRank. Every video is an independent ranking query, and its windows retain their human relevance grades (0–3). The grouped validation split keeps entire videos together; Optuna HPO evaluates leave-one-group-out folds. The production ranker is refit on the annotated corpus and emits raw ranking scores rather than class probabilities.
 
-- **P (positive):** only pure score-3 windows.
-- **U (unlabeled):** pure score-0, score-1, and score-2 windows. These are not treated as confirmed negatives.
-- **Conflicting windows:** discarded.
+Windows with no annotation overlap are omitted. For partially overlapping annotations, each window receives the duration-weighted majority grade; ties are assigned to the higher grade.
 
-The model has a single raw logit for P versus U. Score 3 maps to the positive set P; scores 0, 1, and 2 map to the unlabeled set U. Training uses the non-negative PU risk only, with no auxiliary classification objective. U examples are not treated as confirmed negatives. Configure `training.positive_prior` for the assumed positive prevalence used by the PU risk; the code default is 0.1 and should be checked against the dataset. The model's sigmoid output is the estimated P probability. Candidate-generation integration is intentionally outside the scope of this experiment.
-
-The purpose of the model is therefore to prioritize clearly interesting moments without flooding training with presumed negatives.
+The previous PU/BiLSTM implementation is no longer part of this development branch. Its history remains available on the `legacy` branch.
 
 ## Processing pipeline
 
@@ -172,13 +168,13 @@ canonical feature cache and writes a LightGBM JSON checkpoint containing raw
 ranking scores, not class probabilities.
 
 ```powershell
-python -m autocut lightgbm-train
+python -m autocut train
 ```
 
 Override the manifest, configuration, or output checkpoint when needed:
 
 ```powershell
-python -m autocut lightgbm-train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/ranker.json
+python -m autocut train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/ranker.json
 ```
 
 The default checkpoint is `models/lightgbm/ranker.json`, overridable with
@@ -222,7 +218,7 @@ The default search space is used for parameters not explicitly listed. The
 objective choices must include both ranking objectives so the comparison is
 not accidentally disabled. HPO exports the best parameter set; it does not
 silently launch a production refit. Review the results, set the selected values
-under the `lightgbm` configuration section, then run `lightgbm-train` to
+under the `lightgbm` configuration section, then run `train` to
 create the production checkpoint.
 ## Feature-cache cleanup
 
