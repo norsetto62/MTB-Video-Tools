@@ -128,7 +128,7 @@ The individual stages are deliberately separated so that the analysis, ML, selec
 Create the development environment and install the project in editable mode:
 
 ```powershell
-python -m pip install -e .
+python -m pip install -e ".[dev,ml,hpo]"
 ```
 
 The editable installation means changes made under `src/autocut/` are immediately available without reinstalling the package.
