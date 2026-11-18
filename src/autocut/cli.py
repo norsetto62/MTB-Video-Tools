@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-COMMANDS = ("run", "audit", "train", "test", "lightgbm-score-report", "lightgbm-lovo", "lightgbm-hpo", "models")
+COMMANDS = ("run", "audit", "train", "test", "score-report", "lovo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,8 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     # subparser option parsing consume or reject them.
     test.add_argument("pytest_args", nargs=argparse.REMAINDER)
 
-    lightgbm_report = subparsers.add_parser(
-        "lightgbm-score-report",
+    score_report = subparsers.add_parser(
+        "score-report",
         help="Score every window and export per-video/global LightGBM ranking diagnostics.",
     )
     lightgbm_report.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
@@ -69,16 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Primary global-score CSV path (companion video-range CSV is written beside it).",
     )
 
-    lightgbm_lovo = subparsers.add_parser(
-        "lightgbm-lovo",
+    lovo = subparsers.add_parser(
+        "lovo",
         help="Train and validate a LightGBM ranking model by manifest group.",
     )
     lightgbm_lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lightgbm_lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
     lightgbm_lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
 
-    lightgbm_hpo = subparsers.add_parser(
-        "lightgbm-hpo",
+    hpo = subparsers.add_parser(
+        "hpo",
         help="Tune LightGBM ranking objective and hyperparameters with Optuna.",
     )
     lightgbm_hpo.add_argument(
@@ -223,7 +223,7 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command == "lightgbm-score-report":
+    if args.command == "score-report":
         from .config_loader import load_config
         from .pipeline.lightgbm_score_report import run_lightgbm_score_report
 
@@ -247,7 +247,7 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command == "lightgbm-lovo":
+    if args.command == "lovo":
         from .config_loader import load_config
         from .pipeline.lightgbm_training import run_lightgbm_lovo_from_manifest
 
@@ -281,7 +281,7 @@ def dispatch(args: argparse.Namespace) -> int:
         ], indent=2, default=str))
         return 0
 
-    if args.command == "lightgbm-hpo":
+    if args.command == "hpo":
         from .config_loader import load_config
         from .pipeline.lightgbm_hpo import run_lightgbm_hpo
 
