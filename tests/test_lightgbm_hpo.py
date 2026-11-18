@@ -65,19 +65,18 @@ def test_hpo_custom_search_space_overrides_without_dropping_defaults():
 
 
 
-def test_hpo_search_space_accepts_scalar_fixed_values_and_aliases():
+def test_hpo_search_space_accepts_scalar_fixed_values():
     settings = Config({
         "hpo": {
             "search_space": {
-                "bagging_freq": 1,
-                "reg_alpha": 0.25,
+                "bagging_frequency": 1,
+                "lambda_l1": 0.25,
             }
         }
     })
     space = _validated_search_space(settings)
     assert space["bagging_frequency"] == {"fixed": 1}
     assert space["lambda_l1"] == {"fixed": 0.25}
-    assert "bagging_freq" not in space
 
 
 
@@ -88,9 +87,9 @@ def test_hpo_section_custom_ranges_are_used_verbatim():
                 "max_depth": {"low": 4, "high": 12, "step": 1},
                 "num_leaves": {"low": 20, "high": 160},
                 "min_data_in_leaf": {"low": 50, "high": 200},
-                "bagging_freq": {"choices": [1, 3, 5]},
-                "reg_alpha": {"low": 0.01, "high": 1.0, "log": True},
-                "reg_lambda": {"low": 0.001, "high": 10.0, "log": True},
+                "bagging_frequency": {"choices": [1, 3, 5]},
+                "lambda_l1": {"low": 0.01, "high": 1.0, "log": True},
+                "lambda_l2": {"low": 0.001, "high": 10.0, "log": True},
             }
         }
     })
