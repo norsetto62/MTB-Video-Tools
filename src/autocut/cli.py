@@ -47,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     train = subparsers.add_parser("train", help="Train a model from a fixed group split.")
     train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    train.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
 
     test = subparsers.add_parser(
         "test",
@@ -56,14 +57,6 @@ def build_parser() -> argparse.ArgumentParser:
     # Pytest owns its flags (including -h/--help), so don't let argparse's
     # subparser option parsing consume or reject them.
     test.add_argument("pytest_args", nargs=argparse.REMAINDER)
-
-    lightgbm_train = subparsers.add_parser(
-        "lightgbm-train",
-        help="Train one LightGBM ranking model on annotated windows.",
-    )
-    lightgbm_train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
-    lightgbm_train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
-    lightgbm_train.add_argument("--checkpoint", type=Path, help="Override the single-model checkpoint path.")
 
     lightgbm_report = subparsers.add_parser(
         "lightgbm-score-report",
@@ -215,7 +208,7 @@ def dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command == "lightgbm-train":
+    if args.command == "train":
         from .config_loader import load_config
         from .pipeline.lightgbm_training import run_lightgbm_train_from_manifest
 
