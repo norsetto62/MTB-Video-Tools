@@ -216,6 +216,16 @@ hpo:
   search_space:
     objective:
       choices: [lambdarank, rank_xendcg]
+    bagging_frequency:
+      choices: [1, 3, 5]
+    lambda_l1:
+      low: 0.01
+      high: 1.0
+      log: true
+    lambda_l2:
+      low: 0.001
+      high: 10.0
+      log: true
 ```
 
 The default search space is used for parameters not explicitly listed. The
