@@ -3,7 +3,7 @@
 import pytest
 
 from autocut.selection.selection import MandatoryClip, SelectionCandidate, select_candidates
-from autocut.selection.candidates_generation import CandidateClip, WindowEvidence
+from autocut.selection.candidate_types import CandidateClip, WindowEvidence
 
 
 def candidate(video="v1.mp4", order=0, start=0.0, end=4.0, score=0.8,
