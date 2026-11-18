@@ -2,7 +2,7 @@
 import pytest
 
 from autocut.config_loader import Config
-from autocut.ml.model import LightGBMConfig
+from autocut.ml.lightgbm_model import LightGBMConfig
 from autocut.pipeline.lightgbm_hpo import _suggest, _validated_search_space
 
 
