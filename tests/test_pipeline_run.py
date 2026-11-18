@@ -123,7 +123,9 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
     monkeypatch.setattr(
         "autocut.dataset.sequence.build_feature_sequence",
         lambda *args, **kwargs: SimpleNamespace(
-            features=np.ones((10, 4)), timestamps=np.arange(10, dtype=float)
+            features=np.ones((10, 4)), timestamps=np.arange(10, dtype=float),
+            pitch_timestamps=np.arange(0.0, 20.1, 0.1, dtype=np.float64),
+            pitch_rate=np.ones(201, dtype=np.float64),
         ),
     )
     monkeypatch.setattr("autocut.motion.engineered.engineer_lightgbm_sequence", lambda X: X)
@@ -132,7 +134,7 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
     ])
     monkeypatch.setattr(
         "autocut.dataset.windows.build_lightgbm_windows_from_features",
-        lambda *args, **kwargs: SimpleNamespace(X=np.ones((5, 2)), timestamps=window_times),
+        lambda *args, **kwargs: SimpleNamespace(X=np.ones((5, 48)), timestamps=window_times),
     )
     monkeypatch.setattr("autocut.dataset.normalization.normalize_per_video_features", lambda X: X)
 
