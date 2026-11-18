@@ -184,7 +184,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     n_trials = section.get("n_trials", 30)
     if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials <= 0:
         raise ValueError("hpo.n_trials must be a positive integer.")
-    study_name = section.get("study_name", "lightgbm_ranking_hpo")
+    study_name = section.get("study_name", "ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
     # Do not mix historical NDCG trial values with the new event-recall objective.
