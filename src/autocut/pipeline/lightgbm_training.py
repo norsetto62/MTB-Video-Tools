@@ -112,6 +112,7 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         "roi_bottom": roi[2],
         "roi_top": roi[3],
         "feature_normalization": "per_video_zscore_all_windows_ddof0",
+        "pitch_time_offset": float(data.get("pitch_time_offset", 0.0)),
     }
 
 
@@ -175,6 +176,7 @@ def prepare_lightgbm_manifest_data(
         sequence = build_feature_sequence(
             record.video_path,
             clip,
+            include_pitch_telemetry=True,
             sample_fps=params["sampling_fps"],
             processing_width=params["processing_width"],
             cache_dir=cache_dir,
@@ -186,8 +188,10 @@ def prepare_lightgbm_manifest_data(
         windows, targets = build_lightgbm_training_data(
             sequence,
             annotations,
-            window=params["window"],
-            stride=params["stride"],
+            window=params["window"], stride=params["stride"],
+            pitch_timestamps=sequence.pitch_timestamps,
+            pitch_rate=sequence.pitch_rate,
+            pitch_time_offset=params["pitch_time_offset"],
         )
         if len(targets) == 0:
             raise ValueError(
