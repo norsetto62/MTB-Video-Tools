@@ -5,7 +5,7 @@ from autocut.config_loader import Config
 from autocut.ml.lightgbm_training import LightGBMGroupFoldResult
 
 
-def test_lightgbm_lovo_command_parses_manifest_and_checkpoint_dir(tmp_path):
+def test_lovo_command_parses_manifest_and_checkpoint_dir(tmp_path):
     manifest = tmp_path / "manifest.yaml"
     args = build_parser().parse_args([
         "lovo", str(manifest), "--checkpoint-dir", str(tmp_path / "models")
@@ -16,7 +16,7 @@ def test_lightgbm_lovo_command_parses_manifest_and_checkpoint_dir(tmp_path):
     assert args.config == Path("config/train.yaml")
 
 
-def test_lightgbm_lovo_dispatch_calls_manifest_pipeline(tmp_path, monkeypatch, capsys):
+def test_lovo_dispatch_calls_manifest_pipeline(tmp_path, monkeypatch, capsys):
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text("videos: []\n", encoding="utf-8")
     config_path = tmp_path / "train.yaml"
