@@ -327,21 +327,21 @@ Introdurre casualità aiuta gli alberi a non dipendere troppo dalle stesse featu
 
 feature_fraction (Subsampling delle colonne): Frazione di feature scelte casualmente per ogni albero (es. 0.7 - 0.9). Riduce la correlazione tra gli alberi e combatte l'overfitting.
 
-bagging_fraction e bagging_freq: Frazione di dati campionati a ogni iterazione. Va usato insieme a bagging_freq > 0 (che definisce ogni quanti step effettuare il bagging). Accelera il training e migliora la regolarizzazione.
+bagging_fraction e bagging_frequency: Frazione di dati campionati a ogni iterazione. Va usato insieme a bagging_frequency > 0 (che definisce ogni quanti step effettuare il bagging). Accelera il training e migliora la regolarizzazione.
 
-L1 (reg_alpha) e L2 (reg_lambda): Penalizzano i pesi delle foglie. Aggiungono regolarizzazione pura, molto utile se il modello tende a sovradattarsi sui dati di training.
+L1 (lambda_l1) e L2 (lambda_l2): Penalizzano i pesi delle foglie. Aggiungono regolarizzazione pura, molto utile se il modello tende a sovradattarsi sui dati di training.
 
 Un ordine di priorità logico per la ricerca dei parametri è:
 
 Fase 1 (Struttura): Ottimizza num_leaves, max_depth e min_data_in_leaf.
 Fase 2 (Stocastica): Ottimizza feature_fraction e bagging_fraction.
-Fase 3 (Regolarizzazione): Ottimizza reg_alpha (L1) e reg_lambda (L2).
+Fase 3 (Regolarizzazione): Ottimizza lambda_l1 (L1) e lambda_l2 (L2).
 Fase 4 (Fine-tuning): Abbassa il learning_rate e attiva l'Early Stopping per trovare il numero ottimale di alberi.
 
 Le Regole d'Oro per l'HPO in questo scenario
 Usa sempre l'Early Stopping: Non cercare il numero esatto di alberi (num_iterations). Imposta un numero alto (es. 1500) e fai fermare il training se la validation loss non migliora per 50-100 round. In questo modo permetti a Optuna di testare learning rate diversi senza preoccuparsi di bruciare tentativi con troppi o pochi alberi.
 
-Usa scale logaritmiche per i parametri di scala: Parametri come learning_rate, reg_alpha (L1) e reg_lambda (L2) coprono ordini di grandezza differenti (da 0.001 a 0.1). Usare una scala logaritmica in Optuna (log=True) esplora lo spazio in modo molto più efficiente.
+Usa scale logaritmiche per i parametri di scala: Parametri come learning_rate, lambda_l1 (L1) e lambda_l2 (L2) coprono ordini di grandezza differenti (da 0.001 a 0.1). Usare una scala logaritmica in Optuna (log=True) esplora lo spazio in modo molto più efficiente.
 
 Occhio al bilanciamento della complessità: num_leaves e max_depth vanno legati mentalmente. Se permetti alberi molto profondi (max_depth=10), rischi un overfitting pazzesco sui tuoi 8 gruppi se non alzi min_data_in_leaf.
 
@@ -364,11 +364,11 @@ Il Search Space Consigliato per Optuna
         # 3. Subsampling (Stocastica per regolarizzare)
         'feature_fraction': trial.suggest_float('feature_fraction', 0.6, 1.0),
         'bagging_fraction': trial.suggest_float('bagging_fraction', 0.6, 1.0),
-        'bagging_freq': 1, # Obbligatorio se usi bagging_fraction > 0
+        'bagging_frequency': 1, # Obbligatorio se usi bagging_fraction > 0
         
         # 4. Regolarizzazione L1 e L2
-        'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 10.0, log=True),
-        'reg_lambda': trial.suggest_float('reg_lambda', 1e-3, 10.0, log=True),
+        'lambda_l1': trial.suggest_float('lambda_l1', 1e-3, 10.0, log=True),
+        'lambda_l2': trial.suggest_float('lambda_l2', 1e-3, 10.0, log=True),
         
         # 5. Min split gain (taglia i rami deboli)
         'min_split_gain': trial.suggest_float('min_split_gain', 0.0, 1.0)
