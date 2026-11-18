@@ -8,7 +8,7 @@ from autocut.data_models import Annotation, FeatureSequence, VideoInfo
 from autocut.dataset.manifest import DatasetRecord
 from autocut.motion.features import FEATURE_NAMES
 from autocut.ml.lightgbm_training import LightGBMGroupFoldResult
-from autocut.ml.model import LightGBMConfig
+from autocut.ml.lightgbm_model import LightGBMConfig
 from autocut.pipeline import lightgbm_training as pipeline
 
 
