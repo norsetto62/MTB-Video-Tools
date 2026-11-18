@@ -2,7 +2,7 @@
 import json
 from autocut.selection.selection import MandatoryClip, SelectionCandidate, SelectionResult
 from autocut.selection.timeline import assemble_timeline
-from autocut.selection.candidates_generation import CandidateClip
+from autocut.selection.candidate_types import CandidateClip
 
 def candidate(video, order, start, end, score=1.0, annotation_order=None):
     return SelectionCandidate(video, order, CandidateClip(start, end, end-start, score, score), annotation_order)
