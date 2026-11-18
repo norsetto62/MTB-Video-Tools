@@ -155,7 +155,7 @@ Train a LightGBM LambdaRank model that orders annotated windows by their
 ordinal relevance grades (0–3). Each video is one ranking query: LightGBM gets
 a group-size array describing the consecutive rows for each video. The
 configured `data.train_groups` and `data.validation_groups` are kept separate
-for iteration selection. Before annotation filtering, each video's 48-column
+for iteration selection. Before annotation filtering, each video's 49-column
 window features are independently z-score normalized across all windows in that
 video (population standard deviation, ddof=0; constant columns become zero).
 The same transformation is applied to all windows of a video during ranking
@@ -178,6 +178,8 @@ python -m autocut train data/manifest/annotations_manifest.yaml --config config/
 ```
 
 The LightGBM hyperparameters are configured in the `training` YAML section. The former PU/BiLSTM `training` options (epochs, batch size, hidden dimensions, dropout, positive prior and threshold, and related fields) are no longer used and should be removed. The former `lightgbm` section has been renamed to `training`.
+
+The pitch-rate RMS is computed from the DJI quaternion telemetry stored in each source MP4. Existing optical-flow NPZ caches are augmented atomically with the raw pitch timestamps and rates; the cached optical-flow arrays are not regenerated. Set `data.pitch_time_offset` only when the telemetry and video elapsed-time origins differ (default: `0.0`).
 
 The default checkpoint is `models/lightgbm/ranker.json`, overridable with
 `--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
