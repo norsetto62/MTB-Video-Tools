@@ -172,13 +172,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     video_path, annotations = load_training_annotations(args.annotations)
     settings = load_config(args.config)
-    data = _data_config(settings)
     raw_settings = settings.to_dict() if hasattr(settings, "to_dict") else settings
     experiment = raw_settings.get("experiment", {})
+    model_settings = raw_settings.get("model", {})
     checkpoint_path = args.checkpoint or experiment.get(
-        "lightgbm_model_path", "models/lightgbm/ranker.json"
+        "lightgbm_model_path", model_settings.get("checkpoint", "models/lightgbm/ranker.json")
     )
     payload = load_lightgbm_checkpoint(checkpoint_path)
+    saved = payload.get("data_config", {})
+    if "data" in raw_settings:
+        data = _data_config(raw_settings)
+    else:
+        video = raw_settings.get("video", {})
+        features = raw_settings.get("features", {})
+        data = {
+            "sampling_fps": float(saved.get("sampling_fps", video.get("sampling_fps", 2.0))),
+            "processing_width": int(saved.get("processing_width", video.get("processing_width", 480))),
+            "window": float(saved.get("window", saved.get("window_duration", features.get("window_duration", 4.0)))),
+            "stride": float(saved.get("stride", saved.get("window_stride", features.get("window_stride", 2.0)))),
+            "roi_left": saved.get("roi_left", video.get("roi_left", 0.15)),
+            "roi_right": saved.get("roi_right", video.get("roi_right", 0.85)),
+            "roi_bottom": saved.get("roi_bottom", video.get("roi_bottom", 0.50)),
+            "roi_top": saved.get("roi_top", video.get("roi_top", 0.10)),
+        }
     if payload.get("model_class") != "LightGBMRanker":
         raise ValueError("The selected checkpoint is not a LightGBMRanker.")
     from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
@@ -186,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("Checkpoint feature schema does not match current LightGBM windows.")
 
     info = get_video_info(video_path)
-    clip = Clip(video_name=video_path.stem, start=0.0, end=float(info.duration))
+    clip = Clip(video_name=video_path.stem, start=0.0, end=min(float(annotations[-1].end), float(info.duration)))
     sequence = build_feature_sequence(
         video_path, clip,
         sample_fps=data["sampling_fps"],
@@ -194,6 +210,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cache_dir=feature_cache_dir(raw_settings),
         roi_left=data["roi_left"], roi_right=data["roi_right"],
         roi_bottom=data["roi_bottom"], roi_top=data["roi_top"],
+        window_duration=data["window"], window_stride=data["stride"],
     )
     signals = engineer_lightgbm_sequence(sequence.features)
     windows = build_lightgbm_windows_from_features(
