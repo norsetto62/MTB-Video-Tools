@@ -15,7 +15,7 @@ from ..ml.lightgbm_model import LightGBMConfig
 from ..ml.lightgbm_training import train_lightgbm_lovo
 from ..dataset.manifest import load_manifest
 from .lightgbm_training import (
-    _lightgbm_config,
+    _training_config,
     _section,
     prepare_lightgbm_manifest_data,
 )
@@ -175,7 +175,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
 
     report(f"Preparing manifest data from {manifest_path}.")
 
-    base_config = _lightgbm_config(settings)
+    base_config = _training_config(settings)
     search_space = _validated_search_space(settings)
 
     # Proxy groups are an explicit HPO-only subset: filter before feature
