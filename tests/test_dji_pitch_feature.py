@@ -37,6 +37,13 @@ def test_pitch_rate_rms_maps_local_windows_to_source_timeline(tmp_path, monkeypa
     np.testing.assert_allclose(result, [expected], rtol=1e-6)
 
 
+def test_pitch_rate_rms_from_cached_series_uses_each_window():
+    times = np.arange(0.0, 8.0, 0.04, dtype=np.float64)
+    rates = np.where(times < 4.0, 3.0, 4.0).astype(np.float64)
+    result = dji.pitch_rate_rms_from_series(times, rates, np.array([[0.0, 4.0], [4.0, 8.0]]))
+    np.testing.assert_allclose(result, [3.0, 4.0], rtol=1e-6)
+
+
 def test_append_pitch_rate_rms_adds_one_constant_channel_per_window():
     features = np.zeros((2, 8, 7), dtype=np.float32)
     result = dji.append_pitch_rate_rms(
