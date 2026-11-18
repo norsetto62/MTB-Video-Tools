@@ -195,7 +195,7 @@ the ranking defaults by the training configuration loader.
 Tune the LightGBM ranking hyperparameters with Optuna. The default search
 space explicitly compares `lambdarank` and `rank_xendcg` while holding the
 data preparation and per-video query grouping fixed. Trials are scored by the
-mean held-out-group NDCG at the configured `lightgbm_hpo.ndcg_cutoff` (default
+mean held-out-group NDCG at the configured `hpo.ndcg_cutoff` (default
 10); use the same manifest and fold set when comparing objectives. The study
 is persisted in `data/db/lightgbm_hpo.db` and the trial table plus best
 parameters are exported to `output/hpo/lightgbm_ranking_hpo_results.json`.
@@ -204,10 +204,10 @@ parameters are exported to `output/hpo/lightgbm_ranking_hpo_results.json`.
 python -m autocut hpo --config config/train.yaml
 ```
 
-Optional configuration belongs in a `lightgbm_hpo` YAML section:
+Optional configuration belongs in the `hpo` YAML section:
 
 ```yaml
-lightgbm_hpo:
+hpo:
   study_name: lightgbm_ranking_hpo
   n_trials: 30
   ndcg_cutoff: 10
