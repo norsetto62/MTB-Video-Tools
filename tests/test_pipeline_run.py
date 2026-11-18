@@ -81,7 +81,7 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
     source = tmp_path / "ride.mp4"
     source.write_bytes(b"video placeholder")
     annotations = tmp_path / "annotations.txt"
-    annotations.write_text(f"{source}\\n00:00 00:20\\n", encoding="utf-8")
+    annotations.write_text(f"{source}\n00:00 00:20\n", encoding="utf-8")
     checkpoint = tmp_path / "ranker.json"
     checkpoint.write_text("placeholder", encoding="utf-8")
     settings = _run_settings(checkpoint, tmp_path / "output", tmp_path / "cache")
