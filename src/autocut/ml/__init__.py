@@ -1,6 +1,7 @@
-"""Machine-learning components for AutoCut."""
+"""Machine-learning components for AutoCut.
 
-from autocut.ml.model import MTBClassifier
-from autocut.ml.scaling import FeatureScaler
+Backend-specific classes are imported from their modules to keep optional
+framework dependencies isolated.
+"""
 
-__all__ = ["MTBClassifier", "FeatureScaler"]
+__all__: list[str] = []
