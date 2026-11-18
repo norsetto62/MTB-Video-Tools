@@ -97,8 +97,20 @@ def _read_entry(path: Path) -> dict[str, Any]:
     }
     try:
         with np.load(path, allow_pickle=False) as archive:
-            if set(archive.files) != {"metadata", "features", "timestamps"}:
+            allowed = {"metadata", "features", "timestamps", "pitch_timestamps", "pitch_rate"}
+            required = {"metadata", "features", "timestamps"}
+            if not required.issubset(archive.files) or not set(archive.files).issubset(allowed):
                 raise ValueError("unexpected NPZ members")
+            if ("pitch_timestamps" in archive.files) != ("pitch_rate" in archive.files):
+                raise ValueError("incomplete pitch telemetry members")
+            if "pitch_timestamps" in archive.files:
+                pitch_times = archive["pitch_timestamps"]
+                pitch_rates = archive["pitch_rate"]
+                if (pitch_times.ndim != 1 or pitch_rates.ndim != 1
+                        or len(pitch_times) != len(pitch_rates) or len(pitch_times) < 3
+                        or not np.isfinite(pitch_times).all() or not np.isfinite(pitch_rates).all()
+                        or not np.all(np.diff(pitch_times) > 0)):
+                    raise ValueError("invalid pitch telemetry arrays")
             raw = archive["metadata"]
             if raw.shape != ():
                 raise ValueError("metadata is not a scalar")
