@@ -217,7 +217,7 @@ def prepare_lightgbm_manifest_data(
     return prepared, group_by_video, params
 
 
-def run_lightgbm_lovo_from_manifest(
+def run_lovo_from_manifest(
     manifest_path: str | Path,
     settings: Mapping[str, Any],
     *,
