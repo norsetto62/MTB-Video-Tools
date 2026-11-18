@@ -38,6 +38,19 @@ def test_save_feature_sequence_indexes_written_npz(tmp_path):
     assert lookup_cache_file(cache_dir, cache_file) is True
 
 
+def test_catalog_accepts_pitch_enriched_cache_entries(tmp_path):
+    video, cache_dir, clip, sequence = _fixture(tmp_path)
+    pitch_times = np.arange(0.0, 4.0, 0.1, dtype=np.float64)
+    pitch_rates = np.linspace(1.0, 2.0, len(pitch_times), dtype=np.float64)
+    enriched = FeatureSequence(
+        features=sequence.features, timestamps=sequence.timestamps,
+        pitch_timestamps=pitch_times, pitch_rate=pitch_rates,
+    )
+    cache_file = save_feature_sequence(enriched, video, cache_dir, clip)
+    assert lookup_cache_file(cache_dir, cache_file) is True
+    assert list_cache_entries(cache_dir)[0]["valid"] == 1
+
+
 def test_lookup_indexes_cache_file_created_outside_save_api(tmp_path):
     video, cache_dir, clip, sequence = _fixture(tmp_path)
     cache_file = save_feature_sequence(sequence, video, cache_dir, clip)
