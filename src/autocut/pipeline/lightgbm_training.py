@@ -35,8 +35,8 @@ from ..ml.lightgbm_training import (
     _combine_with_group_sizes,
     train_lightgbm_lovo,
 )
-from ..ml.training import train_lightgbm
-from ..ml.model import LightGBMConfig
+from ..ml.lightgbm_fit import train_lightgbm
+from ..ml.lightgbm_model import LightGBMConfig
 from ..video.probe import get_video_info
 
 
