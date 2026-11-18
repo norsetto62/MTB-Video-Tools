@@ -110,10 +110,10 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
                 if name in integer_params:
                     if not low.is_integer() or not high.is_integer():
                         raise ValueError(f"Integer search parameter {name!r} requires integer low/high bounds.")
-                    step = spec.get("step", 1.0)
-                    if not float(step).is_integer():
+                    if "step" in spec and not float(spec["step"]).is_integer():
                         raise ValueError(f"Integer search parameter {name!r} requires an integer step.")
-                    spec["step"] = int(step)
+                    if "step" in spec:
+                        spec["step"] = int(spec["step"])
                     spec["low"] = int(low)
                     spec["high"] = int(high)
                 elif "step" in spec and spec["log"]:
@@ -128,8 +128,14 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
             raise ValueError("hpo.search_space.objective must be 'lambdarank' or 'rank_xendcg'.")
     elif "choices" in objective_spec:
         choices = objective_spec["choices"]
-        if not choices or any(item not in valid_objectives for item in choices):
-            raise ValueError("hpo.search_space.objective choices must be selected from ['lambdarank', 'rank_xendcg'].")
+        if len(choices) < 2 or len(set(choices)) != len(choices) or any(
+            item not in valid_objectives for item in choices
+        ):
+            raise ValueError(
+                "hpo.search_space.objective choices must contain at least two "
+                "distinct values selected from ['lambdarank', 'rank_xendcg']; "
+                "use fixed for a single objective."
+            )
     else:
         raise ValueError("hpo.search_space.objective must use choices or fixed.")
 
