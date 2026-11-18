@@ -130,3 +130,11 @@ def test_hpo_search_space_accepts_fixed_objective():
     })
     space = _validated_search_space(settings)
     assert space["objective"] == {"fixed": "rank_xendcg"}
+
+
+
+@pytest.mark.parametrize("legacy_name", ["bagging_freq", "reg_alpha", "reg_lambda"])
+def test_hpo_rejects_legacy_parameter_aliases(legacy_name):
+    settings = Config({"hpo": {"search_space": {legacy_name: 1}}})
+    with pytest.raises(ValueError, match="Unknown LightGBM HPO search parameter"):
+        _validated_search_space(settings)
