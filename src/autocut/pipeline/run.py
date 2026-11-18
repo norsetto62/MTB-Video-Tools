@@ -246,7 +246,6 @@ def run_pipeline(
     inference_summaries: list[dict] = []
     logger.info("Starting motion analysis and LightGBM ranking inference.")
 
-    lightgbm_payload = None
     lightgbm_ranker = None
     lightgbm_params = None
     lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
