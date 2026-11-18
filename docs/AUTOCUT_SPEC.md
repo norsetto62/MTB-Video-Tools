@@ -81,11 +81,11 @@ MTB-Video-Tools/
 │       │   └── audit.py
 │       ├── ml/
 │       │   ├── __init__.py
-│       │   ├── model.py
-│       │   ├── scaling.py
-│       │   ├── checkpoint.py
-│       │   ├── training.py
-│       │   └── inference.py
+│       │   ├── lightgbm_model.py
+│       │   ├── lightgbm_fit.py
+│       │   ├── lightgbm_checkpoint.py
+│       │   ├── lightgbm_training.py
+│       │   └── lightgbm_inference.py
 │       ├── selection/
 │       │   ├── __init__.py
 │       │   ├── candidates.py
@@ -162,7 +162,7 @@ Validation shall cover file existence, timestamp syntax, non-negative times, `en
 
 Use explicit typed models for concepts including `VideoSource`, `VideoRange`, `Annotation`, `MusicDirective`, `FeatureSample`, `TemporalWindow`, `InterestTarget`, `Prediction`, `CandidateInterval`, `TimelineClip`, `Timeline`, `PipelineConfig` and `ResultManifest`.
 
-`autocut.models` is the home for domain/data models. It must not become a generic container for neural-network implementations. ML architectures and their forward/inference behavior belong in `autocut.ml.model`; checkpoint handling belongs in `autocut.ml.checkpoint`.
+`autocut.models` is the home for domain/data models. It must not become a generic container for neural-network implementations. The active ranking implementation belongs in `autocut.ml.lightgbm_model`; checkpoint handling belongs in `autocut.ml.lightgbm_checkpoint`.
 
 Serialization formats such as CSV, NPZ and JSON are adapters around these domain objects, not the definition of the domain model. Domain models should not expose third-party media-engine objects or otherwise couple the business model to MoviePy, OpenCV or a particular storage format.
 
@@ -590,7 +590,7 @@ Paths must be handled in a platform-safe manner. Developer-specific hard-coded p
 
 The project is Python-based. Dependencies should be declared centrally.
 
-The implementation should prefer standard library facilities where sufficient, NumPy for numerical arrays, OpenCV for video/motion processing where appropriate, PyTorch for ML and FFmpeg for media processing.
+The implementation should prefer standard library facilities where sufficient, NumPy for numerical arrays, OpenCV for video/motion processing where appropriate, LightGBM for ranking and FFmpeg for media processing.
 
 Specific third-party dependencies should not leak into domain models. The final dependency set must reflect the actual implementation rather than historical prototype requirements.
 
