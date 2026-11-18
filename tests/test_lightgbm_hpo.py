@@ -109,8 +109,8 @@ def test_hpo_rejects_legacy_config_section():
             "search_space": {"num_leaves": {"low": 20, "high": 160}}
         }
     })
-    space = _validated_search_space(settings)
-    assert space["num_leaves"] == {"choices": [15, 31, 63]}
+    with pytest.raises(ValueError, match="obsolete"):
+        _validated_search_space(settings)
 
 
 def test_hpo_search_space_rejects_unknown_options():
