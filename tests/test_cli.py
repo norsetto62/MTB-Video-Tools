@@ -9,7 +9,7 @@ def test_help_lists_commands(capsys):
     except SystemExit as exc:
         assert exc.code == 0
     output = capsys.readouterr().out
-    for command in ("run", "audit", "train", "test", "lightgbm-score-report", "lightgbm-lovo", "lightgbm-hpo", "models"):
+    for command in ("run", "audit", "train", "test", "score-report", "lovo", "hpo", "models"):
         assert command in output
 
 
@@ -166,6 +166,6 @@ def test_lightgbm_hpo_cli_dispatches_to_hpo_pipeline(tmp_path, monkeypatch, caps
         return {"best_trial_number": 3, "best_params": {"objective": "rank_xendcg"}}
 
     monkeypatch.setattr("autocut.pipeline.lightgbm_hpo.run_lightgbm_hpo", fake_hpo)
-    assert main(["lightgbm-hpo", "--config", str(config_path)]) == 0
+    assert main(["hpo", "--config", str(config_path)]) == 0
     assert captured == {"manifest": manifest, "settings": settings}
     assert '"objective": "rank_xendcg"' in capsys.readouterr().out
