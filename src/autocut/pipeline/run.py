@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import math
 import logging
@@ -12,7 +11,6 @@ from typing import Iterable, Mapping
 
 from ..config_loader import Config
 from ..audio.config import AudioConfig
-from ..selection.candidates_generation import CandidateGenerationConfig
 
 import numpy as np
 
@@ -22,7 +20,7 @@ from ..dataset.windows import build_windows
 from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
-from ..selection.candidates_generation import CandidateClip, generate_candidates
+from ..selection.candidate_types import CandidateClip
 from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
 from ..audio.pipeline import prepare_audio_timeline
@@ -144,7 +142,7 @@ def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
     )
 
 
-def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationConfig, AudioConfig]:
+def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
     """Validate run-specific settings and construct only domain-specific configs."""
     if not isinstance(config, Config):
         raise TypeError("run_pipeline expects a generic Config loaded by load_config().")
@@ -235,23 +233,12 @@ def _run_config_sections(config: Config) -> tuple[Config, CandidateGenerationCon
     if not isinstance(level, str) or level.upper() not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}:
         raise ValueError("logging.level must be a standard Python logging level.")
 
-    candidate_fields = {
-        "min_candidate_duration", "max_gap_to_merge", "padding_seconds", "positive_threshold",
-    }
-    candidate_values = {
-        key: value for key, value in raw["selection"].items() if key in candidate_fields
-    }
-    
-    # min_clip is the sole final candidate-duration filter.
-    candidate_values["min_candidate_duration"] = raw["selection"]["min_clip"]
-    candidate_config = CandidateGenerationConfig(**candidate_values)
     audio_config = AudioConfig(**raw["audio"])
-    return Config(raw), candidate_config, audio_config
+    return Config(raw), audio_config
 
 
 def _config_summary(
     settings: Config,
-    candidate_config: CandidateGenerationConfig,
     audio_config: AudioConfig,
 ) -> dict:
     """Build a stable, JSON-safe subset of the effective run configuration."""
@@ -263,10 +250,8 @@ def _config_summary(
         "window_duration": settings.features.window_duration,
         "window_stride": settings.features.window_stride,
         "checkpoint": str(settings.model.checkpoint),
-        "inference_batch_size": settings.model.inference_batch_size,
         "min_clip": settings.selection.min_clip,
         "max_clip_duration": settings.selection.max_clip_duration,
-        "candidate_generation": asdict(candidate_config),
         "audio": {
             "sync_mode": audio_config.sync_mode.value,
             "max_synced_clip_duration": audio_config.max_synced_clip_duration,
@@ -280,7 +265,7 @@ def run_pipeline(
     *,
     output_path: str | Path | None = None,
     video_encoder: str | None = None,
-    backend: str = "pu",
+    backend: str = "lightgbm",
     checkpoint_path: str | Path | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
@@ -289,9 +274,9 @@ def run_pipeline(
     intervals are separately protected during selection and are never trimmed
     or synchronized. The returned dictionary is also written as a result JSON.
     """
-    settings, candidate_config, audio_config = _run_config_sections(settings)
-    if backend not in {"pu", "lightgbm"}:
-        raise ValueError("backend must be 'pu' or 'lightgbm'.")
+    settings, audio_config = _run_config_sections(settings)
+    if backend != "lightgbm":
+        raise ValueError("Only the LightGBM inference backend is supported.")
     if checkpoint_path is not None:
         settings = settings.with_overrides({"model.checkpoint": Path(checkpoint_path).expanduser()})
     annotation = Path(annotation_path)
@@ -369,7 +354,7 @@ def run_pipeline(
 
     all_candidates: list[SelectionCandidate] = []
     inference_summaries: list[dict] = []
-    logger.info("Starting motion analysis and model inference using backend=%s.", backend)
+    logger.info("Starting motion analysis and LightGBM ranking inference.")
 
     lightgbm_payload = None
     lightgbm_ranker = None
@@ -714,13 +699,9 @@ def run_pipeline(
     result = {
         "schema_version": 1,
         "status": "completed",
-        "model_backend": backend,
+        "model_backend": "lightgbm",
         "candidate_ranking": {
-            "score_semantics": (
-                "raw LambdaRank score; not a probability"
-                if backend == "lightgbm"
-                else "P/U positive probability"
-            ),
+            "score_semantics": "raw LambdaRank score; not a probability",
             "order": ["max_score desc", "window_count desc", "mean_score desc", "duration_seconds desc"],
             "candidates": [
                 {
@@ -739,7 +720,7 @@ def run_pipeline(
         },
         "annotation_manifest": str(annotation.resolve()),
         "checkpoint": str(settings.model.checkpoint.resolve()),
-        "configuration": _config_summary(settings, candidate_config, audio_config),
+        "configuration": _config_summary(settings, audio_config),
         "sources": [
             {
                 "path": name,
