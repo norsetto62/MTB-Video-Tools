@@ -37,19 +37,17 @@ DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
 
 
 def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
-    section = _section(settings, "lightgbm_hpo")
+    section = _section(settings, "hpo")
     raw = section.get("search_space", {})
     if isinstance(raw, Config):
         raw = raw.to_dict()
     if not isinstance(raw, dict):
-        raise ValueError("lightgbm_hpo.search_space must be a mapping.")
+        raise ValueError("hpo.search_space must be a mapping.")
 
-    # User entries override the defaults; omitted parameters remain tunable.
+    # User entries override defaults; omitted parameters remain tunable.
     space: dict[str, dict[str, Any]] = {
         name: dict(spec) for name, spec in DEFAULT_SEARCH_SPACE.items()
     }
-    # Accept common native LightGBM aliases in YAML, then normalize them to
-    # the canonical LightGBMConfig field names used by dataclasses.replace().
     aliases = {
         "bagging_freq": "bagging_frequency",
         "reg_alpha": "lambda_l1",
@@ -64,51 +62,81 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
                 "use only one canonical name or alias."
             )
         normalized_raw[name] = value
-    raw = normalized_raw
 
     allowed = set(LightGBMConfig.__dataclass_fields__) - {
         "task", "early_stopping_rounds", "ndcg_eval_at", "random_seed", "verbosity"
     }
-    unknown = sorted(set(raw) - allowed)
+    unknown = sorted(set(normalized_raw) - allowed)
     if unknown:
         raise ValueError(f"Unknown LightGBM HPO search parameter(s): {unknown}.")
 
-    for name, value in raw.items():
+    integer_params = {"num_leaves", "max_depth", "min_data_in_leaf", "num_iterations", "bagging_frequency"}
+    for name, value in normalized_raw.items():
         if isinstance(value, Config):
             value = value.to_dict()
-        # A scalar is shorthand for a fixed parameter value, e.g.
-        # bagging_freq: 1. Mapping forms define a search space explicitly.
+
         if not isinstance(value, dict):
             spec = {"fixed": value}
-        elif "fixed" in value:
-            spec = {"fixed": value["fixed"]}
-        elif "choices" in value:
-            choices = value["choices"]
-            if not isinstance(choices, (tuple, list)) or not choices:
-                raise ValueError(f"Search choices for {name!r} must be a non-empty list.")
-            spec = {"choices": list(choices)}
         else:
-            if "low" not in value or "high" not in value:
-                raise ValueError(f"Search parameter {name!r} requires low/high or choices/fixed.")
-            low, high = float(value["low"]), float(value["high"])
-            if not np.isfinite([low, high]).all() or low > high:
-                raise ValueError(f"Invalid low/high bounds for {name!r}.")
-            spec = {"low": low, "high": high, "log": bool(value.get("log", False))}
-            if "step" in value:
-                spec["step"] = float(value["step"])
+            extra = set(value) - {"fixed", "choices", "low", "high", "step", "log"}
+            if extra:
+                raise ValueError(f"Unknown search-space option(s) for {name!r}: {sorted(extra)}.")
+            forms = sum(key in value for key in ("fixed", "choices", "low", "high"))
+            if "fixed" in value:
+                if len(value) != 1:
+                    raise ValueError(f"Search parameter {name!r}: 'fixed' cannot be combined with other options.")
+                spec = {"fixed": value["fixed"]}
+            elif "choices" in value:
+                if set(value) != {"choices"}:
+                    raise ValueError(f"Search parameter {name!r}: 'choices' cannot be combined with bounds.")
+                choices = value["choices"]
+                if not isinstance(choices, (tuple, list)) or not choices:
+                    raise ValueError(f"Search choices for {name!r} must be a non-empty list.")
+                spec = {"choices": list(choices)}
+            else:
+                if "low" not in value or "high" not in value:
+                    raise ValueError(f"Search parameter {name!r} requires low/high, choices, or fixed.")
+                if "log" in value and not isinstance(value["log"], bool):
+                    raise ValueError(f"Search parameter {name!r}: log must be true or false.")
+                low_raw, high_raw = value["low"], value["high"]
+                if isinstance(low_raw, bool) or isinstance(high_raw, bool):
+                    raise ValueError(f"Search bounds for {name!r} must be numeric.")
+                low, high = float(low_raw), float(high_raw)
+                if not np.isfinite([low, high]).all() or low > high:
+                    raise ValueError(f"Invalid low/high bounds for {name!r}.")
+                spec = {"low": low, "high": high, "log": bool(value.get("log", False))}
+                if "step" in value:
+                    step = float(value["step"])
+                    if not np.isfinite(step) or step <= 0:
+                        raise ValueError(f"Search step for {name!r} must be finite and positive.")
+                    spec["step"] = step
+                if name in integer_params:
+                    if not low.is_integer() or not high.is_integer():
+                        raise ValueError(f"Integer search parameter {name!r} requires integer low/high bounds.")
+                    step = spec.get("step", 1.0)
+                    if not float(step).is_integer():
+                        raise ValueError(f"Integer search parameter {name!r} requires an integer step.")
+                    spec["step"] = int(step)
+                    spec["low"] = int(low)
+                    spec["high"] = int(high)
+                elif "step" in spec and spec["log"]:
+                    raise ValueError(f"Search parameter {name!r} cannot combine log=true and step.")
         space[name] = spec
 
-    expected_objectives = ["lambdarank", "rank_xendcg"]
-    objective_spec = space.get("objective")
-    if objective_spec is None:
-        space["objective"] = {"choices": expected_objectives}
-    elif objective_spec.get("choices") != expected_objectives:
-        raise ValueError(
-            "lightgbm_hpo.search_space.objective must have exactly these choices, "
-            "in this order: ['lambdarank', 'rank_xendcg']."
-        )
-    return space
+    # Validate objective choices, while allowing a single fixed objective.
+    objective_spec = space["objective"]
+    valid_objectives = {"lambdarank", "rank_xendcg"}
+    if "fixed" in objective_spec:
+        if objective_spec["fixed"] not in valid_objectives:
+            raise ValueError("hpo.search_space.objective must be 'lambdarank' or 'rank_xendcg'.")
+    elif "choices" in objective_spec:
+        choices = objective_spec["choices"]
+        if not choices or any(item not in valid_objectives for item in choices):
+            raise ValueError("hpo.search_space.objective choices must be selected from ['lambdarank', 'rank_xendcg'].")
+    else:
+        raise ValueError("hpo.search_space.objective must use choices or fixed.")
 
+    return space
 
 def _effective_params(
     base_config: LightGBMConfig,
@@ -129,23 +157,25 @@ def _effective_params(
 
 def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str, Any]:
     params: dict[str, Any] = {}
+    integer_params = {"num_leaves", "max_depth", "min_data_in_leaf", "num_iterations", "bagging_frequency"}
     for name, spec in space.items():
         if "fixed" in spec:
             params[name] = spec["fixed"]
         elif "choices" in spec:
             params[name] = trial.suggest_categorical(name, spec["choices"])
+        elif name in integer_params:
+            params[name] = trial.suggest_int(
+                name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1))
+            )
         elif "step" in spec:
-            low, high, step = spec["low"], spec["high"], spec["step"]
-            if float(low).is_integer() and float(high).is_integer() and float(step).is_integer():
-                params[name] = trial.suggest_int(name, int(low), int(high), step=int(step))
-            else:
-                params[name] = trial.suggest_float(name, low, high, step=step)
+            params[name] = trial.suggest_float(
+                name, spec["low"], spec["high"], step=spec["step"]
+            )
         else:
             params[name] = trial.suggest_float(
-                name, spec["low"], spec["high"], log=spec["log"]
+                name, spec["low"], spec["high"], log=spec.get("log", False)
             )
     return params
-
 
 def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     """Tune LightGBM hyperparameters by mean per-video MTB-3 Segment Recall@5.
@@ -153,19 +183,19 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     Each video is a separate query for LambdaRank and for evaluation. Optuna
     maximizes the unweighted mean Segment Recall@5 across held-out LOVO groups.
     """
-    section = _section(settings, "lightgbm_hpo")
+    section = _section(settings, "hpo")
     n_trials = section.get("n_trials", 30)
     if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials <= 0:
-        raise ValueError("lightgbm_hpo.n_trials must be a positive integer.")
+        raise ValueError("hpo.n_trials must be a positive integer.")
     study_name = section.get("study_name", "lightgbm_ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
-        raise ValueError("lightgbm_hpo.study_name must be a non-empty string.")
+        raise ValueError("hpo.study_name must be a non-empty string.")
     # Do not mix historical NDCG trial values with the new event-recall objective.
     if not study_name.endswith("_segment_recall_at_5"):
         study_name = f"{study_name}_segment_recall_at_5"
     progress = section.get("progress", True)
     if not isinstance(progress, bool):
-        raise ValueError("lightgbm_hpo.progress must be true or false.")
+        raise ValueError("hpo.progress must be true or false.")
 
     def report(message: str) -> None:
         # HPO progress is deliberately independent of logging.level, so WARNING
@@ -177,6 +207,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
 
     base_config = _training_config(settings)
     search_space = _validated_search_space(settings)
+    report("Effective Optuna search space: " + json.dumps(search_space, sort_keys=True))
 
     # Proxy groups are an explicit HPO-only subset: filter before feature
     # preparation so non-proxy videos are not decoded or extracted.
@@ -186,14 +217,14 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         if isinstance(proxy_value, Config):
             proxy_value = proxy_value.to_dict()
         if not isinstance(proxy_value, (tuple, list)) or not proxy_value:
-            raise ValueError("lightgbm_hpo.proxy_test_groups must be a non-empty list of group IDs.")
+            raise ValueError("hpo.proxy_test_groups must be a non-empty list of group IDs.")
         proxy_groups: list[str] = []
         for item in proxy_value:
             if not isinstance(item, str) or not item.strip():
-                raise ValueError("lightgbm_hpo.proxy_test_groups must contain non-empty string group IDs.")
+                raise ValueError("hpo.proxy_test_groups must contain non-empty string group IDs.")
             group = item.strip()
             if group in proxy_groups:
-                raise ValueError(f"lightgbm_hpo.proxy_test_groups contains duplicate group ID {group!r}.")
+                raise ValueError(f"hpo.proxy_test_groups contains duplicate group ID {group!r}.")
             proxy_groups.append(group)
         report(f"Loading manifest to select proxy groups: {', '.join(proxy_groups)}.")
         all_records = load_manifest(manifest_path, verify_files=True)
@@ -201,7 +232,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         unknown_groups = sorted(set(proxy_groups) - available_groups)
         if unknown_groups:
             raise ValueError(
-                "lightgbm_hpo.proxy_test_groups not found in manifest: "
+                "hpo.proxy_test_groups not found in manifest: "
                 + ", ".join(unknown_groups)
             )
         selected_records = tuple(record for record in all_records if record.group_id in proxy_groups)
@@ -219,7 +250,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         f"Prepared {len(prepared)} videos across "
         f"{len(set(group_by_video.values()))} groups; opening study database."
     )
-    db_path = Path(section.get("storage_path", "data/db/lightgbm_hpo.db")).expanduser()
+    db_path = Path(section.get("storage_path", "data/db/hpo.db")).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{db_path.as_posix()}"
     study = optuna.create_study(
