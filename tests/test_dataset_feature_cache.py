@@ -58,6 +58,11 @@ def test_existing_cache_is_augmented_with_pitch_without_rewriting_flow(tmp_path,
     with np.load(cache_path, allow_pickle=False) as archive:
         np.testing.assert_array_equal(archive["features"], expected.features)
         np.testing.assert_array_equal(archive["pitch_rate"], pitch_rates)
+    augmented_bytes = cache_path.read_bytes()
+    repeated = load_feature_sequence(video, cache_dir, clip, include_pitch_telemetry=True)
+    assert repeated is not None
+    np.testing.assert_array_equal(repeated.pitch_rate, pitch_rates)
+    assert cache_path.read_bytes() == augmented_bytes
 
 
 def test_metadata_fingerprint_is_default_and_does_not_hash_source(tmp_path, monkeypatch):
