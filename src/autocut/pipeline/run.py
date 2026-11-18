@@ -360,58 +360,58 @@ def run_pipeline(
 
     from ..selection.lightgbm_candidates import select_ranked_segments
     from ..selection.candidate_types import CandidateClip, WindowEvidence
-        for video_name, batches in lightgbm_windows_by_video.items():
-            timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
-            scores = np.concatenate([batch[1] for batch in batches], axis=0)
-            # Annotation ranges can overlap; deduplicate identical source windows
-            # before ranking so the same evidence cannot count twice.
-            unique: dict[tuple[float, float], float] = {}
-            for (window_start, window_end), score in zip(timestamps, scores):
-                key = (round(float(window_start), 6), round(float(window_end), 6))
-                unique[key] = max(float(score), unique.get(key, -math.inf))
-            ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
-            timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
-            scores = np.asarray([score for _, score in ordered], dtype=np.float64)
-            segments = select_ranked_segments(timestamps, scores, top_k=10, max_gap_seconds=2.0)
-            range_orders = lightgbm_range_orders[video_name]
-            order = video_order[video_name]
-            for segment in segments:
-                if segment.duration_seconds + 1e-9 < settings.selection.min_clip:
-                    continue
-                evidence = tuple(
-                    WindowEvidence(
-                        start=float(timestamps[i, 0]), end=float(timestamps[i, 1]),
-                        probability=float(scores[i]),
-                    )
-                    for i in segment.window_indices
+    for video_name, batches in lightgbm_windows_by_video.items():
+        timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
+        scores = np.concatenate([batch[1] for batch in batches], axis=0)
+        # Annotation ranges can overlap; deduplicate identical source windows
+        # before ranking so the same evidence cannot count twice.
+        unique: dict[tuple[float, float], float] = {}
+        for (window_start, window_end), score in zip(timestamps, scores):
+            key = (round(float(window_start), 6), round(float(window_end), 6))
+            unique[key] = max(float(score), unique.get(key, -math.inf))
+        ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
+        timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
+        scores = np.asarray([score for _, score in ordered], dtype=np.float64)
+        segments = select_ranked_segments(timestamps, scores, top_k=10, max_gap_seconds=2.0)
+        range_orders = lightgbm_range_orders[video_name]
+        order = video_order[video_name]
+        for segment in segments:
+            if segment.duration_seconds + 1e-9 < settings.selection.min_clip:
+                continue
+            evidence = tuple(
+                WindowEvidence(
+                    start=float(timestamps[i, 0]), end=float(timestamps[i, 1]),
+                    probability=float(scores[i]),
                 )
-                candidate = CandidateClip(
-                    start=segment.start, end=segment.end,
-                    duration=segment.duration_seconds,
-                    mean_probability=segment.mean_score, max_probability=segment.max_score,
-                    window_evidence=evidence,
-                )
-                matching_orders = [
-                    annotation_order for range_start, range_end, annotation_order in range_orders
-                    if range_start < segment.end and segment.start < range_end
-                ]
-                annotation_order = min(matching_orders) if matching_orders else None
-                all_candidates.append(SelectionCandidate(
-                    video_name=video_name, video_order=order,
-                    candidate=candidate, annotation_order=annotation_order,
-                ))
-            video_summaries = [item for item in inference_summaries if item["video"] == video_name]
-            total_candidates = sum(
-                1 for candidate in all_candidates
-                if candidate.video_name == video_name
+                for i in segment.window_indices
             )
-            for summary in video_summaries:
-                summary["candidate_count"] = total_candidates
-                summary["video_top_windows"] = min(10, len(scores))
-            logger.info(
-                "LightGBM video %s: %d unique windows, %d top-window merged candidate(s).",
-                Path(video_name).name, len(scores), total_candidates,
+            candidate = CandidateClip(
+                start=segment.start, end=segment.end,
+                duration=segment.duration_seconds,
+                mean_probability=segment.mean_score, max_probability=segment.max_score,
+                window_evidence=evidence,
             )
+            matching_orders = [
+                annotation_order for range_start, range_end, annotation_order in range_orders
+                if range_start < segment.end and segment.start < range_end
+            ]
+            annotation_order = min(matching_orders) if matching_orders else None
+            all_candidates.append(SelectionCandidate(
+                video_name=video_name, video_order=order,
+                candidate=candidate, annotation_order=annotation_order,
+            ))
+        video_summaries = [item for item in inference_summaries if item["video"] == video_name]
+        total_candidates = sum(
+            1 for candidate in all_candidates
+            if candidate.video_name == video_name
+        )
+        for summary in video_summaries:
+            summary["candidate_count"] = total_candidates
+            summary["video_top_windows"] = min(10, len(scores))
+        logger.info(
+            "LightGBM video %s: %d unique windows, %d top-window merged candidate(s).",
+            Path(video_name).name, len(scores), total_candidates,
+        )
 
     mandatory = tuple(
         MandatoryClip(
