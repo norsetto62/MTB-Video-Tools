@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hpo.add_argument(
         "--config", type=Path, default=Path("config/train.yaml"),
-        help="Training and LightGBM HPO YAML configuration file",
+        help="Training and HPO YAML configuration file",
     )
     hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
@@ -225,7 +225,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "score-report":
         from .config_loader import load_config
-        from .pipeline.lightgbm_score_report import run_lightgbm_score_report
+        from .pipeline.score_report import run_score_report
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})
@@ -241,7 +241,7 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        result = run_lightgbm_score_report(
+        result = run_score_report(
             manifest, settings, checkpoint_path=args.checkpoint, output_path=args.output
         )
         print(json.dumps(result, indent=2, default=str))
@@ -283,7 +283,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "hpo":
         from .config_loader import load_config
-        from .pipeline.lightgbm_hpo import run_lightgbm_hpo
+        from .pipeline.hpo import run_hpo
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})
@@ -299,7 +299,7 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        result = run_lightgbm_hpo(manifest, settings)
+        result = run_hpo(manifest, settings)
         print(json.dumps(result, indent=2, default=str))
         return 0
 
