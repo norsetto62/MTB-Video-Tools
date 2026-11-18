@@ -1,4 +1,4 @@
-"""Deterministic probability-prioritized selection within an optional duration budget."""
+"""Deterministic raw-score-prioritized selection within an optional duration budget."""
 from __future__ import annotations
 from dataclasses import dataclass
 import logging
@@ -72,7 +72,7 @@ def select_candidates(candidates: Sequence[SelectionCandidate], mandatory_clips:
     When supplied, max_total_duration is the total edit-duration limit,
     normally the soundtrack duration. Mandatory material is never dropped;
     if it exhausts the budget, optional candidates are not added. Optional
-    candidates are ranked by descending max score (probability), and only
+    candidates are ranked by descending maximum model score, and only
     candidates that fit the remaining duration are retained. Overlapping
     source intervals are suppressed to avoid repeating frames.
     max_clip_duration remains an independent per-clip constraint.
