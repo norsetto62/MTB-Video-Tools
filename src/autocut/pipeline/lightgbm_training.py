@@ -1,8 +1,8 @@
 """Manifest-to-LightGBM LambdaRank training pipeline.
 
 It reuses the canonical manifest, NPZ feature cache, video feature extractor,
-annotation parser, and tabular-window APIs without changing the legacy P/U
-pipeline. Ordinal labels are ranked within each video query.
+annotation parser, and tabular-window APIs. Ordinal labels are ranked within
+each video query.
 """
 from __future__ import annotations
 
