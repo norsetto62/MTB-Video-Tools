@@ -9,7 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
-from datetime import datetime
 
 COMMANDS = ("run", "audit", "train", "test", "lightgbm-score-report", "lightgbm-lovo", "lightgbm-hpo", "models")
 
@@ -102,16 +101,6 @@ def _configure_logging(level: str) -> None:
     )
 
 
-def _unimplemented(command: str) -> int:
-    print(
-        f"AutoCut '{command}' orchestration is not implemented yet. "
-        "The CLI and configuration validation are available, but this command "
-        "cannot run end-to-end until its Phase 12 pipeline handler is added.",
-        file=sys.stderr,
-    )
-    return 2
-
-
 def _run_tests(pytest_args: Sequence[str]) -> int:
     command = [sys.executable, "-m", "pytest", *pytest_args]
     try:
@@ -160,7 +149,7 @@ def dispatch(args: argparse.Namespace) -> int:
             model = config.get("model", {})
             if not isinstance(model, Mapping):
                 raise ValueError("Configuration section 'model' must be a mapping.")
-            configured_checkpoint = model.get("checkpoint", "models/best_model.pt")
+            configured_checkpoint = model.get("checkpoint", "models/lightgbm/ranker.json")
             if (
                 not isinstance(configured_checkpoint, (str, Path))
                 or not str(configured_checkpoint).strip()
