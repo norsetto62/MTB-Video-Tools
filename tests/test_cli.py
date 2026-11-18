@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from autocut.cli import build_parser, main
@@ -169,3 +170,13 @@ def test_hpo_cli_dispatches_to_hpo_pipeline(tmp_path, monkeypatch, capsys):
     assert main(["hpo", "--config", str(config_path)]) == 0
     assert captured == {"manifest": manifest, "settings": settings}
     assert '"objective": "rank_xendcg"' in capsys.readouterr().out
+
+
+
+@pytest.mark.parametrize(
+    "legacy_command",
+    ["lightgbm-hpo", "lightgbm-lovo", "lightgbm-score-report"],
+)
+def test_legacy_lightgbm_commands_are_rejected(legacy_command):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([legacy_command])
