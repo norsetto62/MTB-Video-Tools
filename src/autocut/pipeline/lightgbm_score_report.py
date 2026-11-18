@@ -27,7 +27,8 @@ from ..dataset.sequence import (
     build_feature_sequence,
     validate_roi,
 )
-from ..dataset.windows import build_lightgbm_windows_from_features
+from ..dataset.windows import build_lightgbm_windows_from_features, append_pitch_rate_rms_feature
+from ..motion.dji import pitch_rate_rms_from_series
 from ..motion.engineered import engineer_lightgbm_sequence
 from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
 from ..ml.lightgbm_model import LightGBMRanker
@@ -78,6 +79,7 @@ def _effective_data_config(
         "roi_right": roi[1],
         "roi_bottom": roi[2],
         "roi_top": roi[3],
+        "pitch_time_offset": float(choose("pitch_time_offset", 0.0)),
     }
 
 
@@ -168,11 +170,17 @@ def run_lightgbm_score_report(
             roi_right=params["roi_right"],
             roi_bottom=params["roi_bottom"],
             roi_top=params["roi_top"],
+            include_pitch_telemetry=True,
         )
         signals = engineer_lightgbm_sequence(sequence.features)
         windows = build_lightgbm_windows_from_features(
             signals, sequence.timestamps, window=params["window"], stride=params["stride"]
         )
+        pitch_rms = pitch_rate_rms_from_series(
+            sequence.pitch_timestamps, sequence.pitch_rate, windows.timestamps,
+            time_offset=params["pitch_time_offset"],
+        )
+        windows = append_pitch_rate_rms_feature(windows, pitch_rms)
         # Match training: normalize the complete video's windows before labels
         # are filtered. Here no windows are filtered because this is inference.
         normalized = normalize_per_video_features(windows.X)
