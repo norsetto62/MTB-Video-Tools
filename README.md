@@ -177,6 +177,8 @@ Override the manifest, configuration, or output checkpoint when needed:
 python -m autocut train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/ranker.json
 ```
 
+The LightGBM hyperparameters are configured in the `training` YAML section. The former PU/BiLSTM `training` options (epochs, batch size, hidden dimensions, dropout, positive prior and threshold, and related fields) are no longer used and should be removed. The former `lightgbm` section has been renamed to `training`.
+
 The default checkpoint is `models/lightgbm/ranker.json`, overridable with
 `--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
 Ranking does not require every grade in every split, but at least one
@@ -218,7 +220,7 @@ The default search space is used for parameters not explicitly listed. The
 objective choices must include both ranking objectives so the comparison is
 not accidentally disabled. HPO exports the best parameter set; it does not
 silently launch a production refit. Review the results, set the selected values
-under the `lightgbm` configuration section, then run `train` to
+under the `training` configuration section, then run `train` to
 create the production checkpoint.
 ## Feature-cache cleanup
 
