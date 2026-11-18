@@ -64,7 +64,7 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     assert result.summary["ranking_metric"] == "segment_recall_at_5"
     assert result.summary["training_group_sizes"] == [16, 16]
     assert result.summary["validation_group_sizes"] == [16]
-    assert model.feature_dim == 48
+    assert model.feature_dim == 49
     assert (tmp_path / "fold.json").is_file()
 
 
@@ -90,7 +90,7 @@ def test_group_fold_rejects_training_data_without_relevance_pairs():
         )
 
 def test_video_data_rejects_misaligned_labels():
-    X = np.zeros((3, 48), dtype=np.float32)
+    X = np.zeros((3, 49), dtype=np.float32)
     ts = np.zeros((3, 2), dtype=np.float64)
     with pytest.raises(ValueError, match="aligned"):
         LightGBMVideoData(FeatureWindows(X, ts), np.array([0, 1]))
