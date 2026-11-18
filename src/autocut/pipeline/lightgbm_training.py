@@ -62,9 +62,14 @@ def _positive_int(value: Any, name: str) -> int:
     return value
 
 
-def _lightgbm_config(settings: Mapping[str, Any]) -> LightGBMConfig:
-    """Read LightGBM options from the dedicated lightgbm config section."""
-    section = dict(_section(settings, "lightgbm"))
+def _training_config(settings: Mapping[str, Any]) -> LightGBMConfig:
+    """Read ranking-model options from the training config section."""
+    if "lightgbm" in settings:
+        raise ValueError(
+            "Configuration section 'lightgbm' has been renamed to 'training'; "
+            "move its LightGBM options there and remove obsolete PU/BiLSTM training keys."
+        )
+    section = dict(_section(settings, "training"))
     # Migrate the previous multiclass YAML defaults to LambdaRank. These
     # settings are obsolete in ranking mode and must not reach LightGBM.
     if section.get("objective") == "multiclass":
@@ -74,11 +79,11 @@ def _lightgbm_config(settings: Mapping[str, Any]) -> LightGBMConfig:
     allowed = set(LightGBMConfig.__dataclass_fields__)
     unknown = sorted(set(section) - allowed)
     if unknown:
-        raise ValueError(f"Unknown lightgbm configuration key(s): {unknown}.")
+        raise ValueError(f"Unknown training configuration key(s): {unknown}.")
     try:
         return LightGBMConfig(**section)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid lightgbm configuration: {exc}") from exc
+        raise ValueError(f"Invalid training configuration: {exc}") from exc
 
 
 def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -217,7 +222,7 @@ def run_lightgbm_lovo_from_manifest(
         manifest_path, settings
     )
     if config is None:
-        config = _lightgbm_config(settings)
+        config = _training_config(settings)
     if checkpoint_dir is None:
         experiment = _section(settings, "experiment")
         checkpoint_dir = experiment.get(
@@ -316,7 +321,7 @@ def run_lightgbm_train_from_manifest(
         raise ValueError("No annotated videos were prepared from data.validation_groups.")
 
     if config is None:
-        config = _lightgbm_config(settings)
+        config = _training_config(settings)
     train_X, train_y, train_group_sizes = _combine_with_group_sizes(prepared, train_ids)
     val_X, val_y, val_group_sizes = _combine_with_group_sizes(prepared, validation_ids)
     val_timestamps = np.concatenate(
