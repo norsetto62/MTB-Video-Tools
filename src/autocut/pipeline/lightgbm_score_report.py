@@ -29,7 +29,7 @@ from ..dataset.sequence import (
 )
 from ..dataset.windows import build_lightgbm_windows_from_features
 from ..motion.engineered import engineer_lightgbm_sequence
-from ..ml.checkpoint import load_lightgbm_checkpoint
+from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
 from ..ml.model import LightGBMRanker
 from ..video.probe import get_video_info
 
