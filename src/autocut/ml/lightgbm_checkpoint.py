@@ -7,12 +7,6 @@ from pathlib import Path
 import tempfile
 from typing import Any, Mapping, Sequence
 
-# ---------------------------------------------------------------------------
-# LightGBM checkpoint format, separate from the legacy PyTorch checkpoint.
-# ---------------------------------------------------------------------------
-
-import json
-
 
 LIGHTGBM_CHECKPOINT_VERSION = "lightgbm-1.0"
 
