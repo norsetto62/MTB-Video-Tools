@@ -71,48 +71,62 @@ def _load_pitch_series(
     return t, rate
 
 
-def pitch_rate_rms_for_windows(
-    video_path: str | Path,
+def load_pitch_rate_series(video_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Return cached DJI telemetry timestamps and pitch rates (degrees/second)."""
+    source = Path(video_path).expanduser().resolve()
+    stat = source.stat()
+    times, rates = _load_pitch_series(str(source), stat.st_size, stat.st_mtime_ns)
+    return times.copy(), rates.copy()
+
+
+def pitch_rate_rms_from_series(
+    times: np.ndarray,
+    rates: np.ndarray,
     window_timestamps: np.ndarray,
     *,
     time_offset: float = 0.0,
 ) -> np.ndarray:
-    """Return one pitch-rate RMS (deg/s) for each [start, end) video window.
-
-    window_timestamps are relative to the processed range; time_offset maps
-    them back to the original MP4 timeline. The pitch derivative is computed
-    once over the complete telemetry stream before selecting samples per window.
-    """
+    """Aggregate cached pitch-rate samples into [start, end) window RMS values."""
     try:
+        sample_times = np.asarray(times, dtype=np.float64)
+        sample_rates = np.asarray(rates, dtype=np.float64)
         windows = np.asarray(window_timestamps, dtype=np.float64)
         offset = float(time_offset)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("Window timestamps and time_offset must be numeric.") from exc
+        raise ValueError("Pitch telemetry, windows and time_offset must be numeric.") from exc
+    if sample_times.ndim != 1 or sample_rates.ndim != 1 or len(sample_times) != len(sample_rates) or len(sample_times) < 3:
+        raise ValueError("Pitch telemetry arrays must be matching 1D arrays with at least three samples.")
+    if not np.isfinite(sample_times).all() or not np.isfinite(sample_rates).all() or not np.all(np.diff(sample_times) > 0):
+        raise ValueError("Pitch telemetry arrays must be finite with strictly increasing timestamps.")
     if windows.ndim != 2 or windows.shape[1] != 2 or len(windows) == 0:
         raise ValueError("window_timestamps must have non-empty shape (N, 2).")
     if not np.isfinite(windows).all() or not np.isfinite(offset):
         raise ValueError("Window timestamps and time_offset must be finite.")
     if np.any(windows[:, 1] <= windows[:, 0]):
         raise ValueError("Every window end must be after its start.")
-
-    source = Path(video_path).expanduser().resolve()
-    stat = source.stat()
-    times, rates = _load_pitch_series(
-        str(source), stat.st_size, stat.st_mtime_ns
-    )
     result = np.empty(len(windows), dtype=np.float32)
     for index, (start, end) in enumerate(windows):
         absolute_start, absolute_end = start + offset, end + offset
-        mask = (times >= absolute_start) & (times < absolute_end)
+        mask = (sample_times >= absolute_start) & (sample_times < absolute_end)
         if not np.any(mask):
             raise ValueError(
                 f"No valid DJI pitch-rate samples in video window "
                 f"[{absolute_start:.3f}, {absolute_end:.3f})."
             )
-        result[index] = np.sqrt(np.mean(np.square(rates[mask])))
+        result[index] = np.sqrt(np.mean(np.square(sample_rates[mask])))
     if not np.isfinite(result).all():
         raise ValueError("Pitch-rate RMS contains non-finite values.")
     return result
+
+
+def pitch_rate_rms_for_windows(
+    video_path: str | Path,
+    window_timestamps: np.ndarray,
+    *,
+    time_offset: float = 0.0,
+) -> np.ndarray:
+    times, rates = load_pitch_rate_series(video_path)
+    return pitch_rate_rms_from_series(times, rates, window_timestamps, time_offset=time_offset)
 
 
 def append_pitch_rate_rms(
