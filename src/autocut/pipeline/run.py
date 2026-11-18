@@ -21,10 +21,6 @@ from ..data_models import Clip, FeatureSequence, FeatureWindows, VideoInfo
 from ..dataset.windows import build_windows
 from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
-from ..ml.inference import infer_windows, InferenceResult
-from ..motion.engineered import MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_sequence
-from ..motion.dji import append_pitch_rate_rms, pitch_rate_rms_for_windows
-from ..ml.checkpoint import load_checkpoint, validate_checkpoint
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
 from ..selection.timeline import Timeline, assemble_timeline
@@ -376,8 +372,8 @@ def run_pipeline(
     lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
     lightgbm_range_orders: dict[str, list[tuple[float, float, int]]] = {}
     if backend == "lightgbm":
-        from ..ml.checkpoint import load_lightgbm_checkpoint
-        from ..ml.model import LightGBMRanker
+        from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
+        from ..ml.lightgbm_model import LightGBMRanker
         from ..dataset.sequence import (
             DEFAULT_PROCESSING_WIDTH, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_LEFT,
             DEFAULT_ROI_RIGHT, DEFAULT_ROI_TOP, DEFAULT_SAMPLE_FPS, validate_roi,
@@ -485,6 +481,10 @@ def run_pipeline(
             })
             continue
 
+        from ..ml.inference import infer_windows, InferenceResult
+        from ..ml.checkpoint import load_checkpoint, validate_checkpoint
+        from ..motion.engineered import MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_sequence
+        from ..motion.dji import append_pitch_rate_rms, pitch_rate_rms_for_windows
         if isinstance(settings.model.checkpoint, (str, Path)):
             payload = load_checkpoint(settings.model.checkpoint, map_location="cpu")
         elif isinstance(settings.model.checkpoint, Mapping):
