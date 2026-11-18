@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import logging
 import math
 from typing import Sequence
-from .candidates_generation import CandidateClip, WindowEvidence
+from .candidate_types import CandidateClip, WindowEvidence
 logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
