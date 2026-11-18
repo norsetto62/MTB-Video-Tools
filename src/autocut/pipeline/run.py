@@ -251,7 +251,6 @@ def run_pipeline(
     lightgbm_params = None
     lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
     lightgbm_range_orders: dict[str, list[tuple[float, float, int]]] = {}
-if backend == "lightgbm":
     from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
     from ..ml.lightgbm_model import LightGBMRanker
     from ..dataset.sequence import (
@@ -320,7 +319,6 @@ if backend == "lightgbm":
             })
             continue
         order = video_order[video_name]
-if backend == "lightgbm":
     from ..dataset.sequence import build_feature_sequence
     from ..dataset.normalization import normalize_per_video_features
     from ..dataset.windows import build_lightgbm_windows_from_features
@@ -361,7 +359,6 @@ if backend == "lightgbm":
     })
     continue
 
-if backend == "lightgbm":
 from ..selection.lightgbm_candidates import select_ranked_segments
 from ..selection.candidate_types import CandidateClip, WindowEvidence
     for video_name, batches in lightgbm_windows_by_video.items():
