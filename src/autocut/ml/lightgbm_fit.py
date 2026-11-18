@@ -13,9 +13,6 @@ from autocut.ml.lightgbm_checkpoint import save_lightgbm_checkpoint
 # LightGBM ranking training for the tabular representation.
 # ---------------------------------------------------------------------------
 
-from autocut.ml.model import LightGBMConfig, LightGBMRanker
-from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-from autocut.ml.checkpoint import save_lightgbm_checkpoint
 
 
 def _validate_lightgbm_data(
