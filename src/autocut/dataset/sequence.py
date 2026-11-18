@@ -95,6 +95,7 @@ def build_feature_sequence(
     roi_top: float = DEFAULT_ROI_TOP,
     window_duration: float | None = None,
     window_stride: float | None = None,
+    include_pitch_telemetry: bool = False,
 ) -> FeatureSequence:
     """Build a motion-feature sequence for a video clip.
 
@@ -146,6 +147,7 @@ def build_feature_sequence(
             roi_bottom=roi_bottom, roi_top=roi_top,
             window_duration=window_duration,
             window_stride=window_stride,
+            include_pitch_telemetry=include_pitch_telemetry,
         )
         if cached is not None:
             logger.info("Feature cache hit: %s (%d rows)", video_path, len(cached.features))
@@ -243,9 +245,13 @@ def build_feature_sequence(
         dtype=np.float64,
     )
 
+    pitch_timestamps = pitch_rate = None
+    if include_pitch_telemetry:
+        from ..motion.dji import load_pitch_rate_series
+        pitch_timestamps, pitch_rate = load_pitch_rate_series(video_path)
     sequence = FeatureSequence(
-        features=features,
-        timestamps=timestamp_array,
+        features=features, timestamps=timestamp_array,
+        pitch_timestamps=pitch_timestamps, pitch_rate=pitch_rate,
     )
     logger.info(
         "Feature extraction complete: %s (%d rows from %d sampled frames in %.1fs)",
