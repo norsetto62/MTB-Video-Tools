@@ -61,10 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
         "score-report",
         help="Score every window and export per-video/global LightGBM ranking diagnostics.",
     )
-    lightgbm_report.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
-    lightgbm_report.add_argument("--config", type=Path, default=Path("config/train.yaml"))
-    lightgbm_report.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
-    lightgbm_report.add_argument(
+    score_report.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    score_report.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    score_report.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
+    score_report.add_argument(
         "--output", type=Path, default=Path("output/lightgbm_window_scores.csv"),
         help="Primary global-score CSV path (companion video-range CSV is written beside it).",
     )
@@ -73,19 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
         "lovo",
         help="Train and validate a LightGBM ranking model by manifest group.",
     )
-    lightgbm_lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
-    lightgbm_lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
-    lightgbm_lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
+    lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
 
     hpo = subparsers.add_parser(
         "hpo",
         help="Tune LightGBM ranking objective and hyperparameters with Optuna.",
     )
-    lightgbm_hpo.add_argument(
+    hpo.add_argument(
         "--config", type=Path, default=Path("config/train.yaml"),
         help="Training and LightGBM HPO YAML configuration file",
     )
-    lightgbm_hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
     models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
