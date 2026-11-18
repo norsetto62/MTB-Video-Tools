@@ -66,7 +66,7 @@ def test_tunnel_vision_uses_the_two_experimental_top_corner_residuals():
     assert result[0, 7] == pytest.approx(4.0 / (1.0 + 1e-5), rel=1e-6)
 
 
-def test_lightgbm_window_aggregation_has_48_columns_in_stable_order():
+def test_lightgbm_window_aggregation_has_48_optical_flow_columns_in_stable_order():
     # Two windows, three timesteps, two signals repeated across signal slots.
     temporal = np.zeros((2, 3, 8), dtype=np.float32)
     temporal[0, :, 0] = [1.0, 2.0, 3.0]
@@ -75,7 +75,9 @@ def test_lightgbm_window_aggregation_has_48_columns_in_stable_order():
     timestamps = np.array([[0.0, 3.0], [1.0, 4.0]], dtype=np.float64)
     result = aggregate_lightgbm_windows(FeatureWindows(temporal, timestamps))
     assert result.X.shape == (2, 48)
-    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 48
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 49
+    assert LIGHTGBM_TABULAR_FEATURE_NAMES[-1] == "pitch_rate_rms"
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES[:-1]) == 48
     assert LIGHTGBM_TABULAR_FEATURE_NAMES[:6] == (
         "vertical_flow_gradient_mean", "vertical_flow_gradient_max",
         "vertical_flow_gradient_std", "vertical_flow_gradient_median",
