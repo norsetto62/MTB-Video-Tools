@@ -2,7 +2,7 @@
 
 The preparation order is intentionally centralized:
 canonical continuous features -> continuous engineered signals -> temporal
-windows -> 48 tabular statistics -> duration-weighted annotation targets.
+windows -> 48 optical-flow statistics plus pitch-rate RMS -> duration-weighted annotation targets.
 """
 from __future__ import annotations
 
@@ -29,13 +29,13 @@ def build_lightgbm_training_data(
     """Build aligned LightGBM rows and MTB 0..3 labels from one video sequence.
 
     The eight signals are engineered over the entire continuous sequence before
-    windowing. Each temporal window is then aggregated to 48 columns (eight
-    signals times six statistics). Targets are duration-weighted majority votes
+    windowing. Each temporal window is aggregated to 48 optical-flow statistics and receives
+    one additional DJI pitch-rate RMS feature (49 columns total). Targets are duration-weighted majority votes
     over annotated portions of each window, with ties assigned to the higher
     MTB class. Windows with no annotation overlap are omitted.
 
     Returns:
-        A FeatureWindows object whose X has shape (N, 48), plus an int64 target
+        A FeatureWindows object whose X has shape (N, 49), plus an int64 target
         vector of shape (N,). X rows and labels are aligned after unlabeled
         windows have been filtered out.
     """
