@@ -19,7 +19,7 @@ from autocut.data_models import Clip
 from autocut.dataset.sequence import build_feature_sequence
 from autocut.dataset.cache_paths import feature_cache_dir
 from autocut.motion.features import FEATURE_NAMES
-from autocut.pipeline.training import _data_values
+from autocut.pipeline.lightgbm_training import _data_config
 from autocut.video.probe import get_video_info
 
 
@@ -333,17 +333,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError(f"Annotation file contains no training intervals: {args.annotations}")
 
     settings = load_config(args.config)
-    (
-        _manifest,
-        sample_fps,
-        processing_width,
-        _window_duration,
-        _window_stride,
-        roi_left,
-        roi_right,
-        roi_bottom,
-        roi_top,
-    ) = _data_values(settings)
+    data_config = _data_config(settings)
+    sample_fps = data_config["sampling_fps"]
+    processing_width = data_config["processing_width"]
+    roi_left = data_config["roi_left"]
+    roi_right = data_config["roi_right"]
+    roi_bottom = data_config["roi_bottom"]
+    roi_top = data_config["roi_top"]
     cache_dir = feature_cache_dir(settings)
     video_info = get_video_info(video_path)
     # Match training's exact cache identity: the extraction clip ends at the
