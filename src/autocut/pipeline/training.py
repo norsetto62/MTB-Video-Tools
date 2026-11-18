@@ -24,7 +24,8 @@ from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.sequence import build_feature_sequence, DEFAULT_ROI_LEFT, DEFAULT_ROI_RIGHT, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_TOP, validate_roi
 from ..dataset.targets import build_targets, validate_targets
 from ..dataset.windows import build_windows_from_features
-from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
+from ..motion.engineered import MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_sequence
+from ..motion.dji import append_pitch_rate_rms, pitch_rate_rms_for_windows
 from ..ml.training import TrainingConfig, train_single_fold
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,13 @@ def _data_values(settings: Mapping[str, Any]) -> tuple[Path, float, int, float, 
     return manifest, sample_fps, processing_width, window_duration, window_stride, *roi
 
 
+def _include_dji_pitch_rate_rms(settings: Mapping[str, Any]) -> bool:
+    value = _section(settings, "data").get("include_dji_pitch_rate_rms", False)
+    if not isinstance(value, bool):
+        raise ValueError("data.include_dji_pitch_rate_rms must be a boolean.")
+    return value
+
+
 def _experiment_slug(name: str) -> str:
     """Convert a user-supplied experiment name into a safe filename stem."""
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name.strip()).strip(".-_")
@@ -157,7 +165,7 @@ def _load_record_windows(
             f"({info.duration:.3f}s) for manifest entry {record.id!r}."
         )
 
-    from ..data_models import Clip
+    from ..data_models import Clip, FeatureWindows
     clip = Clip(video_name=record.id, start=0.0, end=min(clip_end, info.duration))
     logger.info(
         "Record %s: extracting motion features (%.1fs clip at %.2f fps; cache %s)",
@@ -179,6 +187,13 @@ def _load_record_windows(
         model_sequence, sequence.timestamps,
         window=window_duration, stride=window_stride,
     )
+    include_dji_pitch_rate_rms = _include_dji_pitch_rate_rms(settings)
+    if include_dji_pitch_rate_rms:
+        rms = pitch_rate_rms_for_windows(record.video_path, windows.timestamps)
+        windows = FeatureWindows(
+            X=append_pitch_rate_rms(windows.X, rms),
+            timestamps=windows.timestamps,
+        )
     if annotations is None:
         # Unannotated footage contributes to U only; do not infer negative labels.
         X = windows.X
@@ -298,7 +313,19 @@ def run_training(
         "roi": {"left": roi_left, "right": roi_right, "bottom": roi_bottom, "top": roi_top},
         "window": window_duration,
         "stride": window_stride,
-        "feature_names": list(MODEL_FEATURE_NAMES),
+        "feature_names": list(
+            MODEL_FEATURE_NAMES_WITH_DJI
+            if _include_dji_pitch_rate_rms(settings)
+            else MODEL_FEATURE_NAMES
+        ),
+        "dji_pitch_rate_rms": {
+            "enabled": _include_dji_pitch_rate_rms(settings),
+            "units": "degrees_per_second",
+            "aggregation": "sqrt(mean(pitch_rate_degrees_per_second ** 2))",
+            "window": window_duration,
+            "stride": window_stride,
+            "telemetry_source": "DJI quaternion metadata in the source MP4",
+        },
         "feature_transform": {
             "spike_compression_threshold": 5.0,
             "spike_compression_slope": 0.2,

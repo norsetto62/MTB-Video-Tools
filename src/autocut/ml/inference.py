@@ -17,7 +17,7 @@ from autocut.data_models import FeatureSequence, FeatureWindows
 from autocut.ml.checkpoint import load_checkpoint, restore_model, validate_checkpoint
 from autocut.ml.scaling import FeatureScaler
 from autocut.motion.features import FEATURE_NAMES
-from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, engineer_motion_features, engineer_motion_sequence
+from autocut.motion.engineered import ENGINEERED_FEATURE_NAMES, MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_features, engineer_motion_sequence
 from autocut.dataset.windows import build_windows_from_features
 
 
@@ -89,10 +89,16 @@ def infer_windows(
     if not np.isfinite(X).all():
         raise ValueError("windows.X must contain only finite values.")
     feature_names = payload.get("feature_names")
+    is_dji_model = (
+        feature_names is not None
+        and list(feature_names) == list(MODEL_FEATURE_NAMES_WITH_DJI)
+    )
     expected_input_features = (
-        len(MODEL_FEATURE_NAMES)
-        if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
-        else len(FEATURE_NAMES)
+        len(MODEL_FEATURE_NAMES_WITH_DJI) if is_dji_model else (
+            len(MODEL_FEATURE_NAMES)
+            if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
+            else len(FEATURE_NAMES)
+        )
     )
     if X.shape[2] != expected_input_features:
         raise ValueError(
@@ -146,7 +152,7 @@ def infer_windows(
     seven_features = feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES)
     if compact_features:
         X = engineer_motion_features(X)
-    elif not seven_features and feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
+    elif not seven_features and not is_dji_model and feature_names is not None and list(feature_names) != list(FEATURE_NAMES):
         raise ValueError(
             "Checkpoint feature_names must match canonical features, the legacy "
             "four engineered signals, or the seven-signal sequence transform."

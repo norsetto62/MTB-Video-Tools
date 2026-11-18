@@ -22,7 +22,8 @@ from ..dataset.windows import build_windows
 from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
 from ..ml.inference import infer_windows, InferenceResult
-from ..motion.engineered import MODEL_FEATURE_NAMES, engineer_motion_sequence
+from ..motion.engineered import MODEL_FEATURE_NAMES, MODEL_FEATURE_NAMES_WITH_DJI, engineer_motion_sequence
+from ..motion.dji import append_pitch_rate_rms, pitch_rate_rms_for_windows
 from ..ml.checkpoint import load_checkpoint, validate_checkpoint
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
 from ..selection.candidates_generation import CandidateClip, generate_candidates
@@ -84,18 +85,29 @@ def _extract_windows(
             features=sequence.features,
             timestamps=np.asarray(sequence.timestamps - start, dtype=np.float64),
         )
-        # Seven-signal checkpoints require the transform over the continuous
-        # sequence before overlapping windows are formed (especially Savitzky-Golay).
-        if feature_names is not None and list(feature_names) == list(MODEL_FEATURE_NAMES):
+        # Engineered model signals are transformed over the continuous sequence
+        # before overlapping windows are formed (especially Savitzky-Golay).
+        if feature_names is not None and list(feature_names) in (
+            list(MODEL_FEATURE_NAMES), list(MODEL_FEATURE_NAMES_WITH_DJI)
+        ):
             transformed = engineer_motion_sequence(sequence.features)
             from ..dataset.windows import build_windows_from_features
 
-            return build_windows_from_features(
+            windows = build_windows_from_features(
                 transformed,
                 sequence.timestamps,
                 window=settings.features.window_duration,
                 stride=settings.features.window_stride,
             )
+            if list(feature_names) == list(MODEL_FEATURE_NAMES_WITH_DJI):
+                rms = pitch_rate_rms_for_windows(
+                    video_path, windows.timestamps, time_offset=start
+                )
+                windows = FeatureWindows(
+                    X=append_pitch_rate_rms(windows.X, rms),
+                    timestamps=windows.timestamps,
+                )
+            return windows
         return build_windows(
             sequence,
             window=settings.features.window_duration,
