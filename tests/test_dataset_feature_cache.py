@@ -42,6 +42,23 @@ def test_feature_cache_round_trip_and_deterministic_path(tmp_path):
     np.testing.assert_array_equal(actual.timestamps, expected.timestamps)
 
 
+def test_existing_cache_is_augmented_with_pitch_without_rewriting_flow(tmp_path, monkeypatch):
+    video, clip, expected, cache_dir = _fixture(tmp_path)
+    cache_path = save_feature_sequence(expected, video, cache_dir, clip)
+    from autocut.motion import dji
+    pitch_times = np.arange(0.0, 4.0, 0.1, dtype=np.float64)
+    pitch_rates = np.linspace(1.0, 2.0, len(pitch_times), dtype=np.float64)
+    monkeypatch.setattr(dji, "load_pitch_rate_series", lambda _path: (pitch_times, pitch_rates))
+    actual = load_feature_sequence(video, cache_dir, clip, include_pitch_telemetry=True)
+    assert actual is not None
+    np.testing.assert_array_equal(actual.features, expected.features)
+    np.testing.assert_array_equal(actual.timestamps, expected.timestamps)
+    np.testing.assert_array_equal(actual.pitch_timestamps, pitch_times)
+    np.testing.assert_array_equal(actual.pitch_rate, pitch_rates)
+    with np.load(cache_path, allow_pickle=False) as archive:
+        np.testing.assert_array_equal(archive["features"], expected.features)
+        np.testing.assert_array_equal(archive["pitch_rate"], pitch_rates)
+
 
 def test_metadata_fingerprint_is_default_and_does_not_hash_source(tmp_path, monkeypatch):
     video, clip, sequence, cache_dir = _fixture(tmp_path)
