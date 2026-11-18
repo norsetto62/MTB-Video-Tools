@@ -50,6 +50,8 @@ class FeatureSequence:
 
     features: np.ndarray
     timestamps: np.ndarray
+    pitch_timestamps: np.ndarray | None = None
+    pitch_rate: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.features.ndim != 2:
@@ -88,6 +90,19 @@ class FeatureSequence:
             np.diff(self.timestamps) > 0
         ):
             raise ValueError("timestamps must be strictly increasing.")
+        if (self.pitch_timestamps is None) != (self.pitch_rate is None):
+            raise ValueError("pitch_timestamps and pitch_rate must be provided together.")
+        if self.pitch_timestamps is not None:
+            if self.pitch_timestamps.ndim != 1 or self.pitch_rate.ndim != 1:
+                raise ValueError("pitch telemetry arrays must be one-dimensional.")
+            if len(self.pitch_timestamps) != len(self.pitch_rate) or len(self.pitch_rate) < 3:
+                raise ValueError("pitch telemetry arrays must have matching lengths >= 3.")
+            if self.pitch_timestamps.dtype != np.float64 or self.pitch_rate.dtype != np.float64:
+                raise ValueError("pitch telemetry arrays must have dtype float64.")
+            if not np.isfinite(self.pitch_timestamps).all() or not np.isfinite(self.pitch_rate).all():
+                raise ValueError("pitch telemetry arrays must contain only finite values.")
+            if not np.all(np.diff(self.pitch_timestamps) > 0):
+                raise ValueError("pitch_timestamps must be strictly increasing.")
 
 
 @dataclass(frozen=True)
