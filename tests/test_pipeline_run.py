@@ -240,7 +240,7 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
     )
     monkeypatch.setattr(run, "get_video_info", lambda path: VideoInfo(1920, 1080, 30.0, 20.0))
     monkeypatch.setattr(
-        "autocut.ml.checkpoint.load_lightgbm_checkpoint",
+        "autocut.ml.lightgbm_checkpoint.load_lightgbm_checkpoint",
         lambda path: {
             "model_class": "LightGBMRanker",
             "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
@@ -261,7 +261,7 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
         def predict(self, X):
             return np.array([-0.1, -0.2, -0.3, -0.4, -0.15])
 
-    monkeypatch.setattr("autocut.ml.model.LightGBMRanker", FakeRanker)
+    monkeypatch.setattr("autocut.ml.lightgbm_model.LightGBMRanker", FakeRanker)
     monkeypatch.setattr(
         "autocut.dataset.sequence.build_feature_sequence",
         lambda *args, **kwargs: SimpleNamespace(
