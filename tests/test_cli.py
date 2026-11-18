@@ -9,7 +9,7 @@ def test_help_lists_commands(capsys):
     except SystemExit as exc:
         assert exc.code == 0
     output = capsys.readouterr().out
-    for command in ("run", "audit", "train", "validate", "test", "lovo", "lightgbm-train", "lightgbm-lovo", "lightgbm-hpo", "models"):
+    for command in ("run", "audit", "train", "test", "lightgbm-score-report", "lightgbm-lovo", "lightgbm-hpo", "models"):
         assert command in output
 
 
@@ -37,60 +37,6 @@ def test_test_command_forwards_pytest_arguments(monkeypatch):
     assert captured["check"] is False
 
 
-def test_cli_lovo_dispatch_calls_pipeline(tmp_path, monkeypatch, capsys):
-    from autocut import cli
-    from autocut.config_loader import Config
-
-    manifest = tmp_path / "manifest.yaml"
-    manifest.write_text("videos: []\n", encoding="utf-8")
-    settings = Config({
-        "paths": {"models_dir": str(tmp_path / "models")},
-        "data": {
-            "manifest": str(manifest),
-            "train_groups": ["train"],
-            "validation_groups": ["val"],
-        },
-        "training": {"epochs": 2},
-        "experiment": {"name": "cli-test"},
-        "logging": {"level": "INFO"},
-    })
-    config_path = tmp_path / "train.yaml"
-    config_path.write_text("logging:\n  level: INFO\n", encoding="utf-8")
-    monkeypatch.setattr("autocut.config_loader.load_config", lambda path: settings)
-    captured = {}
-
-    def fake_run_lovo(path, loaded_settings):
-        captured["manifest"] = path
-        captured["settings"] = loaded_settings
-        return {
-            "fold_count": 3,
-            "folds": [
-                {"selected_epochs": 2},
-                {"selected_epochs": 4},
-                {"selected_epochs": 6},
-            ],
-            "data_config": {"flow_fps": 2.0},
-        }
-
-    monkeypatch.setattr("autocut.pipeline.lovo.run_lovo", fake_run_lovo)
-    monkeypatch.setattr(
-        "autocut.dataset.manifest.load_manifest",
-        lambda path, verify_files=True: ["record"],
-    )
-    monkeypatch.setattr(
-        "autocut.pipeline.training._combine_records",
-        lambda records, loaded_settings: ([], []),
-    )
-    monkeypatch.setattr(
-        "autocut.ml.training.train_fixed_epochs",
-        lambda **kwargs: (None, None, {"epochs_trained": kwargs["epochs"]}),
-    )
-    assert main(["lovo", str(manifest), "--config", str(config_path)]) == 0
-    assert captured["manifest"] == manifest
-    assert captured["settings"] is settings
-    assert '"fold_count": 3' in capsys.readouterr().out
-
-
 def test_cli_run_dispatch_loads_generic_config_and_calls_pipeline(tmp_path, monkeypatch, capsys):
     from autocut.config_loader import Config
 
@@ -100,11 +46,12 @@ def test_cli_run_dispatch_loads_generic_config_and_calls_pipeline(tmp_path, monk
     config.write_text("logging:\n  level: INFO\n", encoding="utf-8")
     captured = {}
 
-    def fake_run_pipeline(path, loaded_settings, *, output_path=None, video_encoder=None):
+    def fake_run_pipeline(path, loaded_settings, *, output_path=None, video_encoder=None, checkpoint_path=None):
         captured["path"] = path
         captured["settings"] = loaded_settings
         captured["output_path"] = output_path
         captured["video_encoder"] = video_encoder
+        captured["checkpoint_path"] = checkpoint_path
         return {"status": "completed"}
 
     monkeypatch.setattr("autocut.pipeline.run.run_pipeline", fake_run_pipeline)
@@ -118,14 +65,9 @@ def test_cli_run_dispatch_loads_generic_config_and_calls_pipeline(tmp_path, monk
     assert captured["settings"].logging.level == "INFO"
     assert captured["output_path"] == output
     assert captured["video_encoder"] is None
+    assert captured["checkpoint_path"] is None
     assert '"status": "completed"' in capsys.readouterr().out
 
-
-
-def test_hpo_cli_defaults_to_training_config():
-    args = build_parser().parse_args(["hpo"])
-    assert args.command == "hpo"
-    assert args.config == Path("config/train.yaml")
 
 
 def test_models_command_loads_checkpoint_from_generic_config(tmp_path, monkeypatch):
@@ -195,7 +137,7 @@ def test_lightgbm_train_cli_dispatches_to_single_model_pipeline(tmp_path, monkey
         fake_train,
     )
     assert main([
-        "lightgbm-train", "--config", str(config_path), "--checkpoint", str(checkpoint)
+        "train", "--config", str(config_path), "--checkpoint", str(checkpoint)
     ]) == 0
     assert captured == {
         "path": manifest,
