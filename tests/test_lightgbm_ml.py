@@ -66,7 +66,7 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
         data_config={"window": 4.0, "stride": 2.0, "sampling_fps": 2.0},
         metadata={"fold": "heldout-group"},
     )
-    assert model.feature_dim == 48
+    assert model.feature_dim == 49
     assert summary["training_rows"] == 120
     assert summary["validation_rows"] == 48
     assert summary["ranking_metric"] == "segment_recall_at_5"
@@ -89,7 +89,7 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
 
 def test_lightgbm_training_rejects_wrong_feature_count_and_labels_and_missing_groups():
     X, y = _data(rows=40)
-    with pytest.raises(ValueError, match="48"):
+    with pytest.raises(ValueError, match="49"):
         train_lightgbm(X[:, :47], y, train_group_sizes=[40], config=_config())
     with pytest.raises(ValueError, match="relevance labels"):
         train_lightgbm(X, np.full(len(y), 5), train_group_sizes=[40], config=_config())
