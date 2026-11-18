@@ -9,7 +9,7 @@ from autocut.pipeline import run
 from autocut.selection.timeline import Timeline
 
 
-def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
+def _run_settings(checkpoint, output_dir, cache_dir):
     return Config({
         "paths": {
             "output_dir": output_dir,
@@ -18,13 +18,7 @@ def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
         "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": checkpoint},
-        "selection": {
-            "min_clip": 3.0,
-            "max_clip_duration": 0.0,
-            "positive_threshold": 0.5,
-            "max_gap_to_merge": 3.0,
-            "padding_seconds": padding_seconds,
-        },
+        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0},
         "audio": {
             "sync_mode": "off",
             "max_synced_clip_duration": 0.0,
