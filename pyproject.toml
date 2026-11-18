@@ -25,6 +25,9 @@ dev = [
 ml = [
     "lightgbm>=4.0.0",
 ]
+pu = [
+    "torch",
+]
 plot = [
     "matplotlib",
     "plotly",
