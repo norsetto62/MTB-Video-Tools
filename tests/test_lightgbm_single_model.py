@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from autocut.ml.model import LightGBMConfig
+from autocut.ml.lightgbm_model import LightGBMConfig
 from autocut.pipeline import lightgbm_training as pipeline
 
 
