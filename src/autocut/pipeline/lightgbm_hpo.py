@@ -316,9 +316,12 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
         )
         return mean_recall
 
+    objective_description = (
+        search_space["objective"].get("choices", search_space["objective"].get("fixed"))
+    )
     logger.info(
-        "Starting LightGBM HPO study %r: %d new trials, objectives=%s, groups=%s",
-        study_name, n_trials, search_space["objective"]["choices"],
+        "Starting HPO study %r: %d new trials, objectives=%s, groups=%s",
+        study_name, n_trials, objective_description,
         sorted(set(group_by_video.values())),
     )
     report(
