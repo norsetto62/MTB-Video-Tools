@@ -11,8 +11,9 @@ import numpy as np
 from ..data_models import Annotation, FeatureSequence, FeatureWindows
 from .normalization import normalize_per_video_features
 from ..motion.engineered import engineer_lightgbm_sequence
+from ..motion.dji import pitch_rate_rms_from_series
 from .targets import build_majority_vote_targets
-from .windows import build_lightgbm_windows_from_features
+from .windows import append_pitch_rate_rms_feature, build_lightgbm_windows_from_features
 
 
 def build_lightgbm_training_data(
@@ -21,6 +22,9 @@ def build_lightgbm_training_data(
     *,
     window: float,
     stride: float,
+    pitch_timestamps: np.ndarray,
+    pitch_rate: np.ndarray,
+    pitch_time_offset: float = 0.0,
 ) -> tuple[FeatureWindows, np.ndarray]:
     """Build aligned LightGBM rows and MTB 0..3 labels from one video sequence.
 
@@ -40,11 +44,13 @@ def build_lightgbm_training_data(
 
     signals = engineer_lightgbm_sequence(sequence.features)
     tabular_windows = build_lightgbm_windows_from_features(
-        signals,
-        sequence.timestamps,
-        window=window,
-        stride=stride,
+        signals, sequence.timestamps, window=window, stride=stride,
     )
+    pitch_rms = pitch_rate_rms_from_series(
+        pitch_timestamps, pitch_rate, tabular_windows.timestamps,
+        time_offset=pitch_time_offset,
+    )
+    tabular_windows = append_pitch_rate_rms_feature(tabular_windows, pitch_rms)
     # Normalize over every window from this video before dropping windows
     # that have no unambiguous annotation target. Inference has no labels, so
     # its normalization statistics must be computed over the complete video.
