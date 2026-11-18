@@ -28,10 +28,6 @@ from ..audio.analysis import AudioAnalysis, analyze_audio
 
 logger = logging.getLogger(__name__)
 
-# Patchable legacy-backend hooks, resolved only when the PU path is used.
-load_checkpoint = None
-validate_checkpoint = None
-infer_windows = None
 
 
 def _merge_ranges(clips: Iterable[object]) -> list[tuple[float, float]]:
@@ -123,7 +119,7 @@ def _extract_windows(
 
 def _offset_candidate(candidate: CandidateClip, offset: float) -> CandidateClip:
     """Translate a range-local candidate and its evidence to source timestamps."""
-    from ..selection.candidates_generation import WindowEvidence
+    from ..selection.candidate_types import WindowEvidence
 
     return CandidateClip(
         start=candidate.start + offset,
