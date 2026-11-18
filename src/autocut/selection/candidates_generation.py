@@ -11,7 +11,7 @@ from typing import Sequence
 
 import numpy as np
 
-from ..ml.inference import InferenceResult
+from ..ml.inference_types import InferenceResult
 
 
 @dataclass(frozen=True)
