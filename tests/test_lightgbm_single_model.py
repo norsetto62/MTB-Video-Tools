@@ -70,8 +70,8 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
 
 
 def test_legacy_multiclass_yaml_is_migrated_to_lambdarank():
-    config = pipeline._lightgbm_config({
-        "lightgbm": {
+    config = pipeline._training_config({
+        "training": {
             "objective": "multiclass",
             "num_class": 4,
             "num_iterations": 17,
@@ -152,3 +152,17 @@ def test_single_model_rejects_checkpoint_directory(tmp_path, monkeypatch):
             checkpoint_path=destination,
             config=LightGBMConfig(num_iterations=10, early_stopping_rounds=2),
         )
+
+
+def test_training_config_rejects_legacy_lightgbm_section():
+    import pytest
+
+    with pytest.raises(ValueError, match="renamed to 'training'"):
+        pipeline._training_config({"lightgbm": {"num_leaves": 100}})
+
+
+def test_training_config_rejects_obsolete_pu_bilstm_keys():
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown training configuration key"):
+        pipeline._training_config({"training": {"epochs": 1500, "batch_size": 32}})
