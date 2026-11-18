@@ -158,7 +158,6 @@ def run_pipeline(
     *,
     output_path: str | Path | None = None,
     video_encoder: str | None = None,
-    backend: str = "lightgbm",
     checkpoint_path: str | Path | None = None,
 ) -> dict:
     """Run AutoCut from an annotation manifest through final rendering.
@@ -168,8 +167,6 @@ def run_pipeline(
     or synchronized. The returned dictionary is also written as a result JSON.
     """
     settings, audio_config = _run_config_sections(settings)
-    if backend != "lightgbm":
-        raise ValueError("Only the LightGBM inference backend is supported.")
     if checkpoint_path is not None:
         settings = settings.with_overrides({"model.checkpoint": Path(checkpoint_path).expanduser()})
     annotation = Path(annotation_path)
@@ -254,45 +251,45 @@ def run_pipeline(
     lightgbm_params = None
     lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
     lightgbm_range_orders: dict[str, list[tuple[float, float, int]]] = {}
-    if backend == "lightgbm":
-        from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
-        from ..ml.lightgbm_model import LightGBMRanker
-        from ..dataset.sequence import (
-            DEFAULT_PROCESSING_WIDTH, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_LEFT,
-            DEFAULT_ROI_RIGHT, DEFAULT_ROI_TOP, DEFAULT_SAMPLE_FPS, validate_roi,
-        )
-        from ..dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-        checkpoint_payload = load_lightgbm_checkpoint(settings.model.checkpoint)
-        if checkpoint_payload.get("model_class") != "LightGBMRanker":
-            raise ValueError(f"Expected LightGBMRanker checkpoint, got {checkpoint_payload.get('model_class')!r}.")
-        if checkpoint_payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
-            raise ValueError("LightGBM checkpoint feature schema does not match current window preparation.")
-        saved = checkpoint_payload.get("data_config", {})
-        if not isinstance(saved, Mapping):
-            raise ValueError("LightGBM checkpoint data_config must be a mapping.")
-        def saved_or(key, fallback):
-            return saved.get(key, fallback)
-        roi = validate_roi(
-            saved_or("roi_left", settings.video.roi_left),
-            saved_or("roi_right", settings.video.roi_right),
-            saved_or("roi_bottom", settings.video.roi_bottom),
-            saved_or("roi_top", settings.video.roi_top),
-        )
-        lightgbm_params = {
-            "sampling_fps": float(saved_or("sampling_fps", settings.video.sampling_fps or DEFAULT_SAMPLE_FPS)),
-            "processing_width": int(saved_or("processing_width", settings.video.processing_width or DEFAULT_PROCESSING_WIDTH)),
-            "window": float(saved_or("window", saved_or("window_duration", settings.features.window_duration))),
-            "stride": float(saved_or("stride", saved_or("window_stride", settings.features.window_stride))),
-            "roi_left": roi[0], "roi_right": roi[1], "roi_bottom": roi[2], "roi_top": roi[3],
-        }
-        if (not math.isfinite(lightgbm_params["sampling_fps"]) or lightgbm_params["sampling_fps"] <= 0
-            or lightgbm_params["processing_width"] <= 0
-            or not math.isfinite(lightgbm_params["window"]) or lightgbm_params["window"] <= 0
-            or not math.isfinite(lightgbm_params["stride"]) or lightgbm_params["stride"] <= 0):
-            raise ValueError("LightGBM checkpoint has invalid preprocessing metadata.")
-        lightgbm_ranker = LightGBMRanker(
-            checkpoint_payload["_booster"], feature_names=tuple(checkpoint_payload["feature_names"])
-        )
+if backend == "lightgbm":
+    from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
+    from ..ml.lightgbm_model import LightGBMRanker
+    from ..dataset.sequence import (
+        DEFAULT_PROCESSING_WIDTH, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_LEFT,
+        DEFAULT_ROI_RIGHT, DEFAULT_ROI_TOP, DEFAULT_SAMPLE_FPS, validate_roi,
+    )
+    from ..dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+    checkpoint_payload = load_lightgbm_checkpoint(settings.model.checkpoint)
+    if checkpoint_payload.get("model_class") != "LightGBMRanker":
+        raise ValueError(f"Expected LightGBMRanker checkpoint, got {checkpoint_payload.get('model_class')!r}.")
+    if checkpoint_payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError("LightGBM checkpoint feature schema does not match current window preparation.")
+    saved = checkpoint_payload.get("data_config", {})
+    if not isinstance(saved, Mapping):
+        raise ValueError("LightGBM checkpoint data_config must be a mapping.")
+    def saved_or(key, fallback):
+        return saved.get(key, fallback)
+    roi = validate_roi(
+        saved_or("roi_left", settings.video.roi_left),
+        saved_or("roi_right", settings.video.roi_right),
+        saved_or("roi_bottom", settings.video.roi_bottom),
+        saved_or("roi_top", settings.video.roi_top),
+    )
+    lightgbm_params = {
+        "sampling_fps": float(saved_or("sampling_fps", settings.video.sampling_fps or DEFAULT_SAMPLE_FPS)),
+        "processing_width": int(saved_or("processing_width", settings.video.processing_width or DEFAULT_PROCESSING_WIDTH)),
+        "window": float(saved_or("window", saved_or("window_duration", settings.features.window_duration))),
+        "stride": float(saved_or("stride", saved_or("window_stride", settings.features.window_stride))),
+        "roi_left": roi[0], "roi_right": roi[1], "roi_bottom": roi[2], "roi_top": roi[3],
+    }
+    if (not math.isfinite(lightgbm_params["sampling_fps"]) or lightgbm_params["sampling_fps"] <= 0
+        or lightgbm_params["processing_width"] <= 0
+        or not math.isfinite(lightgbm_params["window"]) or lightgbm_params["window"] <= 0
+        or not math.isfinite(lightgbm_params["stride"]) or lightgbm_params["stride"] <= 0):
+        raise ValueError("LightGBM checkpoint has invalid preprocessing metadata.")
+    lightgbm_ranker = LightGBMRanker(
+        checkpoint_payload["_booster"], feature_names=tuple(checkpoint_payload["feature_names"])
+    )
 
     # Process each annotation interval independently. This retains the
     # manifest row identity throughout inference and candidate generation;
@@ -323,102 +320,102 @@ def run_pipeline(
             })
             continue
         order = video_order[video_name]
-        if backend == "lightgbm":
-            from ..dataset.sequence import build_feature_sequence
-            from ..dataset.normalization import normalize_per_video_features
-            from ..dataset.windows import build_lightgbm_windows_from_features
-            from ..motion.engineered import engineer_lightgbm_sequence
-            from ..selection.lightgbm_candidates import select_ranked_segments
-            sequence_clip = Clip(video_name=video_name, start=start, end=end, mandatory=False)
-            sequence = build_feature_sequence(
-                Path(video_name), sequence_clip,
-                sample_fps=lightgbm_params["sampling_fps"],
-                processing_width=lightgbm_params["processing_width"],
-                cache_dir=feature_cache_dir(settings),
-                roi_left=lightgbm_params["roi_left"], roi_right=lightgbm_params["roi_right"],
-                roi_bottom=lightgbm_params["roi_bottom"], roi_top=lightgbm_params["roi_top"],
-                window_duration=lightgbm_params["window"],
-                window_stride=lightgbm_params["stride"],
-            )
-            signals = engineer_lightgbm_sequence(sequence.features)
-            windows = build_lightgbm_windows_from_features(
-                signals, sequence.timestamps, window=lightgbm_params["window"], stride=lightgbm_params["stride"]
-            )
-            normalized = normalize_per_video_features(windows.X)
-            scores = lightgbm_ranker.predict(normalized)
-            lightgbm_windows_by_video.setdefault(video_name, []).append((
-                np.asarray(windows.timestamps, dtype=np.float64),
-                np.asarray(scores, dtype=np.float64),
-            ))
-            lightgbm_range_orders.setdefault(video_name, []).append((start, end, annotation_order))
-            logger.info(
-                "LightGBM annotation #%d: scored %d window(s); pooling by video before top-10 selection.",
-                annotation_order, len(scores),
-            )
-            inference_summaries.append({
-                "video": video_name, "annotation_order": annotation_order,
-                "range_start": start, "range_end": end,
-                "window_count": len(scores), "candidate_count": 0,
-                "status": "scored_lightgbm",
-                "score_semantics": "raw LambdaRank score",
-            })
-            continue
+if backend == "lightgbm":
+    from ..dataset.sequence import build_feature_sequence
+    from ..dataset.normalization import normalize_per_video_features
+    from ..dataset.windows import build_lightgbm_windows_from_features
+    from ..motion.engineered import engineer_lightgbm_sequence
+    from ..selection.lightgbm_candidates import select_ranked_segments
+    sequence_clip = Clip(video_name=video_name, start=start, end=end, mandatory=False)
+    sequence = build_feature_sequence(
+        Path(video_name), sequence_clip,
+        sample_fps=lightgbm_params["sampling_fps"],
+        processing_width=lightgbm_params["processing_width"],
+        cache_dir=feature_cache_dir(settings),
+        roi_left=lightgbm_params["roi_left"], roi_right=lightgbm_params["roi_right"],
+        roi_bottom=lightgbm_params["roi_bottom"], roi_top=lightgbm_params["roi_top"],
+        window_duration=lightgbm_params["window"],
+        window_stride=lightgbm_params["stride"],
+    )
+    signals = engineer_lightgbm_sequence(sequence.features)
+    windows = build_lightgbm_windows_from_features(
+        signals, sequence.timestamps, window=lightgbm_params["window"], stride=lightgbm_params["stride"]
+    )
+    normalized = normalize_per_video_features(windows.X)
+    scores = lightgbm_ranker.predict(normalized)
+    lightgbm_windows_by_video.setdefault(video_name, []).append((
+        np.asarray(windows.timestamps, dtype=np.float64),
+        np.asarray(scores, dtype=np.float64),
+    ))
+    lightgbm_range_orders.setdefault(video_name, []).append((start, end, annotation_order))
+    logger.info(
+        "LightGBM annotation #%d: scored %d window(s); pooling by video before top-10 selection.",
+        annotation_order, len(scores),
+    )
+    inference_summaries.append({
+        "video": video_name, "annotation_order": annotation_order,
+        "range_start": start, "range_end": end,
+        "window_count": len(scores), "candidate_count": 0,
+        "status": "scored_lightgbm",
+        "score_semantics": "raw LambdaRank score",
+    })
+    continue
 
-    if backend == "lightgbm":
-        from ..selection.lightgbm_candidates import select_ranked_segments
-        from ..selection.candidate_types import CandidateClip, WindowEvidence
-        for video_name, batches in lightgbm_windows_by_video.items():
-            timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
-            scores = np.concatenate([batch[1] for batch in batches], axis=0)
-            # Annotation ranges can overlap; deduplicate identical source windows
-            # before ranking so the same evidence cannot count twice.
-            unique: dict[tuple[float, float], float] = {}
-            for (window_start, window_end), score in zip(timestamps, scores):
-                key = (round(float(window_start), 6), round(float(window_end), 6))
-                unique[key] = max(float(score), unique.get(key, -math.inf))
-            ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
-            timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
-            scores = np.asarray([score for _, score in ordered], dtype=np.float64)
-            segments = select_ranked_segments(timestamps, scores, top_k=10, max_gap_seconds=2.0)
-            range_orders = lightgbm_range_orders[video_name]
-            order = video_order[video_name]
-            for segment in segments:
-                if segment.duration_seconds + 1e-9 < settings.selection.min_clip:
-                    continue
-                evidence = tuple(
-                    WindowEvidence(
-                        start=float(timestamps[i, 0]), end=float(timestamps[i, 1]),
-                        probability=float(scores[i]),
-                    )
-                    for i in segment.window_indices
+if backend == "lightgbm":
+from ..selection.lightgbm_candidates import select_ranked_segments
+from ..selection.candidate_types import CandidateClip, WindowEvidence
+    for video_name, batches in lightgbm_windows_by_video.items():
+        timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
+        scores = np.concatenate([batch[1] for batch in batches], axis=0)
+        # Annotation ranges can overlap; deduplicate identical source windows
+        # before ranking so the same evidence cannot count twice.
+        unique: dict[tuple[float, float], float] = {}
+        for (window_start, window_end), score in zip(timestamps, scores):
+            key = (round(float(window_start), 6), round(float(window_end), 6))
+            unique[key] = max(float(score), unique.get(key, -math.inf))
+        ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
+        timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
+        scores = np.asarray([score for _, score in ordered], dtype=np.float64)
+        segments = select_ranked_segments(timestamps, scores, top_k=10, max_gap_seconds=2.0)
+        range_orders = lightgbm_range_orders[video_name]
+        order = video_order[video_name]
+        for segment in segments:
+            if segment.duration_seconds + 1e-9 < settings.selection.min_clip:
+                continue
+            evidence = tuple(
+                WindowEvidence(
+                    start=float(timestamps[i, 0]), end=float(timestamps[i, 1]),
+                    probability=float(scores[i]),
                 )
-                candidate = CandidateClip(
-                    start=segment.start, end=segment.end,
-                    duration=segment.duration_seconds,
-                    mean_probability=segment.mean_score, max_probability=segment.max_score,
-                    window_evidence=evidence,
-                )
-                matching_orders = [
-                    annotation_order for range_start, range_end, annotation_order in range_orders
-                    if range_start < segment.end and segment.start < range_end
-                ]
-                annotation_order = min(matching_orders) if matching_orders else None
-                all_candidates.append(SelectionCandidate(
-                    video_name=video_name, video_order=order,
-                    candidate=candidate, annotation_order=annotation_order,
-                ))
-            video_summaries = [item for item in inference_summaries if item["video"] == video_name]
-            total_candidates = sum(
-                1 for candidate in all_candidates
-                if candidate.video_name == video_name
+                for i in segment.window_indices
             )
-            for summary in video_summaries:
-                summary["candidate_count"] = total_candidates
-                summary["video_top_windows"] = min(10, len(scores))
-            logger.info(
-                "LightGBM video %s: %d unique windows, %d top-window merged candidate(s).",
-                Path(video_name).name, len(scores), total_candidates,
+            candidate = CandidateClip(
+                start=segment.start, end=segment.end,
+                duration=segment.duration_seconds,
+                mean_probability=segment.mean_score, max_probability=segment.max_score,
+                window_evidence=evidence,
             )
+            matching_orders = [
+                annotation_order for range_start, range_end, annotation_order in range_orders
+                if range_start < segment.end and segment.start < range_end
+            ]
+            annotation_order = min(matching_orders) if matching_orders else None
+            all_candidates.append(SelectionCandidate(
+                video_name=video_name, video_order=order,
+                candidate=candidate, annotation_order=annotation_order,
+            ))
+        video_summaries = [item for item in inference_summaries if item["video"] == video_name]
+        total_candidates = sum(
+            1 for candidate in all_candidates
+            if candidate.video_name == video_name
+        )
+        for summary in video_summaries:
+            summary["candidate_count"] = total_candidates
+            summary["video_top_windows"] = min(10, len(scores))
+        logger.info(
+            "LightGBM video %s: %d unique windows, %d top-window merged candidate(s).",
+            Path(video_name).name, len(scores), total_candidates,
+        )
 
     mandatory = tuple(
         MandatoryClip(
