@@ -22,7 +22,9 @@ def _sequence(sample_count=25):
             )
     features[:, FEATURE_NAMES.index("flow_u")] = 0.75 + timestamps * 0.02
     features[:, FEATURE_NAMES.index("flow_v")] = 0.25 + timestamps * 0.01
-    return FeatureSequence(features=features, timestamps=timestamps)
+    pitch_timestamps = np.arange(-1.0, 14.0, 0.1, dtype=np.float64)
+    pitch_rate = np.full(len(pitch_timestamps), 2.5, dtype=np.float64)
+    return FeatureSequence(features=features, timestamps=timestamps, pitch_timestamps=pitch_timestamps, pitch_rate=pitch_rate)
 
 
 def _annotation(start, end, score):
@@ -40,13 +42,15 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
     ]
 
     windows, labels = build_lightgbm_training_data(
-        sequence, annotations, window=4.0, stride=2.0
+        sequence, annotations, window=4.0, stride=2.0,
+        pitch_timestamps=sequence.pitch_timestamps, pitch_rate=sequence.pitch_rate,
     )
 
     assert windows.X.ndim == 2
-    assert windows.X.shape[1] == 48
+    assert windows.X.shape[1] == 49
     assert windows.X.shape[0] == len(labels)
-    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 48
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 49
+    assert LIGHTGBM_TABULAR_FEATURE_NAMES[-1] == "pitch_rate_rms"
     assert labels.dtype == np.int64
     assert np.isfinite(windows.X).all()
     assert windows.timestamps.shape == (len(labels), 2)
@@ -62,8 +66,9 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
 
 def test_lightgbm_training_data_returns_empty_tabular_dataset_without_annotations():
     windows, labels = build_lightgbm_training_data(
-        _sequence(), [], window=4.0, stride=2.0
+        _sequence(), [], window=4.0, stride=2.0,
+        pitch_timestamps=_sequence().pitch_timestamps, pitch_rate=_sequence().pitch_rate,
     )
-    assert windows.X.shape == (0, 48)
+    assert windows.X.shape == (0, 49)
     assert windows.timestamps.shape == (0, 2)
     assert labels.shape == (0,)
