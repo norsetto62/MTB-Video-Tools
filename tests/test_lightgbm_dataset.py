@@ -53,6 +53,7 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
     assert LIGHTGBM_TABULAR_FEATURE_NAMES[-1] == "pitch_rate_rms"
     assert labels.dtype == np.int64
     assert np.isfinite(windows.X).all()
+    assert np.std(windows.X[:, -1]) > 0.0
     assert windows.timestamps.shape == (len(labels), 2)
     # The first window is won by class 2; the next three windows are won by
     # class 2 or 3 according to annotated overlap. The last window has no
