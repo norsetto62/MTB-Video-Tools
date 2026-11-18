@@ -1,3 +1,5 @@
+> Historical development notes. The active development branch now uses LightGBM LambdaRank; the earlier neural-network/PU proposals below are superseded and retained only as project history.
+
 # AutoCut Refactoring Phases
 
 - [x] **Phase 1 — Packaging / src layout**
