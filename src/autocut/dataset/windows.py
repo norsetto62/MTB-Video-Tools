@@ -95,7 +95,21 @@ LIGHTGBM_TABULAR_FEATURE_NAMES = tuple(
     f"{signal}_{statistic}"
     for signal in LIGHTGBM_FEATURE_NAMES
     for statistic in LIGHTGBM_WINDOW_STATISTICS
-)
+) + ("pitch_rate_rms",)
+
+
+def append_pitch_rate_rms_feature(windows: FeatureWindows, pitch_rate_rms: np.ndarray) -> FeatureWindows:
+    """Append one window-level pitch-rate RMS value to each 48-column row."""
+    values = np.asarray(windows.X, dtype=np.float32)
+    rms = np.asarray(pitch_rate_rms, dtype=np.float32)
+    if values.ndim != 2 or values.shape[1] != 48:
+        raise ValueError(f"Expected 48 optical-flow columns; got {values.shape}.")
+    if rms.shape != (values.shape[0],) or not np.isfinite(rms).all():
+        raise ValueError("pitch_rate_rms must contain one finite value per window.")
+    return FeatureWindows(
+        X=np.column_stack((values, rms)).astype(np.float32, copy=False),
+        timestamps=np.asarray(windows.timestamps, dtype=np.float64).copy(),
+    )
 
 
 def aggregate_lightgbm_windows(windows: FeatureWindows) -> FeatureWindows:
