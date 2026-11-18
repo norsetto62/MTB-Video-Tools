@@ -285,53 +285,45 @@ It must be possible to inspect the actual generated examples around transitions,
 
 ## 16. ML Model
 
-The model estimates continuous MTB interest over time:
+The active model is **LightGBM LambdaRank**. It estimates the relative relevance of temporal windows within each source video; it is not a binary classifier and its raw scores are not probabilities.
 
-```text
-temporal feature sequence
-        ↓
-interest model
-        ↓
-scalar interest estimate
-```
+Each video is one independent ranking query. Training preserves the ordinal MTB relevance grades 0–3 and uses group-aware validation so windows from one video cannot leak across training and validation.
 
-The current sequence-model/BiLSTM prototype is a valid baseline to preserve during refactoring. The architecture remains replaceable through a defined model interface for construction, loading, inference, serialization and compatibility validation.
+The previous PU/BiLSTM implementation is retired from this development branch. Its source history remains available on the `legacy` Git branch.
 
 ---
 
-## 17. Data Scaling
+## 17. Feature Preparation
 
-Normalization/scaling parameters must be learned from training data only. They are part of the model/data contract.
+The canonical optical-flow sequence is transformed into the eight LightGBM motion signals, then windowed and aggregated into the 48-column tabular feature schema.
 
-A checkpoint/model package must identify feature schema and order, feature mask where applicable, scaling method and parameters, and model architecture/configuration. Inference must reject incompatible feature data rather than silently applying an incorrect transformation.
+Feature normalization is performed independently per video across all of that video's windows (population standard deviation, ddof=0; constant columns become zero). Training and inference must use the same feature order, transformations, and normalization policy. These choices are recorded in the checkpoint metadata.
+
+DJI pitch-rate RMS remains a separately tested telemetry feature candidate; it is not silently included in the active 48-column schema.
 
 ---
 
 ## 18. Training and Validation
 
-Because overlapping windows cause substantial temporal leakage, random window-level splitting is not acceptable as the primary validation strategy.
+The primary training command fits one production LightGBM ranker using the configured training/validation group split to select the number of boosting iterations, then refits on all annotated videos.
 
-All windows from one source video must remain in one split. Preferred development evaluation includes grouped video-level splits and **Leave-One-Video-Out (LOVO)** validation.
+LOVO validation holds out one complete manifest group at a time. Each video remains an independent ranking query, and evaluation reports ranking/segment metrics.
 
-After model configuration is frozen, a production model may be trained on the approved complete corpus. Training must record dataset identity, configuration, scaling, seed, validation results and source revision where available.
+Optuna HPO compares the configured LightGBM ranking objectives over the same grouped folds. Trials must be compared using the same manifest, feature cache, and fold set.
 
 ---
 
 ## 19. Inference
 
-Inference converts feature windows into continuous interest predictions. Each prediction must retain enough information to map back to source video, temporal window, model/checkpoint and feature schema.
+Inference produces one raw LambdaRank score per temporal window. Scores are meaningful for ranking windows within the same video query; absolute values should not be interpreted as probabilities or compared directly across unrelated videos.
 
-Inference produces evidence; it does not decide the final highlight timeline. This separation allows predictions to be inspected independently of editing policy.
+The inference result retains source-video identity, source timestamps, annotation ordering, and the checkpoint/feature schema used to produce the scores.
 
 ---
 
 ## 20. Candidate Generation
 
-Candidate generation converts interest estimates into candidate intervals. Candidates should contain source video, start, end, score, provenance, mandatory status and optional reason/selection metadata.
-
-Candidate generation may use thresholds, local maxima, contiguous high-interest regions, temporal smoothing and padding. It remains separate from model inference.
-
----
+Candidate generation selects the highest-ranked windows per video, merges temporally close windows into segments, and retains their window-level score evidence. It is separate from model inference and does not alter the trained ranker.
 
 ## 21. Highlight Selection
 
