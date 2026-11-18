@@ -89,7 +89,6 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
             extra = set(value) - {"fixed", "choices", "low", "high", "step", "log"}
             if extra:
                 raise ValueError(f"Unknown search-space option(s) for {name!r}: {sorted(extra)}.")
-            forms = sum(key in value for key in ("fixed", "choices", "low", "high"))
             if "fixed" in value:
                 if len(value) != 1:
                     raise ValueError(f"Search parameter {name!r}: 'fixed' cannot be combined with other options.")
@@ -112,7 +111,10 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
                 low, high = float(low_raw), float(high_raw)
                 if not np.isfinite([low, high]).all() or low > high:
                     raise ValueError(f"Invalid low/high bounds for {name!r}.")
-                spec = {"low": low, "high": high, "log": bool(value.get("log", False))}
+                log_scale = bool(value.get("log", False))
+                if log_scale and low <= 0:
+                    raise ValueError(f"Log-scaled search parameter {name!r} requires low > 0.")
+                spec = {"low": low, "high": high, "log": log_scale}
                 if "step" in value:
                     step = float(value["step"])
                     if not np.isfinite(step) or step <= 0:
