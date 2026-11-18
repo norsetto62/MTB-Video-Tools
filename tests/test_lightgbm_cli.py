@@ -8,9 +8,9 @@ from autocut.ml.lightgbm_training import LightGBMGroupFoldResult
 def test_lightgbm_lovo_command_parses_manifest_and_checkpoint_dir(tmp_path):
     manifest = tmp_path / "manifest.yaml"
     args = build_parser().parse_args([
-        "lightgbm-lovo", str(manifest), "--checkpoint-dir", str(tmp_path / "models")
+        "lovo", str(manifest), "--checkpoint-dir", str(tmp_path / "models")
     ])
-    assert args.command == "lightgbm-lovo"
+    assert args.command == "lovo"
     assert args.manifest == manifest
     assert args.checkpoint_dir == tmp_path / "models"
     assert args.config == Path("config/train.yaml")
@@ -45,7 +45,7 @@ def test_lightgbm_lovo_dispatch_calls_manifest_pipeline(tmp_path, monkeypatch, c
     monkeypatch.setattr("autocut.pipeline.lightgbm_training.run_lightgbm_lovo_from_manifest", fake_pipeline)
     checkpoint_dir = tmp_path / "models"
     assert main([
-        "lightgbm-lovo", str(manifest), "--config", str(config_path),
+        "lovo", str(manifest), "--config", str(config_path),
         "--checkpoint-dir", str(checkpoint_dir),
     ]) == 0
     assert captured == {
