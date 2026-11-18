@@ -323,7 +323,6 @@ def run_pipeline(
         from ..dataset.normalization import normalize_per_video_features
         from ..dataset.windows import build_lightgbm_windows_from_features
         from ..motion.engineered import engineer_lightgbm_sequence
-            from ..selection.lightgbm_candidates import select_ranked_segments
         sequence_clip = Clip(video_name=video_name, start=start, end=end, mandatory=False)
         sequence = build_feature_sequence(
             Path(video_name), sequence_clip,
