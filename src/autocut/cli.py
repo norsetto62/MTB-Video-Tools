@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     audit.add_argument("--training-config", type=Path, default=Path("config/train.yaml"))
 
-    train = subparsers.add_parser("train", help="Train a model from a fixed group split.")
+    train = subparsers.add_parser("train", help="Train the LightGBM ranking model from a fixed group split.")
     train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
     train.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
