@@ -36,8 +36,16 @@ DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
 }
 
 
+def _hpo_section(settings: Any):
+    if "lightgbm_hpo" in settings:
+        raise ValueError(
+            "The 'lightgbm_hpo' configuration section is obsolete; use 'hpo'."
+        )
+    return _section(settings, "hpo")
+
+
 def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
-    section = _section(settings, "hpo")
+    section = _hpo_section(settings)
     raw = section.get("search_space", {})
     if isinstance(raw, Config):
         raw = raw.to_dict()
@@ -183,7 +191,7 @@ def run_lightgbm_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]
     Each video is a separate query for LambdaRank and for evaluation. Optuna
     maximizes the unweighted mean Segment Recall@5 across held-out LOVO groups.
     """
-    section = _section(settings, "hpo")
+    section = _hpo_section(settings)
     n_trials = section.get("n_trials", 30)
     if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials <= 0:
         raise ValueError("hpo.n_trials must be a positive integer.")
