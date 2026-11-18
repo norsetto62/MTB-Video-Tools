@@ -249,7 +249,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "lovo":
         from .config_loader import load_config
-        from .pipeline.lightgbm_training import run_lightgbm_lovo_from_manifest
+        from .pipeline.lightgbm_training import run_lovo_from_manifest
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})
@@ -265,7 +265,7 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        results = run_lightgbm_lovo_from_manifest(
+        results = run_lovo_from_manifest(
             manifest,
             settings,
             checkpoint_dir=args.checkpoint_dir,
