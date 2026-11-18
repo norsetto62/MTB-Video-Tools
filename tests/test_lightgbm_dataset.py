@@ -23,7 +23,7 @@ def _sequence(sample_count=25):
     features[:, FEATURE_NAMES.index("flow_u")] = 0.75 + timestamps * 0.02
     features[:, FEATURE_NAMES.index("flow_v")] = 0.25 + timestamps * 0.01
     pitch_timestamps = np.arange(-1.0, 14.0, 0.1, dtype=np.float64)
-    pitch_rate = np.full(len(pitch_timestamps), 2.5, dtype=np.float64)
+    pitch_rate = (1.0 + 0.15 * pitch_timestamps + 0.01 * pitch_timestamps**2).astype(np.float64)
     return FeatureSequence(features=features, timestamps=timestamps, pitch_timestamps=pitch_timestamps, pitch_rate=pitch_rate)
 
 
