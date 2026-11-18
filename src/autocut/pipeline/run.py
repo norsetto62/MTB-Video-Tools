@@ -19,7 +19,6 @@ from ..data_models import Clip, VideoInfo
 from ..dataset.cache_paths import feature_cache_dir, audio_cache_dir
 from ..editing.audio import render_timeline, render_with_music
 from ..selection.selection import MandatoryClip, SelectionCandidate, select_candidates
-from ..selection.candidate_types import CandidateClip
 from ..selection.timeline import Timeline, assemble_timeline
 from ..video.probe import get_video_info
 from ..audio.pipeline import prepare_audio_timeline
@@ -246,15 +245,12 @@ def run_pipeline(
     inference_summaries: list[dict] = []
     logger.info("Starting motion analysis and LightGBM ranking inference.")
 
-    lightgbm_ranker = None
-    lightgbm_params = None
     lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
     lightgbm_range_orders: dict[str, list[tuple[float, float, int]]] = {}
     from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
     from ..ml.lightgbm_model import LightGBMRanker
     from ..dataset.sequence import (
-        DEFAULT_PROCESSING_WIDTH, DEFAULT_ROI_BOTTOM, DEFAULT_ROI_LEFT,
-        DEFAULT_ROI_RIGHT, DEFAULT_ROI_TOP, DEFAULT_SAMPLE_FPS, validate_roi,
+        DEFAULT_PROCESSING_WIDTH, DEFAULT_SAMPLE_FPS, validate_roi,
     )
     from ..dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
     checkpoint_payload = load_lightgbm_checkpoint(settings.model.checkpoint)
