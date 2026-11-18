@@ -68,7 +68,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
         "video": {"sampling_fps", "processing_width", "encoder", "resolution", "roi_left", "roi_right", "roi_bottom", "roi_top"},
         "features": {"window_duration", "window_stride"},
         "model": {"checkpoint"},
-        "selection": set(defaults["selection"]),
+        "selection": {"min_clip", "max_clip_duration"},
         "audio": {"sync_mode", "max_synced_clip_duration", "fade_duration"},
         "logging": {"level"},
     }
