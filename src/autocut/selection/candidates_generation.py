@@ -5,13 +5,13 @@ padding, and a minimum-duration filter for binary mountain biking highlights.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 from typing import Sequence
 
 import numpy as np
 
 from ..ml.inference_types import InferenceResult
+from .candidate_types import CandidateClip, WindowEvidence
 
 
 @dataclass(frozen=True)
@@ -34,27 +34,6 @@ class CandidateGenerationConfig:
                 raise ValueError(f"{name} must be finite and non-negative.")
         if self.min_candidate_duration <= 0:
             raise ValueError("min_candidate_duration must be greater than zero.")
-
-
-@dataclass(frozen=True)
-class WindowEvidence:
-    """Window-level inference evidence retained for scoring and excerpt trimming."""
-
-    start: float
-    end: float
-    probability: float
-
-
-@dataclass(frozen=True)
-class CandidateClip:
-    """A padded, merged candidate clip with source-relative window evidence."""
-
-    start: float
-    end: float
-    duration: float
-    mean_probability: float
-    max_probability: float
-    window_evidence: tuple[WindowEvidence, ...] = ()
 
 
 @dataclass
