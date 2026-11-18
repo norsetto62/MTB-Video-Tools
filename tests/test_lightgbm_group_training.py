@@ -11,7 +11,7 @@ from autocut.ml.lightgbm_training import (
     train_lightgbm_group_fold,
     train_lightgbm_lovo,
 )
-from autocut.ml.model import LightGBMConfig
+from autocut.ml.lightgbm_model import LightGBMConfig
 
 
 def _video_data(seed, labels):
