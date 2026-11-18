@@ -128,14 +128,66 @@ def feature_cache_path(
     return Path(cache_dir) / f"{key}.npz"
 
 
-def _array_digest(features: np.ndarray, timestamps: np.ndarray) -> str:
+def _array_digest(*arrays: np.ndarray) -> str:
     digest = hashlib.sha256()
-    for array in (features, timestamps):
+    for array in arrays:
         contiguous = np.ascontiguousarray(array)
         digest.update(str(contiguous.dtype).encode("ascii"))
         digest.update(json.dumps(contiguous.shape).encode("ascii"))
         digest.update(contiguous.tobytes(order="C"))
     return digest.hexdigest()
+
+
+def _validate_pitch_arrays(times: np.ndarray, rates: np.ndarray) -> None:
+    if times.ndim != 1 or rates.ndim != 1 or len(times) != len(rates) or len(times) < 3:
+        raise ValueError("pitch telemetry arrays must be matching 1D arrays with at least three samples.")
+    if times.dtype != np.float64 or rates.dtype != np.float64:
+        raise ValueError("pitch telemetry arrays must have dtype float64.")
+    if not np.isfinite(times).all() or not np.isfinite(rates).all() or not np.all(np.diff(times) > 0):
+        raise ValueError("pitch telemetry arrays must be finite with strictly increasing timestamps.")
+
+
+def _write_npz_atomic(target: Path, arrays: dict[str, np.ndarray]) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            np.savez_compressed(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(temp_name).replace(target)
+    except Exception:
+        try:
+            Path(temp_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _augment_cache_with_pitch(path: Path, video_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Enrich an existing cache file without re-extracting optical flow."""
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {name: np.array(archive[name], copy=True) for name in archive.files}
+    if "pitch_timestamps" in arrays and "pitch_rate" in arrays:
+        return arrays["pitch_timestamps"], arrays["pitch_rate"]
+    if "pitch_timestamps" in arrays or "pitch_rate" in arrays:
+        raise ValueError(f"Incomplete pitch telemetry in cache file {path}.")
+    from ..motion.dji import load_pitch_rate_series
+    pitch_times, pitch_rates = load_pitch_rate_series(video_path)
+    _validate_pitch_arrays(pitch_times, pitch_rates)
+    metadata = json.loads(str(arrays["metadata"].item()))
+    metadata["pitch_rate_sha256"] = _array_digest(pitch_times, pitch_rates)
+    arrays["metadata"] = np.asarray(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False))
+    arrays["pitch_timestamps"] = pitch_times
+    arrays["pitch_rate"] = pitch_rates
+    _write_npz_atomic(path, arrays)
+    try:
+        from .cache_catalog import index_cache_file
+        index_cache_file(path.parent, path)
+    except Exception as exc:
+        logger.warning("Could not refresh cache catalog after pitch augmentation %s: %s", path, exc)
+    logger.info("Added DJI pitch telemetry to existing feature cache: %s", path)
+    return pitch_times, pitch_rates
 
 
 def save_feature_sequence(
@@ -166,6 +218,13 @@ def save_feature_sequence(
     timestamps = np.asarray(sequence.timestamps)
     _validate_arrays(features, timestamps, clip=clip)
     metadata["features_sha256"] = _array_digest(features, timestamps)
+    pitch_arrays: dict[str, np.ndarray] = {}
+    if sequence.pitch_timestamps is not None and sequence.pitch_rate is not None:
+        pitch_times = np.asarray(sequence.pitch_timestamps)
+        pitch_rates = np.asarray(sequence.pitch_rate)
+        _validate_pitch_arrays(pitch_times, pitch_rates)
+        metadata["pitch_rate_sha256"] = _array_digest(pitch_times, pitch_rates)
+        pitch_arrays = {"pitch_timestamps": pitch_times, "pitch_rate": pitch_rates}
 
     # Keep the path based on extraction identity, not output contents.
     target = Path(cache_dir) / f"{identity_key}.npz"
@@ -178,6 +237,7 @@ def save_feature_sequence(
                 metadata=np.asarray(json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False)),
                 features=features,
                 timestamps=timestamps,
+                **pitch_arrays,
             )
             stream.flush()
             os.fsync(stream.fileno())
@@ -242,7 +302,8 @@ def _read_valid_cache(
     """Read, integrity-check and temporally slice one compatible NPZ."""
     try:
         with np.load(path, allow_pickle=False) as archive:
-            if set(archive.files) != {"metadata", "features", "timestamps"}:
+            allowed = {"metadata", "features", "timestamps", "pitch_timestamps", "pitch_rate"}
+            if not {"metadata", "features", "timestamps"}.issubset(archive.files) or not set(archive.files).issubset(allowed):
                 return None
             raw = archive["metadata"]
             if raw.shape != ():
@@ -250,10 +311,22 @@ def _read_valid_cache(
             metadata = json.loads(str(raw.item()))
             features = np.array(archive["features"], copy=True)
             timestamps = np.array(archive["timestamps"], copy=True)
+            has_pitch = "pitch_timestamps" in archive.files and "pitch_rate" in archive.files
+            if ("pitch_timestamps" in archive.files) != ("pitch_rate" in archive.files):
+                return None
+            pitch_times = np.array(archive["pitch_timestamps"], copy=True) if has_pitch else None
+            pitch_rates = np.array(archive["pitch_rate"], copy=True) if has_pitch else None
         if not isinstance(metadata, dict):
             return None
         digest = metadata.pop("features_sha256", None)
+        pitch_digest = metadata.pop("pitch_rate_sha256", None)
         if not isinstance(digest, str) or _array_digest(features, timestamps) != digest:
+            return None
+        if pitch_times is not None:
+            _validate_pitch_arrays(pitch_times, pitch_rates)
+            if not isinstance(pitch_digest, str) or _array_digest(pitch_times, pitch_rates) != pitch_digest:
+                return None
+        elif pitch_digest is not None:
             return None
         if any(metadata.get(key) != value for key, value in expected_common.items()):
             return None
@@ -324,6 +397,8 @@ def _read_valid_cache(
         return FeatureSequence(
             features=np.asarray(selected_features, dtype=np.float32),
             timestamps=np.asarray(selected_timestamps, dtype=np.float64),
+            pitch_timestamps=pitch_times,
+            pitch_rate=pitch_rates,
         )
     except (OSError, ValueError, TypeError, KeyError, EOFError, json.JSONDecodeError):
         return None
@@ -344,6 +419,7 @@ def load_feature_sequence(
     source_fingerprint_mode: str = "metadata",
     window_duration: float | None = None,
     window_stride: float | None = None,
+    include_pitch_telemetry: bool = False,
 ) -> FeatureSequence | None:
     """Load an exact or temporally covering compatible cache entry.
 
@@ -401,6 +477,12 @@ def load_feature_sequence(
                 window_stride=window_stride,
             )
             if result is not None:
+                if include_pitch_telemetry and result.pitch_timestamps is None:
+                    pitch_times, pitch_rates = _augment_cache_with_pitch(candidate, source)
+                    result = FeatureSequence(
+                        features=result.features, timestamps=result.timestamps,
+                        pitch_timestamps=pitch_times, pitch_rate=pitch_rates,
+                    )
                 if candidate != exact_path:
                     logger.info(
                         "Reusing covering feature cache %s for interval [%.3f, %.3f]",
