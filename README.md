@@ -197,8 +197,8 @@ space explicitly compares `lambdarank` and `rank_xendcg` while holding the
 data preparation and per-video query grouping fixed. Trials are scored by the
 mean held-out-group NDCG at the configured `hpo.ndcg_cutoff` (default
 10); use the same manifest and fold set when comparing objectives. The study
-is persisted in `data/db/lightgbm_hpo.db` and the trial table plus best
-parameters are exported to `output/hpo/lightgbm_ranking_hpo_results.json`.
+is persisted in `data/db/hpo.db` and the trial table plus best
+parameters are exported to `output/hpo/ranking_hpo_results.json`.
 
 ```powershell
 python -m autocut hpo --config config/train.yaml
@@ -211,7 +211,7 @@ hpo:
   study_name: lightgbm_ranking_hpo
   n_trials: 30
   ndcg_cutoff: 10
-  storage_path: data/db/lightgbm_hpo.db
+  storage_path: data/db/hpo.db
   output_dir: output/hpo
   search_space:
     objective:
