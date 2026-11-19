@@ -58,7 +58,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
                    "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/lightgbm/ranker.json"},
-        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0},
+        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0},
         "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0},
         "logging": {"level": "INFO"},
     }
@@ -67,7 +67,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
         "video": {"sampling_fps", "processing_width", "encoder", "resolution", "roi_left", "roi_right", "roi_bottom", "roi_top"},
         "features": {"window_duration", "window_stride"},
         "model": {"checkpoint"},
-        "selection": {"min_clip", "max_clip_duration"},
+        "selection": {"min_clip", "max_clip_duration", "max_gap_to_merge", "padding_seconds"},
         "audio": {"sync_mode", "max_synced_clip_duration", "fade_duration"},
         "logging": {"level"},
     }
@@ -108,6 +108,12 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
     raw["selection"]["max_clip_duration"] = number(
         "selection", "max_clip_duration", minimum=0.0
     )
+    raw["selection"]["max_gap_to_merge"] = number(
+        "selection", "max_gap_to_merge", minimum=0.0
+    )
+    raw["selection"]["padding_seconds"] = number(
+        "selection", "padding_seconds", minimum=0.0
+    )
 
     from ..dataset.sequence import validate_roi
     roi = validate_roi(raw["video"]["roi_left"], raw["video"]["roi_right"], raw["video"]["roi_bottom"], raw["video"]["roi_top"])
@@ -144,6 +150,8 @@ def _config_summary(
         "checkpoint": str(settings.model.checkpoint),
         "min_clip": settings.selection.min_clip,
         "max_clip_duration": settings.selection.max_clip_duration,
+        "max_gap_to_merge": settings.selection.max_gap_to_merge,
+        "padding_seconds": settings.selection.padding_seconds,
         "audio": {
             "sync_mode": audio_config.sync_mode.value,
             "max_synced_clip_duration": audio_config.max_synced_clip_duration,
@@ -374,7 +382,10 @@ def run_pipeline(
         ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
         timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
         scores = np.asarray([score for _, score in ordered], dtype=np.float64)
-        segments = select_ranked_segments(timestamps, scores, top_k=10, max_gap_seconds=2.0)
+        segments = select_ranked_segments(
+            timestamps, scores, top_k=10,
+            max_gap_seconds=settings.selection.max_gap_to_merge,
+        )
         range_orders = lightgbm_range_orders[video_name]
         order = video_order[video_name]
         for segment in segments:
@@ -387,9 +398,14 @@ def run_pipeline(
                 )
                 for i in segment.window_indices
             )
+            video_duration = video_metadata[video_name].duration
+            candidate_start = max(0.0, segment.start - settings.selection.padding_seconds)
+            candidate_end = min(
+                video_duration, segment.end + settings.selection.padding_seconds
+            )
             candidate = CandidateClip(
-                start=segment.start, end=segment.end,
-                duration=segment.duration_seconds,
+                start=candidate_start, end=candidate_end,
+                duration=candidate_end - candidate_start,
                 mean_probability=segment.mean_score, max_probability=segment.max_score,
                 window_evidence=evidence,
             )
