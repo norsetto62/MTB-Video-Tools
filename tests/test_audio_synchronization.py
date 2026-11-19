@@ -171,7 +171,7 @@ def test_sync_rejects_invalid_config_values():
     with pytest.raises((ValueError, TypeError)):
         AudioConfig(bass_sensitivity=1.1)
     with pytest.raises((ValueError, TypeError)):
-        AudioConfig(bass_min_gap_sec=0)
+        AudioConfig(bass_min_gap_sec=-0.1)
 
 
 
