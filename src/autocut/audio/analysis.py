@@ -192,8 +192,15 @@ def analyze_audio(
         bass_rms = librosa.feature.rms(
             y=low_waveform, hop_length=_DEFAULT_HOP_LENGTH
         ).squeeze()
-        bass_onset_norm = librosa.util.normalize(np.asarray(bass_onset).reshape(-1))
-        bass_rms_norm = librosa.util.normalize(np.asarray(bass_rms).reshape(-1))
+        bass_onset_values = np.asarray(bass_onset, dtype=np.float64).reshape(-1)
+        bass_rms_values = np.asarray(bass_rms, dtype=np.float64).reshape(-1)
+        # Librosa versions and mocked backends can yield slightly different
+        # frame counts for onset strength and RMS. Combine only aligned frames.
+        aligned_frames = min(bass_onset_values.size, bass_rms_values.size)
+        if aligned_frames == 0:
+            raise ValueError("Bass analysis produced an empty onset or RMS envelope.")
+        bass_onset_norm = librosa.util.normalize(bass_onset_values[:aligned_frames])
+        bass_rms_norm = librosa.util.normalize(bass_rms_values[:aligned_frames])
         bass_envelope = librosa.util.normalize(bass_onset_norm * bass_rms_norm)
         bass_wait = int(sample_rate / _DEFAULT_HOP_LENGTH * bass_min_gap_sec)
         bass_frames = librosa.onset.onset_detect(
