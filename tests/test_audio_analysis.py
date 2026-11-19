@@ -74,6 +74,9 @@ def test_analyze_audio_builds_combined_grid_and_uses_cache(tmp_path, monkeypatch
     result = analyze_audio(music, cache_dir=tmp_path / "cache", use_cache=True)
     assert result.duration == pytest.approx(4.0)
     assert result.combined == tuple(sorted(set(result.combined)))
+    assert result.bass == tuple(sorted(set(result.bass)))
+    assert result.bass_sensitivity == pytest.approx(0.15)
+    assert result.bass_min_gap_sec == pytest.approx(0.30)
     assert calls["load"] == 1
     cached = analyze_audio(music, cache_dir=tmp_path / "cache", use_cache=True)
     assert cached == result
