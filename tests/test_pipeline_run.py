@@ -18,7 +18,7 @@ def _run_settings(checkpoint, output_dir, cache_dir):
         "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": checkpoint},
-        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0},
+        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0},
         "audio": {
             "sync_mode": "off",
             "max_synced_clip_duration": 0.0,
@@ -57,6 +57,8 @@ def test_run_config_sections_normalizes_generic_config_and_domain_settings(tmp_p
     assert settings.model.checkpoint == checkpoint
     assert isinstance(audio, AudioConfig)
     assert audio.sync_mode.value == "beat"
+    assert settings.selection.max_gap_to_merge == 3.0
+    assert settings.selection.padding_seconds == 2.0
 
 
 def test_run_config_sections_rejects_invalid_video_width():
@@ -150,6 +152,12 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
     assert result["status"] == "completed"
     assert result["model_backend"] == "lightgbm"
     assert result["candidate_count"] == 2
+    ranked = result["candidate_ranking"]["candidates"]
+    assert [(item["start_seconds"], item["end_seconds"]) for item in ranked] == [
+        (0.0, 8.0), (8.0, 20.0)
+    ]
+    assert result["configuration"]["max_gap_to_merge"] == 3.0
+    assert result["configuration"]["padding_seconds"] == 2.0
     assert result["inference"][0]["status"] == "scored_lightgbm"
     assert result["inference"][0]["score_semantics"] == "raw LambdaRank score"
     assert Path(result["result_manifest"]).is_file()
