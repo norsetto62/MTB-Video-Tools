@@ -77,7 +77,7 @@ class AudioAnalysis:
         sensitivity = _finite_number("bass_sensitivity", self.bass_sensitivity)
         if not 0.0 <= sensitivity <= 1.0:
             raise ValueError("bass_sensitivity must be between 0.0 and 1.0.")
-        gap = _finite_number("bass_min_gap_sec", self.bass_min_gap_sec, positive=True)
+        gap = _finite_number("bass_min_gap_sec", self.bass_min_gap_sec)
         object.__setattr__(self, "bass_sensitivity", sensitivity)
         object.__setattr__(self, "bass_min_gap_sec", gap)
         for name in ("beats", "measures", "onsets", "combined", "bass"):
@@ -129,7 +129,7 @@ def analyze_audio(
     bass_sensitivity = _finite_number("bass_sensitivity", bass_sensitivity)
     if not 0.0 <= bass_sensitivity <= 1.0:
         raise ValueError("bass_sensitivity must be between 0.0 and 1.0.")
-    bass_min_gap_sec = _finite_number("bass_min_gap_sec", bass_min_gap_sec, positive=True)
+    bass_min_gap_sec = _finite_number("bass_min_gap_sec", bass_min_gap_sec)
     path = Path(music_path)
     if not path.is_file():
         raise FileNotFoundError(f"Music file does not exist: {path}")
@@ -195,7 +195,7 @@ def analyze_audio(
         bass_onset_norm = librosa.util.normalize(np.asarray(bass_onset).reshape(-1))
         bass_rms_norm = librosa.util.normalize(np.asarray(bass_rms).reshape(-1))
         bass_envelope = librosa.util.normalize(bass_onset_norm * bass_rms_norm)
-        bass_wait = max(1, int(sample_rate / _DEFAULT_HOP_LENGTH * bass_min_gap_sec))
+        bass_wait = int(sample_rate / _DEFAULT_HOP_LENGTH * bass_min_gap_sec)
         bass_frames = librosa.onset.onset_detect(
             onset_envelope=bass_envelope, sr=sample_rate,
             hop_length=_DEFAULT_HOP_LENGTH, delta=bass_sensitivity,
