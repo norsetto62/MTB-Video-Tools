@@ -23,6 +23,8 @@ def _run_settings(checkpoint, output_dir, cache_dir):
             "sync_mode": "off",
             "max_synced_clip_duration": 0.0,
             "fade_duration": 2.0,
+            "bass_sensitivity": 0.15,
+            "bass_min_gap_sec": 0.30,
         },
     })
 
@@ -57,6 +59,8 @@ def test_run_config_sections_normalizes_generic_config_and_domain_settings(tmp_p
     assert settings.model.checkpoint == checkpoint
     assert isinstance(audio, AudioConfig)
     assert audio.sync_mode.value == "beat"
+    assert audio.bass_sensitivity == 0.15
+    assert audio.bass_min_gap_sec == 0.30
     assert settings.selection.max_gap_to_merge == 3.0
     assert settings.selection.padding_seconds == 2.0
 
