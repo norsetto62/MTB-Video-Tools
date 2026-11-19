@@ -10,7 +10,7 @@ import tempfile
 from typing import Any
 
 
-AUDIO_CACHE_VERSION = 1
+AUDIO_CACHE_VERSION = 2
 
 
 def music_file_hash(music_path: str | Path) -> str:
@@ -41,6 +41,9 @@ def _payload(analysis: Any) -> dict[str, Any]:
         "measures": list(analysis.measures),
         "onsets": list(analysis.onsets),
         "combined": list(analysis.combined),
+        "bass": list(analysis.bass),
+        "bass_sensitivity": analysis.bass_sensitivity,
+        "bass_min_gap_sec": analysis.bass_min_gap_sec,
     }
 
 
@@ -69,7 +72,10 @@ def save_cached_audio(analysis: Any, cache_dir: str | Path) -> Path:
     return target
 
 
-def load_cached_audio(music_path: str | Path, cache_dir: str | Path):
+def load_cached_audio(
+    music_path: str | Path, cache_dir: str | Path, *,
+    bass_sensitivity: float = 0.15, bass_min_gap_sec: float = 0.30,
+):
     """Load a cache entry; invalid, stale, or incompatible entries are misses."""
     from .analysis import AudioAnalysis
 
@@ -82,6 +88,10 @@ def load_cached_audio(music_path: str | Path, cache_dir: str | Path):
         digest = music_file_hash(source)
         if payload.get("source_hash") != digest:
             return None
+        if payload.get("bass_sensitivity") != bass_sensitivity:
+            return None
+        if payload.get("bass_min_gap_sec") != bass_min_gap_sec:
+            return None
         if Path(payload.get("source_path", "")).resolve() != source.resolve():
             return None
         return AudioAnalysis(
@@ -93,6 +103,9 @@ def load_cached_audio(music_path: str | Path, cache_dir: str | Path):
             measures=tuple(payload["measures"]),
             onsets=tuple(payload["onsets"]),
             combined=tuple(payload["combined"]),
+            bass=tuple(payload["bass"]),
+            bass_sensitivity=payload["bass_sensitivity"],
+            bass_min_gap_sec=payload["bass_min_gap_sec"],
         )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return None
