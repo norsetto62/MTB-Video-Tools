@@ -61,7 +61,11 @@ def prepare_audio_timeline(
     analyzer = analyze_audio if analyze is None else analyze
     try:
         if analysis is None:
-            analysis = analyzer(music_path, cache_dir=cache_dir)
+            analysis = analyzer(
+                music_path, cache_dir=cache_dir,
+                bass_sensitivity=config.bass_sensitivity,
+                bass_min_gap_sec=config.bass_min_gap_sec,
+            )
         if not isinstance(analysis, AudioAnalysis):
             raise TypeError("Audio analyzer must return an AudioAnalysis instance.")
     except Exception as exc:
