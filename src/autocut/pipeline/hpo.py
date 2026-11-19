@@ -1,313 +1,387 @@
+"""Optuna HPO for ordinal LightGBM ranking (one query per video)."""
+from __future__ import annotations
+
 import json
 import logging
-from collections.abc import Mapping
 from pathlib import Path
-import numpy as np
-import optuna
-from datetime import datetime
 from typing import Any
+from dataclasses import asdict, replace
+
+import optuna
+import numpy as np
 
 from ..config_loader import Config
-from .lovo import run_lovo
+from ..ml.lightgbm.model import LightGBMConfig
+from ..ml.lightgbm.training import train_lightgbm_lovo
 from ..dataset.manifest import load_manifest
-from .training import _combine_records, _section, _training_config
-from ..ml.training import train_fixed_epochs
+from .training import (
+    _training_config,
+    _section,
+    prepare_lightgbm_manifest_data,
+)
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
+    "objective": {"choices": ["lambdarank", "rank_xendcg"]},
+    "num_leaves": {"choices": [15, 31, 63]},
+    "learning_rate": {"low": 0.01, "high": 0.1, "log": True},
+    "max_depth": {"choices": [3, 4, 5, 6]},
+    "min_data_in_leaf": {"choices": [10, 20, 50, 100]},
+    "feature_fraction": {"low": 0.6, "high": 1.0},
+    "bagging_fraction": {"low": 0.6, "high": 1.0},
+    "lambda_l1": {"low": 1e-4, "high": 10.0, "log": True},
+    "lambda_l2": {"low": 1e-4, "high": 10.0, "log": True},
+    "min_split_gain": {"low": 0.0, "high": 0.2},
+}
 
-def run_hpo(
-    manifest_path: str | Path,
-    settings: Mapping[str, Any],
-) -> None:
+
+def _hpo_section(settings: Any):
+    if "lightgbm_hpo" in settings:
+        raise ValueError(
+            "The 'lightgbm_hpo' configuration section is obsolete; use 'hpo'."
+        )
+    return _section(settings, "hpo")
+
+
+def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
+    section = _hpo_section(settings)
+    raw = section.get("search_space", {})
+    if isinstance(raw, Config):
+        raw = raw.to_dict()
+    if not isinstance(raw, dict):
+        raise ValueError("hpo.search_space must be a mapping.")
+
+    # User entries override defaults; omitted parameters remain tunable.
+    space: dict[str, dict[str, Any]] = {
+        name: dict(spec) for name, spec in DEFAULT_SEARCH_SPACE.items()
+    }
+    normalized_raw = dict(raw)
+
+    allowed = set(LightGBMConfig.__dataclass_fields__) - {
+        "task", "early_stopping_rounds", "ndcg_eval_at", "random_seed", "verbosity"
+    }
+    unknown = sorted(set(normalized_raw) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown LightGBM HPO search parameter(s): {unknown}.")
+
+    integer_params = {"num_leaves", "max_depth", "min_data_in_leaf", "num_iterations", "bagging_frequency"}
+    for name, value in normalized_raw.items():
+        if isinstance(value, Config):
+            value = value.to_dict()
+
+        if not isinstance(value, dict):
+            spec = {"fixed": value}
+        else:
+            extra = set(value) - {"fixed", "choices", "low", "high", "step", "log"}
+            if extra:
+                raise ValueError(f"Unknown search-space option(s) for {name!r}: {sorted(extra)}.")
+            if "fixed" in value:
+                if len(value) != 1:
+                    raise ValueError(f"Search parameter {name!r}: 'fixed' cannot be combined with other options.")
+                spec = {"fixed": value["fixed"]}
+            elif "choices" in value:
+                if set(value) != {"choices"}:
+                    raise ValueError(f"Search parameter {name!r}: 'choices' cannot be combined with bounds.")
+                choices = value["choices"]
+                if not isinstance(choices, (tuple, list)) or not choices:
+                    raise ValueError(f"Search choices for {name!r} must be a non-empty list.")
+                spec = {"choices": list(choices)}
+            else:
+                if "low" not in value or "high" not in value:
+                    raise ValueError(f"Search parameter {name!r} requires low/high, choices, or fixed.")
+                if "log" in value and not isinstance(value["log"], bool):
+                    raise ValueError(f"Search parameter {name!r}: log must be true or false.")
+                low_raw, high_raw = value["low"], value["high"]
+                if isinstance(low_raw, bool) or isinstance(high_raw, bool):
+                    raise ValueError(f"Search bounds for {name!r} must be numeric.")
+                low, high = float(low_raw), float(high_raw)
+                if not np.isfinite([low, high]).all() or low > high:
+                    raise ValueError(f"Invalid low/high bounds for {name!r}.")
+                log_scale = bool(value.get("log", False))
+                if log_scale and low <= 0:
+                    raise ValueError(f"Log-scaled search parameter {name!r} requires low > 0.")
+                spec = {"low": low, "high": high, "log": log_scale}
+                if "step" in value:
+                    step = float(value["step"])
+                    if not np.isfinite(step) or step <= 0:
+                        raise ValueError(f"Search step for {name!r} must be finite and positive.")
+                    spec["step"] = step
+                if name in integer_params:
+                    if not low.is_integer() or not high.is_integer():
+                        raise ValueError(f"Integer search parameter {name!r} requires integer low/high bounds.")
+                    if "step" in spec and not float(spec["step"]).is_integer():
+                        raise ValueError(f"Integer search parameter {name!r} requires an integer step.")
+                    if "step" in spec:
+                        spec["step"] = int(spec["step"])
+                    spec["low"] = int(low)
+                    spec["high"] = int(high)
+                elif "step" in spec and spec["log"]:
+                    raise ValueError(f"Search parameter {name!r} cannot combine log=true and step.")
+        space[name] = spec
+
+    # Validate objective choices, while allowing a single fixed objective.
+    objective_spec = space["objective"]
+    valid_objectives = {"lambdarank", "rank_xendcg"}
+    if "fixed" in objective_spec:
+        if objective_spec["fixed"] not in valid_objectives:
+            raise ValueError("hpo.search_space.objective must be 'lambdarank' or 'rank_xendcg'.")
+    elif "choices" in objective_spec:
+        choices = objective_spec["choices"]
+        if len(choices) < 2 or len(set(choices)) != len(choices) or any(
+            item not in valid_objectives for item in choices
+        ):
+            raise ValueError(
+                "hpo.search_space.objective choices must contain at least two "
+                "distinct values selected from ['lambdarank', 'rank_xendcg']; "
+                "use fixed for a single objective."
+            )
+    else:
+        raise ValueError("hpo.search_space.objective must use choices or fixed.")
+
+    return space
+
+def _effective_params(
+    base_config: LightGBMConfig,
+    space: dict[str, dict[str, Any]],
+    suggested_params: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the complete LightGBM config, including fixed HPO parameters.
+
+    Optuna's FrozenTrial.params contains only suggested parameters; fixed
+    values from the search space must be applied explicitly over base_config.
+    Suggested values take precedence if a parameter is sampled by Optuna.
     """
-    Orchestrates the Optuna HPO study, logs outputs to screen, 
-    and exports winning parameters to output/hpo/.
+    fixed_params = {
+        name: spec["fixed"] for name, spec in space.items() if "fixed" in spec
+    }
+    return asdict(replace(base_config, **{**fixed_params, **suggested_params}))
+
+
+def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    integer_params = {"num_leaves", "max_depth", "min_data_in_leaf", "num_iterations", "bagging_frequency"}
+    for name, spec in space.items():
+        if "fixed" in spec:
+            params[name] = spec["fixed"]
+        elif "choices" in spec:
+            params[name] = trial.suggest_categorical(name, spec["choices"])
+        elif name in integer_params:
+            params[name] = trial.suggest_int(
+                name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1))
+            )
+        elif "step" in spec:
+            params[name] = trial.suggest_float(
+                name, spec["low"], spec["high"], step=spec["step"]
+            )
+        else:
+            params[name] = trial.suggest_float(
+                name, spec["low"], spec["high"], log=spec.get("log", False)
+            )
+    return params
+
+def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
+    """Tune LightGBM hyperparameters by mean per-video MTB-3 Segment Recall@5.
+
+    Each video is a separate query for LambdaRank and for evaluation. Optuna
+    maximizes the unweighted mean Segment Recall@5 across held-out LOVO groups.
     """
-    
-    if not isinstance(settings, Mapping):
-        raise ValueError("HPO settings must be a configuration mapping.")
-    hpo = _section(settings, "hpo")
-    data = _section(settings, "data")
-    paths = _section(settings, "paths")
-    n_trials = hpo.get("n_trials", 0)
+    section = _hpo_section(settings)
+    n_trials = section.get("n_trials", 30)
     if isinstance(n_trials, bool) or not isinstance(n_trials, int) or n_trials <= 0:
         raise ValueError("hpo.n_trials must be a positive integer.")
-    proxy_groups = tuple(hpo.get("proxy_test_groups", ()))
-    if not proxy_groups or any(not isinstance(g, str) or not g.strip() for g in proxy_groups):
-        raise ValueError("hpo.proxy_test_groups must contain non-empty group IDs.")
-    study_name = hpo.get("study_name")
+    study_name = section.get("study_name", "ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
-    training_config = _training_config(settings)
-    train_groups = tuple(data.get("train_groups", ()))
-    search_space = hpo.get("search_space", {})
-    if isinstance(search_space, Config):
-        search_space = search_space.to_dict()
+    # Do not mix historical NDCG trial values with the new event-recall objective.
+    if not study_name.endswith("_segment_recall_at_5"):
+        study_name = f"{study_name}_segment_recall_at_5"
+    progress = section.get("progress", True)
+    if not isinstance(progress, bool):
+        raise ValueError("hpo.progress must be true or false.")
 
-    # Database path explicitly placed in data/db/
-    db_dir = Path("data/db")
-    db_dir.mkdir(parents=True, exist_ok=True)
-    storage_db = f"sqlite:///{db_dir / 'hpo_study.db'}"
+    def report(message: str) -> None:
+        # HPO progress is deliberately independent of logging.level, so WARNING
+        # can continue to suppress noisy cache diagnostics.
+        if progress:
+            print(f"[LightGBM HPO] {message}", flush=True)
 
-    logger.info("Initializing Optuna study '%s' with storage: %s", study_name, storage_db)
-    logger.info("Proxy validation folds assigned for tuning: %s", proxy_groups)
+    report(f"Preparing manifest data from {manifest_path}.")
 
+    base_config = _training_config(settings)
+    search_space = _validated_search_space(settings)
+    report("Effective Optuna search space: " + json.dumps(search_space, sort_keys=True))
+
+    # Proxy groups are an explicit HPO-only subset: filter before feature
+    # preparation so non-proxy videos are not decoded or extracted.
+    proxy_value = section.get("proxy_test_groups")
+    selected_records = None
+    if proxy_value is not None:
+        if isinstance(proxy_value, Config):
+            proxy_value = proxy_value.to_dict()
+        if not isinstance(proxy_value, (tuple, list)) or not proxy_value:
+            raise ValueError("hpo.proxy_test_groups must be a non-empty list of group IDs.")
+        proxy_groups: list[str] = []
+        for item in proxy_value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("hpo.proxy_test_groups must contain non-empty string group IDs.")
+            group = item.strip()
+            if group in proxy_groups:
+                raise ValueError(f"hpo.proxy_test_groups contains duplicate group ID {group!r}.")
+            proxy_groups.append(group)
+        report(f"Loading manifest to select proxy groups: {', '.join(proxy_groups)}.")
+        all_records = load_manifest(manifest_path, verify_files=True)
+        available_groups = {record.group_id for record in all_records}
+        unknown_groups = sorted(set(proxy_groups) - available_groups)
+        if unknown_groups:
+            raise ValueError(
+                "hpo.proxy_test_groups not found in manifest: "
+                + ", ".join(unknown_groups)
+            )
+        selected_records = tuple(record for record in all_records if record.group_id in proxy_groups)
+        counts = {group: sum(record.group_id == group for record in selected_records) for group in proxy_groups}
+        report("Proxy subset selected: " + ", ".join(f"{group}={counts[group]} videos" for group in proxy_groups) + f"; total={len(selected_records)} videos.")
+        if len({record.group_id for record in selected_records}) < 2:
+            raise ValueError("Proxy-group HPO requires at least two groups for LOVO evaluation.")
+    else:
+        report("No proxy_test_groups configured; using all manifest groups.")
+
+    prepared, group_by_video, data_config = prepare_lightgbm_manifest_data(
+        manifest_path, settings, records=selected_records, progress_callback=report
+    )
+    report(
+        f"Prepared {len(prepared)} videos across "
+        f"{len(set(group_by_video.values()))} groups; opening study database."
+    )
+    db_path = Path(section.get("storage_path", "data/db/hpo.db")).expanduser()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    storage = f"sqlite:///{db_path.as_posix()}"
     study = optuna.create_study(
         study_name=study_name,
-        storage=storage_db,
+        storage=storage,
         load_if_exists=True,
         direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=training_config.seed),
+        sampler=optuna.samplers.TPESampler(seed=base_config.random_seed),
     )
 
-    if not search_space:
-        raise ValueError(
-            "HPO search space is empty. Configure hpo.search_space in the training YAML."
-        )
+    trial_counter = 0
 
-    def suggest_parameters(trial: optuna.Trial) -> dict[str, object]:
-        """Build Optuna suggestions from the validated YAML distributions."""
-        params: dict[str, object] = {}
-        for name, spec in search_space.items():
-            if "fixed" in spec:
-                params[name] = spec["fixed"]
-                continue
-            if "choices" in spec:
-                params[name] = trial.suggest_categorical(name, spec["choices"])
-            else:
-                step = spec.get("step")
-                if step is not None:
-                    #step and log cannot be used together
-                    params[name] = trial.suggest_float(
-                        name, float(spec["low"]), float(spec["high"]),
-                        step=float(step)
-                    )
-                else:
-                    params[name] = trial.suggest_float(
-                        name, float(spec["low"]), float(spec["high"]),
-                        log=bool(spec.get("log", False)),
-                    )
-        return params
-
-    # Define objective function closure
     def objective(trial: optuna.Trial) -> float:
-        params = suggest_parameters(trial)
-        lr = float(params["lr"])
-        weight_decay = float(params["weight_decay"])
-        dropout = float(params["dropout"])
-        class_weights = [float(params["class_weight_0"]), 1.0, float(params["class_weight_2"])]
-        hidden_dim = int(params["hidden_dim"])
-
-        # --- ADD THRESHOLD HYPERPARAMETER ---
-        # Forces Optuna to evaluate configurations under different safety margins
-        c2_threshold = float(params["c2_threshold"])
-
-        filtered_train_groups = tuple(g for g in train_groups if g not in proxy_groups)
-
-        trial_settings = Config(settings).with_overrides({
-            "training.lr": lr,
-            "training.weight_decay": weight_decay,
-            "training.dropout": dropout,
-            "training.class_weights": tuple(class_weights),
-            "training.hidden_dim": hidden_dim,
-            "training.c2_threshold": c2_threshold,
-            "data.train_groups": filtered_train_groups,
-            "data.validation_groups": tuple(proxy_groups),
-        })
-
-        # Explicitly restrict evaluation to proxy folds and the configured non-proxy
-        # training pool. run_lovo validates these group IDs against the manifest.
-        lovo_results = run_lovo(
-            manifest_path=manifest_path,
-            settings=trial_settings,
-            test_groups=tuple(proxy_groups),
-            train_groups=tuple(filtered_train_groups),
+        nonlocal trial_counter
+        trial_counter += 1
+        params = _suggest(trial, search_space)
+        report(
+            f"Trial {trial_counter}/{n_trials} started "
+            f"(study trial #{trial.number}; objective={params.get('objective')})."
         )
+        trial_config = replace(base_config, **params)
+        folds = train_lightgbm_lovo(
+            prepared,
+            group_by_video,
+            config=trial_config,
+            data_config={
+                **data_config,
+                "manifest": str(Path(manifest_path).expanduser().resolve()),
+                "ranking_hpo_trial": trial.number,
+            },
+        )
+        per_video_scores: list[float] = []
+        per_fold: dict[str, float] = {}
+        for fold in folds:
+            metrics = fold.summary.get("validation_metrics", {})
+            score = metrics.get("segment_recall_at_5")
+            if score is not None and np.isfinite(float(score)):
+                per_fold[fold.held_out_group] = float(score)
+                per_video = metrics.get("per_video", {})
+                per_video_scores.extend(
+                    float(item["recall"])
+                    for item in per_video.values()
+                    if np.isfinite(float(item["recall"]))
+                )
+        if not per_video_scores:
+            raise ValueError(
+                f"Trial {trial.number} produced no validation videos with class-3 events."
+            )
+        mean_recall = float(np.mean(per_video_scores))
+        trial.set_user_attr("metric", "segment_recall_at_5")
+        trial.set_user_attr("mean_segment_recall_at_5", mean_recall)
+        trial.set_user_attr("fold_segment_recall_at_5", per_fold)
+        trial.set_user_attr("evaluated_video_count", len(per_video_scores))
+        trial.set_user_attr("evaluated_folds", sorted(per_fold))
+        logger.info(
+            "LightGBM HPO trial %d: objective=%s, mean Segment Recall@5=%.5f, folds=%s",
+            trial.number, params.get("objective", base_config.objective),
+            mean_recall, per_fold,
+        )
+        report(
+            f"Trial {trial_counter}/{n_trials} finished: "
+            f"mean Segment Recall@5={mean_recall:.5f}."
+        )
+        return mean_recall
 
-        # Aggregate confusion matrices across validation folds
-        folds = lovo_results.get("folds", [])
-        total_cm = np.zeros((3, 3), dtype=np.float64)
-
-        all_fold_class_f1s = []
-        for f in folds:
-            metrics = f.get("metrics", {})
-            cm = metrics.get("confusion_matrix")
-            if cm is not None:
-                total_cm += np.array(cm, dtype=np.float64)
-
-            class_f1_dict = metrics.get("class_f1", {})
-            if not class_f1_dict:
-                values = metrics.get("per_class_f1")
-                if isinstance(values, (list, tuple)) and len(values) >= 3:
-                    class_f1_dict = {str(i): values[i] for i in range(3)}
-            if class_f1_dict:
-                arr = np.array([class_f1_dict.get("0", 0.0), class_f1_dict.get("1", 0.0), class_f1_dict.get("2", 0.0)])
-                all_fold_class_f1s.append(arr)
-
-        if all_fold_class_f1s:
-            mean_per_class_f1 = np.mean(all_fold_class_f1s, axis=0)
-            c0_f1, c1_f1, c2_f1 = float(mean_per_class_f1[0]), float(mean_per_class_f1[1]), float(mean_per_class_f1[2])
-        else:
-            c0_f1, c1_f1, c2_f1 = 0.0, 0.0, 0.0
-
-        # --- CORRECTED RATE-BASED ASYMMETRIC OBJECTIVE ---
-        total_pred=np.sum(total_cm, axis=0, keepdims=True)
-        total_true=np.sum(total_cm, axis=1, keepdims=True)
-        empty_pred = (total_pred.squeeze() == 0)
-        empty_true = (total_true.squeeze() == 0)
-        safe_pred = np.where(total_pred == 0, 1.0, total_pred)
-        safe_true = np.where(total_true == 0, 1.0, total_true)
-        recall = np.diag(total_cm/safe_true, k=0).copy()
-        precision = np.diag(total_cm/safe_pred, k=0).copy()
-        recall[empty_true] = 1.0
-        precision[empty_pred] = 1.0
-        #f1 = 2.0 * recall * precision / (recall + precision)
-        f2 = 5.0 * recall * precision / (recall + 4.0 * precision)
-        f05 = 1.25 * recall * precision / (recall + 0.25 * precision)
-
-        # Multiplicative Scaling (harmonic mean of class_0 f2, class_1 f2 and class_2 f0.5)
-        den = f2[1] * f05[2] + f2[0] * f05[2] + f2[0] * f2[1]
-        if den == 0.0:
-            score = 0.0
-        else:
-            score = 3.0 * f2[0] * f2[1] * f05[2] / den
-        """
-        Since f05[2] is so importanto to us, we could use weights:
-
-        score = (1+a*a+b*b)*(c0_f2 * c1_f2 * c2_f05)/(a*a*c1_f2*c2_f05+b*b*c0_f2*c1_f2+c0_f2*c2_f05)
-
-        With a*a=1 and b*b=4 we would make c0_f05 more important:
-
-        score = 6.0 *(c0_f2 * c1_f2 * c2_f05)/(c1_f2*c2_f05+c0_f2*c2_f05+4.0*c0_f2*c1_f2)
-        """
-        # Set user attributes for Optuna tracking
-        macro_f1 = float(lovo_results["aggregation"]["macro_group_mean"]["macro_f1"])
-        trial.set_user_attr("macro_f1", macro_f1)
-        trial.set_user_attr("class_0_f1", c0_f1)
-        trial.set_user_attr("class_1_f1", c1_f1)
-        trial.set_user_attr("class_2_f1", c2_f1)
-        trial.set_user_attr("class2_threshold", c2_threshold)
-        trial.set_user_attr("custom_rate_score", score)
-
-        return score
-
-    # Run Optuna optimization loop
-
-    # Calculate remaining trials so n_trials acts as a lifetime target
-    completed_trials = len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE])
-    remaining_trials = max(0, n_trials - completed_trials)
-
-    if remaining_trials > 0:
-        study.optimize(objective, n_trials=remaining_trials, gc_after_trial=True)
-    else:
-        logger.info("Study already has %d completed trials (target: %d). Skipping optimization.", completed_trials, n_trials)
-
-    # Compile results payload
-    best_attrs = study.best_trial.user_attrs
-    output_payload = {
-        "study_name": study_name,
-        "best_value": study.best_value,
-        "best_params": study.best_params,
-        "best_metrics": {
-            "macro_f1": best_attrs.get("macro_f1", 0.0),
-            "class_0_f1": best_attrs.get("class_0_f1", 0.0),
-            "class_1_f1": best_attrs.get("class_1_f1", 0.0),
-            "class_2_f1": best_attrs.get("class_2_f1", 0.0),
-        },
+    objective_description = (
+        search_space["objective"].get("choices", search_space["objective"].get("fixed"))
+    )
+    logger.info(
+        "Starting HPO study %r: %d new trials, objectives=%s, groups=%s",
+        study_name, n_trials, objective_description,
+        sorted(set(group_by_video.values())),
+    )
+    report(
+        f"Study '{study_name}': running {n_trials} new trials "
+        f"({len(study.trials)} trial records already in the database); "
+        "optimizing mean Segment Recall@5. "
+        "A trial may take time while its LOVO folds run."
+    )
+    study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
+    completed = [
+        trial for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE and trial.value is not None
+    ]
+    if not completed:
+        raise RuntimeError(f"LightGBM HPO study {study_name!r} has no completed trials.")
+    best = study.best_trial
+    fixed_search_params = {
+        name: spec["fixed"] for name, spec in search_space.items() if "fixed" in spec
     }
 
-    # Mirror output to screen
-    logger.info("=" * 60)
-    logger.info("HPO OPTIMIZATION COMPLETE")
-    logger.info("Best Objective Score: %.4f", study.best_value)
-    logger.info("Best Hyperparameters:")
-    for k, v in study.best_params.items():
-        logger.info("  - %s: %s", k, v)
-    logger.info("Best Metrics -> Macro F1: %.4f | C0 F1: %.4f | C1 F1: %.4f | C2 F1: %.4f",
-                output_payload["best_metrics"]["macro_f1"],
-                output_payload["best_metrics"]["class_0_f1"],
-                output_payload["best_metrics"]["class_1_f1"],
-                output_payload["best_metrics"]["class_2_f1"])
-    logger.info("=" * 60)
-
-    # Save output mirror json to output/hpo/
-    output_dir = Path("output/hpo")
+    output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / f"{study_name}_best_params.json"
-    
-    with open(json_path, "w") as f:
-        json.dump(output_payload, f, indent=4)
-        
-    logger.info("Successfully exported winning configuration JSON to %s", json_path)
-
-    # Execute Final Production Master Refit using winning parameters
-    log_msg = (
-            f"Starting Final Production Master Refit with best parameters..."
+    payload = {
+        "study_name": study_name,
+        "objective": "mean_per_video_segment_recall_at_5",
+        "metric": "segment_recall_at_5",
+        "direction": "maximize",
+        "evaluated_groups": sorted(set(group_by_video.values())),
+        "proxy_test_groups": sorted(set(group_by_video.values())) if proxy_value is not None else None,
+        "completed_trials": len(completed),
+        "best_trial_number": best.number,
+        "best_value": best.value,
+        "fixed_search_params": fixed_search_params,
+        "best_params": _effective_params(base_config, search_space, best.params),
+        "best_fold_segment_recall_at_5": best.user_attrs.get("fold_segment_recall_at_5", {}),
+        "trials": [
+            {
+                "number": trial.number,
+                "value": trial.value,
+                "params": trial.params,
+                "effective_params": _effective_params(base_config, search_space, trial.params),
+                "fold_segment_recall_at_5": trial.user_attrs.get("fold_segment_recall_at_5", {}),
+            }
+            for trial in completed
+        ],
+    }
+    output_path = output_dir / f"{study_name}_results.json"
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    logger.info(
+        "LightGBM HPO complete: best trial %d, objective=%s, mean Segment Recall@5=%.5f; results: %s",
+        best.number, best.params.get("objective", base_config.objective),
+        float(best.value), output_path,
     )
-
-    # Let the logger do its job if INFO is enabled
-    logger.info(log_msg)
-
-    # If the logger is silenced at WARNING or above, print directly to the console
-    if logger.getEffectiveLevel() >= logging.WARNING:
-            print(log_msg)
-
-    resolved_params = dict(study.best_params)
-    for name, spec in search_space.items():
-        if "fixed" in spec:
-            resolved_params[name] = spec["fixed"]
-
-    final_settings = Config(settings).with_overrides({
-        "training.lr": resolved_params["lr"],
-        "training.weight_decay": resolved_params["weight_decay"],
-        "training.dropout": resolved_params["dropout"],
-        "training.class_weights": (
-            resolved_params["class_weight_0"],
-            1.0,
-            resolved_params["class_weight_2"],
-        ),
-        "training.c2_threshold": resolved_params["c2_threshold"],
-        "training.hidden_dim": resolved_params["hidden_dim"],
-    })
-    final_training = _training_config(final_settings)
-
-    result = run_lovo(manifest_path, final_settings)
-    # Determine the optimal epoch count for the final master refit 
-    # (e.g., taking the mean or median of the consensus selected epochs from each fold)
-    fold_epochs = [
-        fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
-        for fold in result["folds"]
-    ]
-    # Fallback to training_config.epochs if epochs aren't explicitly tracked per fold
-    mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else training_config.epochs
-
-    print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
-
-    # Load and combine all records using the codebase's native helper
-    records = load_manifest(manifest_path, verify_files=True)
-    all_windows, all_targets = _combine_records(records, final_settings)
-
-    # Define your production checkpoint destination
-    experiment = _section(settings, "experiment")
-    base_exp_name = experiment.get("name", "baseline")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    unique_exp_name = f"{base_exp_name}_{timestamp}"
-    models_dir = Path(paths.get("models_dir", "models")).expanduser() / "experiments"
-    models_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
-
-    # Train and save using your exact fixed-epoch function
-    model, scaler, train_summary = train_fixed_epochs(
-        train_windows=all_windows,
-        train_targets=all_targets,
-        config=final_training,
-        epochs=mean_epochs,
-        checkpoint_path=checkpoint_path,
-        data_config=result.get("data_config"),
-        metadata={"experiment_name": unique_exp_name},
+    report(
+        f"Finished. Best trial #{best.number}: "
+        f"objective={best.params.get('objective', base_config.objective)}, "
+        f"mean Segment Recall@5={float(best.value):.5f}. "
+        f"Results saved to {output_path}; database: {db_path}."
     )
-
-    print(f"Master production model successfully saved to {checkpoint_path}")
-    logger.info("Final production model checkpoint successfully saved.")
- 
+    return {**payload, "results_path": str(output_path)}

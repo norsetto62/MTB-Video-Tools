@@ -111,7 +111,7 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
             "id": record.id,
             "group_id": record.group_id,
             "video": str(record.video_path),
-            "annotation": str(record.annotation_path),
+            "annotation": str(record.annotation_path) if record.annotation_path is not None else None,
         }
         for record in records
     ]
@@ -230,7 +230,8 @@ def audit_manifest(
             "window_duration_seconds": window_duration,
             "stride_seconds": window_stride,
             "total_windows": 0,
-            "annotated_windows_estimate": 0,
+            "pure_windows_estimate": 0,
+            "conflicting_windows_estimate": 0,
         },
     }
 
@@ -240,7 +241,8 @@ def audit_manifest(
     total_duration = 0.0
     total_annotations = 0
     total_windows = 0
-    total_labeled_windows = 0
+    total_pure_windows = 0
+    total_conflicting_windows = 0
     target_seconds = {str(i): 0.0 for i in range(4)}
 
     for index, item in enumerate(items, start=1):
@@ -290,53 +292,82 @@ def audit_manifest(
         annotations: list[Any] = []
         annotation_path: Path | None = None
         try:
-            annotation_path = _resolve_path(item.get("annotation"), relative_to=manifest_path.parent)
-            entry["annotation"] = str(annotation_path)
-            parsed_video, annotations = load_training_annotations(annotation_path)
-            if video_path is not None and parsed_video.resolve() != video_path.resolve():
+            annotation_value = item.get("annotation")
+            if annotation_value is None:
+                entry["annotation"] = None
+                entry["annotation_status"] = "unannotated_training_data_candidate"
                 entry["warnings"].append(
-                    "Video path in annotation file differs from the manifest video path: "
-                    f"{parsed_video} != {video_path}"
+                    "No annotations supplied; this video can contribute unlabeled "
+                    "windows to training, but not to labeled validation."
                 )
-            entry["annotation_count"] = len(annotations)
-            entry["annotated_seconds"] = round(sum(a.end - a.start for a in annotations), 3)
-            entry["target_seconds"] = {
-                str(target): round(sum(a.end - a.start for a in annotations if a.score == target), 3)
-                for target in range(4)
-            }
-            total_annotations += len(annotations)
-            for target in range(4):
-                target_seconds[str(target)] += sum(
-                    a.end - a.start for a in annotations if a.score == target
-                )
-            if duration is not None:
-                boundary_duration = _annotation_boundary_duration(duration)
-                entry["annotation_boundary_duration_seconds"] = boundary_duration
-                out_of_bounds = [
-                    a for a in annotations
-                    if a.start < -1e-6 or a.end > boundary_duration + 1e-6
-                ]
-                if out_of_bounds:
-                    entry["errors"].append(
-                        f"{len(out_of_bounds)} annotation interval(s) fall outside "
-                        f"the rounded video duration (0–{boundary_duration:.0f}s; "
-                        f"raw probe duration {duration:.6f}s)."
+                if duration is not None:
+                    windows = _estimated_windows(duration, window_duration, window_stride)
+                    entry["window_estimate"] = {
+                        "total": windows,
+                        "pure_windows": 0,
+                        "conflicting_windows": 0,
+                        "uncovered_windows": windows,
+                    }
+                    total_windows += windows
+                annotations = []
+            else:
+                annotation_path = _resolve_path(annotation_value, relative_to=manifest_path.parent)
+                entry["annotation"] = str(annotation_path)
+                parsed_video, annotations = load_training_annotations(annotation_path)
+                if video_path is not None and parsed_video.resolve() != video_path.resolve():
+                    entry["warnings"].append(
+                        "Video path in annotation file differs from the manifest video path: "
+                        f"{parsed_video} != {video_path}"
                     )
-                windows = _estimated_windows(
-                    duration, window_duration, window_stride
-                )
-                labeled = 0
-                for window_index in range(windows):
-                    start = window_index * window_stride
-                    end = start + window_duration
-                    if any(min(end, a.end) > max(start, a.start) for a in annotations):
-                        labeled += 1
-                entry["window_estimate"] = {
-                    "total": windows,
-                    "overlapping_annotations": labeled,
+                entry["annotation_count"] = len(annotations)
+                entry["annotated_seconds"] = round(sum(a.end - a.start for a in annotations), 3)
+                entry["target_seconds"] = {
+                    str(target): round(sum(a.end - a.start for a in annotations if a.score == target), 3)
+                    for target in range(4)
                 }
-                total_windows += windows
-                total_labeled_windows += labeled
+                total_annotations += len(annotations)
+                for target in range(4):
+                    target_seconds[str(target)] += sum(
+                        a.end - a.start for a in annotations if a.score == target
+                    )
+                if duration is not None:
+                    boundary_duration = _annotation_boundary_duration(duration)
+                    entry["annotation_boundary_duration_seconds"] = boundary_duration
+                    out_of_bounds = [
+                        a for a in annotations
+                        if a.start < -1e-6 or a.end > boundary_duration + 1e-6
+                    ]
+                    if out_of_bounds:
+                        entry["errors"].append(
+                            f"{len(out_of_bounds)} annotation interval(s) fall outside "
+                            f"the rounded video duration (0–{boundary_duration:.0f}s; "
+                            f"raw probe duration {duration:.6f}s)."
+                        )
+                    windows = _estimated_windows(
+                        duration, window_duration, window_stride
+                    )
+                    pure = 0
+                    conflicting = 0
+                    for window_index in range(windows):
+                        start = window_index * window_stride
+                        end = start + window_duration
+                        scores = {
+                            a.score for a in annotations
+                            if min(end, a.end) > max(start, a.start)
+                        }
+                        if len(scores) == 1:
+                            pure += 1
+                        elif len(scores) > 1:
+                            conflicting += 1
+                    entry["window_estimate"] = {
+                        "total": windows,
+                        "pure_windows": pure,
+                        "conflicting_windows": conflicting,
+                        "uncovered_windows": windows - pure - conflicting,
+                    }
+                    total_windows += windows
+                    total_pure_windows += pure
+                    total_conflicting_windows += conflicting
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             entry["errors"].append(f"Annotation validation failed: {exc}")
 
@@ -349,6 +380,11 @@ def audit_manifest(
         report["videos"].append(entry)
 
     _read_split_config(Path(training_config).expanduser(), report, manifest_groups)
+    report["window_estimates"].update({
+        "total_windows": total_windows,
+        "pure_windows_estimate": total_pure_windows,
+        "conflicting_windows_estimate": total_conflicting_windows,
+    })
     report["summary"] = {
         "manifest_entries": len(items),
         "unique_ids": len(seen_ids),
@@ -360,7 +396,8 @@ def audit_manifest(
             key: round(value, 3) for key, value in target_seconds.items()
         },
         "estimated_total_windows": total_windows,
-        "estimated_windows_overlapping_annotations": total_labeled_windows,
+        "estimated_pure_windows": total_pure_windows,
+        "estimated_conflicting_windows": total_conflicting_windows,
     }
     if report["errors"]:
         report["status"] = "error"

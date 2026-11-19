@@ -34,21 +34,20 @@ def test_annotation_color_rejects_unknown_scores(score):
         annotation_color(score)
 
 
-def test_validate_plot_data_accepts_three_class_probabilities():
+def test_validate_plot_data_accepts_raw_ranking_scores():
     timestamps = np.asarray([[0.0, 4.0], [2.0, 6.0]])
-    probabilities = np.asarray([[0.7, 0.2, 0.1], [0.1, 0.3, 0.6]])
-    validate_plot_data(timestamps, probabilities)
+    scores = np.asarray([-1.8, 2.4])
+    validate_plot_data(timestamps, scores)
 
 
-def test_validate_plot_data_rejects_wrong_probability_shape():
+def test_validate_plot_data_rejects_wrong_score_shape():
     timestamps = np.asarray([[0.0, 4.0]])
-    probabilities = np.asarray([[0.5, 0.5]])
+    scores = np.asarray([[0.3, 0.3, 0.4]])
     with pytest.raises(ValueError, match="shape"):
-        validate_plot_data(timestamps, probabilities)
+        validate_plot_data(timestamps, scores)
 
 
-def test_validate_plot_data_rejects_invalid_probabilities():
-    timestamps = np.asarray([[0.0, 4.0]])
-    probabilities = np.asarray([[1.2, -0.1, 0.0]])
-    with pytest.raises(ValueError, match="between 0 and 1"):
-        validate_plot_data(timestamps, probabilities)
+def test_validate_plot_data_accepts_negative_and_unbounded_raw_scores():
+    timestamps = np.asarray([[0.0, 4.0], [2.0, 6.0]])
+    scores = np.asarray([-3.5, 8.2])
+    validate_plot_data(timestamps, scores)

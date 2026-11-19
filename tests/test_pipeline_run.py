@@ -1,17 +1,15 @@
 from pathlib import Path
+
+import pytest
 from types import SimpleNamespace
 
 from autocut.config_loader import Config
 from autocut.data_models import VideoInfo
 from autocut.pipeline import run
 from autocut.selection.timeline import Timeline
-from autocut.selection.candidates_generation import CandidateGenerationConfig
-from autocut.ml.model import MTBClassifier
-from autocut.ml.checkpoint import CHECKPOINT_VERSION
 
-import torch
 
-def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
+def _run_settings(checkpoint, output_dir, cache_dir):
     return Config({
         "paths": {
             "output_dir": output_dir,
@@ -19,18 +17,8 @@ def _run_settings(checkpoint, output_dir, cache_dir, *, padding_seconds=2.0):
         },
         "video": {"sampling_fps": 2.0, "processing_width": 480, "encoder": "h264_nvenc"},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
-        "model": {"checkpoint": checkpoint, "inference_batch_size": 16},
-        "selection": {
-            "min_clip": 3.0,
-            "max_clip_duration": 0.0,
-            "class_score_weights": [0.0, 1.0, 2.5],
-            "junk_threshold": 0.20,
-            "action_threshold": 0.60,
-            "flow_threshold": 0.40,
-            "max_gap_to_merge": 3.0,
-            "padding_seconds": padding_seconds,
-            "p2_envelope_decay": 0.0,
-        },
+        "model": {"checkpoint": checkpoint},
+        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0},
         "audio": {
             "sync_mode": "off",
             "max_synced_clip_duration": 0.0,
@@ -49,160 +37,11 @@ def test_merge_ranges_merges_touching_and_overlapping_intervals():
     assert run._merge_ranges(clips) == [(1.0, 7.0), (8.0, 10.0), (12.0, 13.0)]
 
 
-def test_run_pipeline_preserves_mandatory_clips_and_writes_result_manifest(
-    tmp_path, monkeypatch
-):
-    source = tmp_path / "ride.mp4"
-    source.write_bytes(b"video placeholder")
-    annotations = tmp_path / "annotations.txt"
-    annotations.write_text(f"{source}\n00:00:02 00:00:08 *\n", encoding="utf-8")
-    checkpoint = tmp_path / "model.pt"
-    checkpoint.write_bytes(b"checkpoint placeholder")
-    output_dir = tmp_path / "output"
-
-    settings = _run_settings(checkpoint, output_dir, tmp_path / "cache")
-    monkeypatch.setattr(
-        run, "load_annotations",
-        lambda *args, **kwargs: (
-            [SimpleNamespace(video_name=str(source), start=2.0, end=8.0, mandatory=True)],
-            None,
-        ),
-    )
-    monkeypatch.setattr(run, "get_video_info", lambda path: VideoInfo(1920, 1080, 30.0, 20.0))
-    monkeypatch.setattr(
-        run, "_extract_windows",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("mandatory intervals must not be analyzed")
-        ),
-    )
-
-    def fake_render(timeline, output_path, **kwargs):
-        assert isinstance(timeline, Timeline)
-        assert len(timeline.clips) == 1
-        assert timeline.clips[0].mandatory is True
-        assert timeline.clips[0].source_start == 2.0
-        assert timeline.clips[0].source_end == 8.0
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"rendered")
-        return SimpleNamespace(output_path=output_path, duration=6.0)
-
-    monkeypatch.setattr(run, "render_timeline", fake_render)
-    result = run.run_pipeline(annotations, settings)
-
-    assert result["status"] == "completed"
-    assert result["mandatory_count"] == 1
-    assert result["candidate_count"] == 0
-    assert result["inference"] == [{
-        "video": str(source.resolve()),
-        "annotation_order": 0,
-        "range_start": 2.0,
-        "range_end": 8.0,
-        "window_count": 0,
-        "candidate_count": 0,
-        "status": "skipped_mandatory",
-    }]
-    assert Path(result["result_manifest"]).is_file()
-    assert result["output"]["duration"] == 6.0
-
-
-
-def test_pipeline_preserves_annotation_order_through_candidate_generation(
-    tmp_path, monkeypatch
-):
-    import numpy as np
-
-    from autocut.selection.candidates_generation import CandidateClip
-
-    source = tmp_path / "ride.mp4"
-    source.write_bytes(b"video placeholder")
-    annotations = tmp_path / "annotations.txt"
-    # The later source-time interval appears first in the manifest.
-    annotations.write_text(
-        f"{source.name}\n00:10 00:20\n00:01 00:08\n", encoding="utf-8"
-    )
-    checkpoint = tmp_path / "model.pt"
-    import torch
-
-    checkpoint = tmp_path / "model.pt"
-
-    # Initialize a matching dummy model to get a valid state_dict
-    probe_model = MTBClassifier(
-        feature_dim=1,
-        hidden_dim=4,
-        classifier_mid_dim=4,
-        num_classes=3,
-        dropout=0.0,
-    )
-
-    checkpoint = tmp_path / "model.pt"
-    dummy_payload = {
-        "checkpoint_version": CHECKPOINT_VERSION,
-        "feature_dim": 1,
-        "model_config": {
-            "hidden_dim": 4,
-            "classifier_mid_dim": 4,
-            "num_classes": 3,
-            "dropout": 0.0,
-        },
-        "model_state_dict": probe_model.state_dict(),
-        "c2_threshold": 0.50,
-    }
-    torch.save(dummy_payload, checkpoint)
-    output_dir = tmp_path / "output"
-    settings = _run_settings(
-        checkpoint, output_dir, tmp_path / "cache", padding_seconds=0.0
-    )
-    monkeypatch.setattr(
-        run, "get_video_info",
-        lambda path: VideoInfo(1920, 1080, 30.0, 30.0),
-    )
-    monkeypatch.setattr(
-        run, "_extract_windows",
-        lambda *args, **kwargs: SimpleNamespace(X=np.zeros((1, 1, 1))),
-    )
-    # Replace object() with a namespace that supplies what run.py expects:
-    monkeypatch.setattr(
-        run, 
-        "infer_windows", 
-        lambda *args, **kwargs: SimpleNamespace(
-            timestamps=np.array([[0.0, 1.0], [1.0, 2.0]]),
-            probabilities=np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1]], dtype=np.float32)
-        )
-    )
-    monkeypatch.setattr(
-        run, "generate_candidates",
-        lambda inference, clip_duration, config: [
-            CandidateClip(
-                start=0.0, end=4.0, duration=4.0,
-                tier="high_action", mean_score=1.0, max_score=1.0,
-            )
-        ],
-    )
-    captured = {}
-
-    def fake_render(timeline, output_path, **kwargs):
-        captured["timeline"] = timeline
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"rendered")
-        return SimpleNamespace(output_path=output_path, duration=timeline.duration)
-
-    monkeypatch.setattr(run, "render_timeline", fake_render)
-    result = run.run_pipeline(annotations, settings)
-
-    timeline = captured["timeline"]
-    assert [(clip.source_start, clip.annotation_order) for clip in timeline.clips] == [
-        (10.0, 2),
-        (1.0, 3),
-    ]
-    assert [item["annotation_order"] for item in result["inference"]] == [2, 3]
-    assert result["candidate_count"] == 2
-
-
 def test_run_config_sections_normalizes_generic_config_and_domain_settings(tmp_path):
     from autocut.audio.config import AudioConfig
     from autocut.config_loader import load_config
 
-    checkpoint = tmp_path / "model.pt"
+    checkpoint = tmp_path / "ranker.json"
     config_path = tmp_path / "run.yaml"
     config_path.write_text(
         f"paths:\n  output_dir: {tmp_path / 'output'}\n  cache_dir: {tmp_path / 'cache'}\n"
@@ -211,12 +50,11 @@ def test_run_config_sections_normalizes_generic_config_and_domain_settings(tmp_p
         encoding="utf-8",
     )
 
-    settings, candidates, audio = run._run_config_sections(load_config(config_path))
+    settings, audio = run._run_config_sections(load_config(config_path))
 
     assert isinstance(settings, Config)
     assert settings.paths.output_dir == tmp_path / "output"
     assert settings.model.checkpoint == checkpoint
-    assert candidates.min_candidate_duration == 5.0
     assert isinstance(audio, AudioConfig)
     assert audio.sync_mode.value == "beat"
 
@@ -231,3 +69,87 @@ def test_run_config_sections_rejects_invalid_video_width():
         assert "video.processing_width must be a positive integer" in str(exc)
     else:
         raise AssertionError("invalid processing width should be rejected")
+
+
+
+
+def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, monkeypatch):
+    import numpy as np
+    from types import SimpleNamespace
+    from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+
+    source = tmp_path / "ride.mp4"
+    source.write_bytes(b"video placeholder")
+    annotations = tmp_path / "annotations.txt"
+    annotations.write_text(f"{source}\n00:00 00:20\n", encoding="utf-8")
+    checkpoint = tmp_path / "ranker.json"
+    checkpoint.write_text("placeholder", encoding="utf-8")
+    settings = _run_settings(checkpoint, tmp_path / "output", tmp_path / "cache")
+
+    monkeypatch.setattr(
+        run, "load_annotations",
+        lambda *args, **kwargs: (
+            [SimpleNamespace(
+                video_name=str(source), start=0.0, end=20.0,
+                mandatory=False, annotation_order=0,
+            )],
+            None,
+        ),
+    )
+    monkeypatch.setattr(run, "get_video_info", lambda path: VideoInfo(1920, 1080, 30.0, 20.0))
+    monkeypatch.setattr(
+        "autocut.ml.lightgbm.checkpoint.load_lightgbm_checkpoint",
+        lambda path: {
+            "model_class": "LightGBMRanker",
+            "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+            "data_config": {
+                "sampling_fps": 2.0, "processing_width": 480,
+                "window": 4.0, "stride": 2.0,
+                "roi_left": 0.15, "roi_right": 0.85,
+                "roi_bottom": 0.5, "roi_top": 0.1, "pitch_time_offset": 0.0,
+            },
+            "_booster": object(),
+        },
+    )
+
+    class FakeRanker:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def predict(self, X):
+            return np.array([-0.1, -0.2, -0.3, -0.4, -0.15])
+
+    monkeypatch.setattr("autocut.ml.lightgbm.model.LightGBMRanker", FakeRanker)
+    monkeypatch.setattr(
+        "autocut.dataset.sequence.build_feature_sequence",
+        lambda *args, **kwargs: SimpleNamespace(
+            features=np.ones((10, 4)), timestamps=np.arange(10, dtype=float),
+            pitch_timestamps=np.arange(0.0, 20.1, 0.1, dtype=np.float64),
+            pitch_rate=np.ones(201, dtype=np.float64),
+        ),
+    )
+    monkeypatch.setattr("autocut.motion.engineered.engineer_lightgbm_sequence", lambda X: X)
+    window_times = np.array([
+        [0.0, 4.0], [2.0, 6.0], [10.0, 14.0], [12.0, 16.0], [18.0, 20.0]
+    ])
+    monkeypatch.setattr(
+        "autocut.dataset.windows.build_lightgbm_windows_from_features",
+        lambda *args, **kwargs: SimpleNamespace(X=np.ones((5, 48)), timestamps=window_times),
+    )
+    monkeypatch.setattr("autocut.dataset.normalization.normalize_per_video_features", lambda X: X)
+
+    def fake_render(timeline, output_path, **kwargs):
+        assert len(timeline.clips) == 2
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"rendered")
+        return SimpleNamespace(output_path=output_path, duration=16.0)
+
+    monkeypatch.setattr(run, "render_timeline", fake_render)
+    result = run.run_pipeline(annotations, settings)
+
+    assert result["status"] == "completed"
+    assert result["model_backend"] == "lightgbm"
+    assert result["candidate_count"] == 2
+    assert result["inference"][0]["status"] == "scored_lightgbm"
+    assert result["inference"][0]["score_semantics"] == "raw LambdaRank score"
+    assert Path(result["result_manifest"]).is_file()

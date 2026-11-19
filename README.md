@@ -78,15 +78,13 @@ Instead, the model estimates a continuous **interest score** on a 0–3 scale:
 | `2` | Middling / borderline |
 | `3` | Clearly interesting / worth keeping |
 
-The dataset uses overlapping temporal windows. Each window receives a duration-weighted target derived from the annotations that overlap it. Consequently, intermediate values between 0 and 3 are valid model targets.
+Training windows may overlap adjacent annotation intervals. A window is retained only when every annotation interval overlapping it has the same score; a window crossing a class boundary is discarded, even if one score covers most of its duration.
 
-The purpose of the model is therefore to answer:
+Training uses **ordinal learning-to-rank** with LightGBM LambdaRank. Every video is an independent ranking query, and its windows retain their human relevance grades (0–3). The grouped validation split keeps entire videos together; Optuna HPO evaluates leave-one-group-out folds. The production ranker is refit on the annotated corpus and emits raw ranking scores rather than class probabilities.
 
-> **How interesting is this moment of the ride?**
+Windows with no annotation overlap are omitted. For partially overlapping annotations, each window receives the duration-weighted majority grade; ties are assigned to the higher grade.
 
-rather than:
-
-> **What particular MTB feature is visible here?**
+The previous PU/BiLSTM implementation is no longer part of this development branch. Its history remains available on the `legacy` branch.
 
 ## Processing pipeline
 
@@ -130,7 +128,7 @@ The individual stages are deliberately separated so that the analysis, ML, selec
 Create the development environment and install the project in editable mode:
 
 ```powershell
-python -m pip install -e .
+python -m pip install -e ".[dev,ml,hpo]"
 ```
 
 The editable installation means changes made under `src/autocut/` are immediately available without reinstalling the package.
@@ -150,6 +148,133 @@ pytest
 ```
 
 During the refactor, existing behavior should be preserved wherever it is part of the established pipeline. Tests are therefore an important part of the migration from the legacy implementation.
+
+## Single-model LightGBM training
+
+Train a LightGBM LambdaRank model that orders annotated windows by their
+ordinal relevance grades (0–3). Each video is one ranking query: LightGBM gets
+a group-size array describing the consecutive rows for each video. The
+configured `data.train_groups` and `data.validation_groups` are kept separate
+for iteration selection. Before annotation filtering, each video's 49-column
+window features are independently z-score normalized across all windows in that
+video (population standard deviation, ddof=0; constant columns become zero).
+The same transformation is applied to all windows of a video during ranking
+inference. This makes features relative to each video's own distribution; it
+does not guarantee immunity to camera or terrain changes. Validation NDCG is
+recorded at the configured cutoffs (default `ndcg@10`) and drives early stopping.
+The production ranker is then refit on all annotated manifest videos for the
+selected number of iterations, including validation videos. It uses the
+canonical feature cache and writes a LightGBM JSON checkpoint containing raw
+ranking scores, not class probabilities.
+
+```powershell
+python -m autocut train
+```
+
+Override the manifest, configuration, or output checkpoint when needed:
+
+```powershell
+python -m autocut train data/manifest/annotations_manifest.yaml --config config/train.yaml --checkpoint models/lightgbm/ranker.json
+```
+
+The LightGBM hyperparameters are configured in the `training` YAML section. The former PU/BiLSTM `training` options (epochs, batch size, hidden dimensions, dropout, positive prior and threshold, and related fields) are no longer used and should be removed. The former `lightgbm` section has been renamed to `training`.
+
+The pitch-rate RMS is computed from the DJI quaternion telemetry stored in each source MP4. Existing optical-flow NPZ caches are augmented atomically with the raw pitch timestamps and rates; the cached optical-flow arrays are not regenerated. Set `data.pitch_time_offset` only when the telemetry and video elapsed-time origins differ (default: `0.0`).
+
+The default checkpoint is `models/lightgbm/ranker.json`, overridable with
+`--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
+Ranking does not require every grade in every split, but at least one
+training video must contain multiple relevance grades so that preference pairs
+exist. The summary includes the selected iteration, validation NDCG history,
+configured group/video IDs, query sizes, checkpoint path, and row counts.
+Older YAML settings `objective: multiclass` and `num_class: 4` are migrated to
+the ranking defaults by the training configuration loader.
+
+## LightGBM ranking HPO
+
+Tune the LightGBM ranking hyperparameters with Optuna. The default search
+space explicitly compares `lambdarank` and `rank_xendcg` while holding the
+data preparation and per-video query grouping fixed. Trials are scored by the
+mean held-out-group NDCG at the configured `hpo.ndcg_cutoff` (default
+10); use the same manifest and fold set when comparing objectives. The study
+is persisted in `data/db/hpo.db` and the trial table plus best
+parameters are exported to `output/hpo/ranking_hpo_results.json`.
+
+```powershell
+python -m autocut hpo --config config/train.yaml
+```
+
+Optional configuration belongs in the `hpo` YAML section:
+
+```yaml
+hpo:
+  study_name: lightgbm_ranking_hpo
+  n_trials: 30
+  ndcg_cutoff: 10
+  storage_path: data/db/hpo.db
+  output_dir: output/hpo
+  search_space:
+    objective:
+      choices: [lambdarank, rank_xendcg]
+    bagging_frequency:
+      choices: [1, 3, 5]
+    lambda_l1:
+      low: 0.01
+      high: 1.0
+      log: true
+    lambda_l2:
+      low: 0.001
+      high: 10.0
+      log: true
+```
+
+The default search space is used for parameters not explicitly listed. The
+objective choices must include both ranking objectives so the comparison is
+not accidentally disabled. HPO exports the best parameter set; it does not
+silently launch a production refit. Review the results, set the selected values
+under the `training` configuration section, then run `train` to
+create the production checkpoint.
+## Feature-cache cleanup
+
+The SQLite feature-cache catalog is a rebuildable index; NPZ files are the stored
+feature data. Rebuilding the catalog does not delete or rewrite NPZ files.
+Deleting NPZs requires an explicit keep manifest produced after a successful
+cache-regeneration run.
+
+Create a UTF-8 JSON array containing the NPZ filenames (relative to the canonical
+cache directory) that the completed run confirmed should be retained, for
+example:
+
+```json
+[
+  "a1b2...cache-key.npz",
+  "c3d4...cache-key.npz"
+]
+```
+
+Review the proposed deletion list first (dry-run is the default):
+
+```powershell
+python -m autocut.dataset.cache_cleanup --cache-dir data/cache/features --keep-manifest data/cache/feature-cache-keep.json
+```
+
+Only after reviewing the report, apply cleanup explicitly:
+
+```powershell
+python -m autocut.dataset.cache_cleanup --cache-dir data/cache/features --keep-manifest data/cache/feature-cache-keep.json --apply
+```
+
+The command validates every keep-manifest file before deleting anything, refuses
+paths outside the cache directory and invalid/missing keep entries, deletes only
+NPZs excluded from the manifest, and then rebuilds/reconciles the SQLite catalog.
+It does not rewrite surviving NPZs or manually delete SQLite/WAL/SHM files.
+Do not run cleanup while extraction/regeneration is in progress.
+
+Run the focused tests with:
+
+```powershell
+pytest tests/test_cache_cleanup.py tests/test_cache_catalog.py
+```
 
 ## Legacy implementation
 

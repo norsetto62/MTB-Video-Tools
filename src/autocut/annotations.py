@@ -234,12 +234,11 @@ def load_annotations(
             # ---------------------------------------------------------
             # Standalone video filename
             # ---------------------------------------------------------
-            if num_parts == 1 and _is_video(parts[0]):
+            if _is_video(line):
                 video_path = _resolve_source_path(
-                    parts[0],
+                    line,
                     annotation_file,
                 )
-
                 if not video_path.is_file():
                     raise FileNotFoundError(
                         f"Video file not found on line "

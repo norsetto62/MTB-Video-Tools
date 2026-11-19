@@ -9,9 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
-from datetime import datetime
 
-COMMANDS = ("run", "audit", "train", "validate", "test", "lovo", "hpo", "models")
+COMMANDS = ("run", "audit", "train", "test", "score-report", "lovo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     run.add_argument("--output", type=Path, help="Output video path (default: output/<annotations>_autocut.mp4).")
     run.add_argument(
+        "--checkpoint", type=Path,
+        help="Override model checkpoint (for LightGBM use models/lightgbm/ranker.json).",
+    )
+    run.add_argument(
         "--video-encoder",
         choices=("h264_nvenc", "libx264"),
         help="Override video.encoder from the run configuration.",
@@ -40,17 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
     audit.add_argument("--training-config", type=Path, default=Path("config/train.yaml"))
 
-    train = subparsers.add_parser("train", help="Train a model from a fixed group split.")
+    train = subparsers.add_parser("train", help="Train the LightGBM ranking model from a fixed group split.")
     train.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     train.add_argument("--config", type=Path, default=Path("config/train.yaml"))
-
-    validate = subparsers.add_parser("validate", help="Evaluate a configured holdout split.")
-    validate.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
-    validate.add_argument("--config", type=Path, default=Path("config/train.yaml"))
-    validate.add_argument("--checkpoint", type=Path, required=True, help="Saved model checkpoint.")
-    validate.add_argument("--group", required=True, help="Manifest group to evaluate.")
-    validate.add_argument("--output", type=Path, help="Prediction JSON path (default: results directory).")
-    validate.add_argument("--batch-size", type=int, default=256, help="Inference batch size.")
+    train.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
 
     test = subparsers.add_parser(
         "test",
@@ -61,26 +57,40 @@ def build_parser() -> argparse.ArgumentParser:
     # subparser option parsing consume or reject them.
     test.add_argument("pytest_args", nargs=argparse.REMAINDER)
 
-    lovo = subparsers.add_parser("lovo", help="Run leave-one-group-out evaluations.")
+    score_report = subparsers.add_parser(
+        "score-report",
+        help="Score every window and export per-video/global LightGBM ranking diagnostics.",
+    )
+    score_report.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+    score_report.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    score_report.add_argument("--checkpoint", type=Path, help="Override the LightGBM ranker checkpoint.")
+    score_report.add_argument(
+        "--output", type=Path, default=Path("output/lightgbm_window_scores.csv"),
+        help="Primary global-score CSV path (companion video-range CSV is written beside it).",
+    )
+
+    lovo = subparsers.add_parser(
+        "lovo",
+        help="Train and validate a LightGBM ranking model by manifest group.",
+    )
     lovo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
     lovo.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    lovo.add_argument("--checkpoint-dir", type=Path, help="Override the LightGBM LOVO checkpoint directory.")
+
+    hpo = subparsers.add_parser(
+        "hpo",
+        help="Tune LightGBM ranking objective and hyperparameters with Optuna.",
+    )
+    hpo.add_argument(
+        "--config", type=Path, default=Path("config/train.yaml"),
+        help="Training and HPO YAML configuration file",
+    )
+    hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
     models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
     models.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
 
-    hpo = subparsers.add_parser(
-        "hpo",
-        help="Run Optuna hyperparameter optimization",
-    )
-    hpo.add_argument(
-        "--config", 
-        type=Path, 
-        default=Path("config/train.yaml"), 
-        help="Training and HPO YAML configuration file"
-    )
-    hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
-    
     return parser
 
 
@@ -89,16 +99,6 @@ def _configure_logging(level: str) -> None:
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-
-
-def _unimplemented(command: str) -> int:
-    print(
-        f"AutoCut '{command}' orchestration is not implemented yet. "
-        "The CLI and configuration validation are available, but this command "
-        "cannot run end-to-end until its Phase 12 pipeline handler is added.",
-        file=sys.stderr,
-    )
-    return 2
 
 
 def _run_tests(pytest_args: Sequence[str]) -> int:
@@ -112,27 +112,21 @@ def _run_tests(pytest_args: Sequence[str]) -> int:
 
 
 def _inspect_checkpoint(checkpoint: Path) -> int:
-    from .ml.checkpoint import load_checkpoint, validate_checkpoint
+    from .ml.lightgbm.checkpoint import load_lightgbm_checkpoint
 
     if not checkpoint.is_file():
         print(f"Checkpoint not found: {checkpoint}", file=sys.stderr)
         return 2
     try:
-        payload = validate_checkpoint(load_checkpoint(checkpoint, map_location="cpu"))
+        payload = load_lightgbm_checkpoint(checkpoint)
     except Exception as exc:
-        print(f"Invalid or unreadable checkpoint {checkpoint}: {exc}", file=sys.stderr)
+        print(f"Invalid or unreadable LightGBM checkpoint {checkpoint}: {exc}", file=sys.stderr)
         return 2
-
     summary = {
         "path": str(checkpoint),
-        "checkpoint_version": payload.get("checkpoint_version"),
+        "model_class": payload.get("model_class"),
         "feature_names": payload.get("feature_names"),
-        "feature_mask": payload.get("feature_mask"),
-        "class_mapping": payload.get("class_mapping"),
-        "training_config": payload.get("training_config"),
         "data_config": payload.get("data_config"),
-        "epoch": payload.get("epoch"),
-        "best_metric": payload.get("best_metric"),
         "metadata": payload.get("metadata"),
     }
     print(json.dumps(summary, indent=2, default=str))
@@ -155,7 +149,7 @@ def dispatch(args: argparse.Namespace) -> int:
             model = config.get("model", {})
             if not isinstance(model, Mapping):
                 raise ValueError("Configuration section 'model' must be a mapping.")
-            configured_checkpoint = model.get("checkpoint", "models/best_model.pt")
+            configured_checkpoint = model.get("checkpoint", "models/lightgbm/ranker.json")
             if (
                 not isinstance(configured_checkpoint, (str, Path))
                 or not str(configured_checkpoint).strip()
@@ -197,17 +191,15 @@ def dispatch(args: argparse.Namespace) -> int:
             print(f"Input file not found: {args.annotations}", file=sys.stderr)
             return 2
         result = run_pipeline(
-            args.annotations,
-            settings,
-            output_path=args.output,
-            video_encoder=args.video_encoder,
+            args.annotations, settings, output_path=args.output,
+            video_encoder=args.video_encoder, checkpoint_path=args.checkpoint,
         )
         print(json.dumps(result, indent=2, default=str))
         return 0
 
     if args.command == "train":
         from .config_loader import load_config
-        from .pipeline.training import run_training
+        from .pipeline.training import run_lightgbm_train_from_manifest
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})
@@ -223,12 +215,17 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        result = run_training(manifest, settings)
+        result = run_lightgbm_train_from_manifest(
+            manifest,
+            settings,
+            checkpoint_path=args.checkpoint,
+        )
         print(json.dumps(result, indent=2, default=str))
         return 0
 
-    if args.command in {"validate", "lovo", "hpo"}:
+    if args.command == "score-report":
         from .config_loader import load_config
+        from .pipeline.score_report import run_score_report
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})
@@ -244,71 +241,66 @@ def dispatch(args: argparse.Namespace) -> int:
         if not manifest.is_file():
             print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
             return 2
-        if args.command == "hpo":
-            from .pipeline.hpo import run_hpo
-
-            run_hpo(manifest, settings)
-            return 0
-        if args.command == "validate":
-            from .pipeline.validation import run_validation
-
-            result = run_validation(
-                manifest,
-                settings,
-                checkpoint_path=args.checkpoint,
-                group_id=args.group,
-                output_path=args.output,
-                batch_size=args.batch_size,
-            )
-            print(json.dumps(result, indent=2, default=str))
-            return 0
-        # LOVO
-        from .dataset.manifest import load_manifest
-        from .pipeline.lovo import run_lovo
-        from .pipeline.training import _combine_records
-        from .ml.training import train_fixed_epochs
-        from .pipeline.training import _training_config
-        import numpy as np
-
-        result = run_lovo(manifest, settings)
-        print(json.dumps(result, indent=2, default=str))
-        # Determine the optimal epoch count for the final master refit 
-        # (e.g., taking the mean or median of the consensus selected epochs from each fold)
-        fold_epochs = [
-            fold.get("consensus_selected_epochs") or fold.get("selected_epochs") 
-            for fold in result["folds"]
-        ]
-        # Fallback to configured training epochs if folds omit them
-        mean_epochs = int(np.mean([e for e in fold_epochs if e is not None])) if fold_epochs else _training_config(settings).epochs
-
-        print(f"Refitting master production model on all groups for {mean_epochs} epochs...")
-
-        # Load and combine all records using the codebase's native helper
-        records = load_manifest(manifest, verify_files=True)
-        all_windows, all_targets = _combine_records(records, settings)
-
-        # Define your production checkpoint destination
-        experiment = settings.get("experiment", {})
-        base_exp_name = experiment.get("name", "baseline")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        unique_exp_name = f"{base_exp_name}_{timestamp}"
-        paths = settings.get("paths", {})
-        models_dir = Path(paths.get("models_dir", "models")).expanduser() / "experiments"
-        models_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = models_dir / f"{unique_exp_name}_master_production.pt"
-
-        # Train and save using your exact fixed-epoch function
-        model, scaler, train_summary = train_fixed_epochs(
-            train_windows=all_windows,
-            train_targets=all_targets,
-            config=_training_config(settings),
-            epochs=mean_epochs,
-            checkpoint_path=checkpoint_path,
-            data_config=result.get("data_config"),
-            metadata={"experiment_name": base_exp_name},
+        result = run_score_report(
+            manifest, settings, checkpoint_path=args.checkpoint, output_path=args.output
         )
+        print(json.dumps(result, indent=2, default=str))
+        return 0
 
-        print(f"Master production model successfully saved to {checkpoint_path}")
+    if args.command == "lovo":
+        from .config_loader import load_config
+        from .pipeline.training import run_lovo_from_manifest
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        results = run_lovo_from_manifest(
+            manifest,
+            settings,
+            checkpoint_dir=args.checkpoint_dir,
+        )
+        print(json.dumps([
+            {
+                "held_out_group": result.held_out_group,
+                "train_video_ids": result.train_video_ids,
+                "validation_video_ids": result.validation_video_ids,
+                **result.summary,
+            }
+            for result in results
+        ], indent=2, default=str))
+        return 0
+
+    if args.command == "hpo":
+        from .config_loader import load_config
+        from .pipeline.hpo import run_hpo
+
+        settings = load_config(args.config)
+        logging_section = settings.get("logging", {})
+        if not hasattr(logging_section, "get"):
+            raise ValueError("Configuration section 'logging' must be a mapping.")
+        _configure_logging(logging_section.get("level", "INFO"))
+        data = settings.get("data", {})
+        if not hasattr(data, "get"):
+            raise ValueError("Configuration section 'data' must be a mapping.")
+        manifest = args.manifest or Path(
+            data.get("manifest", "data/manifest/annotations_manifest.yaml")
+        ).expanduser()
+        if not manifest.is_file():
+            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
+            return 2
+        result = run_hpo(manifest, settings)
+        print(json.dumps(result, indent=2, default=str))
         return 0
 
     print(f"Unsupported command: {args.command}", file=sys.stderr)

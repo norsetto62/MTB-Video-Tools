@@ -1,0 +1,1 @@
+python -c "import numpy as np,json; from pathlib import Path; [(print('\n---',p.name,'---'),print(json.dumps(json.loads(str(d['metadata'].item())),indent=2))) for p in sorted(Path('data/cache/features').glob('*.npz')) for d in [np.load(p,allow_pickle=False)]]"
