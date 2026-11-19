@@ -10,10 +10,14 @@ from numbers import Real
 
 import librosa
 import numpy as np
+from scipy import signal
 
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _DEFAULT_HOP_LENGTH = 512
+_BASS_LOW_CUTOFF_HZ = 150
+_DEFAULT_BASS_SENSITIVITY = 0.15
+_DEFAULT_BASS_MIN_GAP_SEC = 0.30
 
 
 def _finite_number(name: str, value: Real, *, positive: bool = False) -> float:
@@ -51,6 +55,9 @@ class AudioAnalysis:
     measures: tuple[float, ...]
     onsets: tuple[float, ...]
     combined: tuple[float, ...]
+    bass: tuple[float, ...] = ()
+    bass_sensitivity: float = _DEFAULT_BASS_SENSITIVITY
+    bass_min_gap_sec: float = _DEFAULT_BASS_MIN_GAP_SEC
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_path, Path):
@@ -67,7 +74,13 @@ class AudioAnalysis:
             raise ValueError("tempo_bpm must be non-negative.")
         object.__setattr__(self, "duration", duration)
         object.__setattr__(self, "tempo_bpm", tempo)
-        for name in ("beats", "measures", "onsets", "combined"):
+        sensitivity = _finite_number("bass_sensitivity", self.bass_sensitivity)
+        if not 0.0 <= sensitivity <= 1.0:
+            raise ValueError("bass_sensitivity must be between 0.0 and 1.0.")
+        gap = _finite_number("bass_min_gap_sec", self.bass_min_gap_sec, positive=True)
+        object.__setattr__(self, "bass_sensitivity", sensitivity)
+        object.__setattr__(self, "bass_min_gap_sec", gap)
+        for name in ("beats", "measures", "onsets", "combined", "bass"):
             values = getattr(self, name)
             if not isinstance(values, (tuple, list, np.ndarray)):
                 raise TypeError(f"{name} must be a sequence of timestamps.")
@@ -105,12 +118,18 @@ def analyze_audio(
     *,
     cache_dir: str | Path | None = None,
     use_cache: bool = True,
+    bass_sensitivity: float = _DEFAULT_BASS_SENSITIVITY,
+    bass_min_gap_sec: float = _DEFAULT_BASS_MIN_GAP_SEC,
 ) -> AudioAnalysis:
     """Analyze a music file into beat, approximate measure, and onset grids.
 
     Cache support is delegated to :mod:`autocut.audio.audio_cache`. Cache failures
     are non-fatal for analysis; an unreadable source file is not.
     """
+    bass_sensitivity = _finite_number("bass_sensitivity", bass_sensitivity)
+    if not 0.0 <= bass_sensitivity <= 1.0:
+        raise ValueError("bass_sensitivity must be between 0.0 and 1.0.")
+    bass_min_gap_sec = _finite_number("bass_min_gap_sec", bass_min_gap_sec, positive=True)
     path = Path(music_path)
     if not path.is_file():
         raise FileNotFoundError(f"Music file does not exist: {path}")
@@ -121,7 +140,10 @@ def analyze_audio(
         try:
             from . import audio_cache as cache_module
 
-            cached = cache_module.load_cached_audio(path, cache_dir)
+            cached = cache_module.load_cached_audio(
+                path, cache_dir, bass_sensitivity=bass_sensitivity,
+                bass_min_gap_sec=bass_min_gap_sec,
+            )
             if cached is not None:
                 return cached
         except OSError:
@@ -156,8 +178,32 @@ def analyze_audio(
             backtrack=False,
             units="frames",
         )
+
+        # Reproduce the dedicated low-end impact detector: low-pass at 150 Hz,
+        # combine normalized onset strength and RMS, then retain prominent peaks.
+        sos = signal.butter(
+            4, _BASS_LOW_CUTOFF_HZ, btype="lowpass", fs=sample_rate, output="sos"
+        )
+        low_waveform = np.asarray(signal.sosfilt(sos, waveform))
+        bass_onset = librosa.onset.onset_strength(
+            y=low_waveform, sr=sample_rate, hop_length=_DEFAULT_HOP_LENGTH,
+            fmax=_BASS_LOW_CUTOFF_HZ, n_mels=8,
+        )
+        bass_rms = librosa.feature.rms(
+            y=low_waveform, hop_length=_DEFAULT_HOP_LENGTH
+        ).squeeze()
+        bass_onset_norm = librosa.util.normalize(np.asarray(bass_onset).reshape(-1))
+        bass_rms_norm = librosa.util.normalize(np.asarray(bass_rms).reshape(-1))
+        bass_envelope = librosa.util.normalize(bass_onset_norm * bass_rms_norm)
+        bass_wait = max(1, int(sample_rate / _DEFAULT_HOP_LENGTH * bass_min_gap_sec))
+        bass_frames = librosa.onset.onset_detect(
+            onset_envelope=bass_envelope, sr=sample_rate,
+            hop_length=_DEFAULT_HOP_LENGTH, delta=bass_sensitivity,
+            wait=bass_wait, backtrack=True, units="frames",
+        )
         beat_times = _frames_to_seconds(np.asarray(beat_frames), sample_rate)
         onset_times = _frames_to_seconds(np.asarray(onset_frames), sample_rate)
+        bass_times = _frames_to_seconds(np.asarray(bass_frames), sample_rate)
     except Exception as exc:
         raise RuntimeError(f"Could not analyze music file {path}: {exc}") from exc
 
@@ -165,6 +211,7 @@ def analyze_audio(
     # retain the legacy three-decimal precision for the combined event grid.
     beats = tuple(sorted(set(t for t in beat_times if 0.0 <= t <= duration)))
     onsets = tuple(sorted(set(t for t in onset_times if 0.0 <= t <= duration)))
+    bass = tuple(sorted(set(t for t in bass_times if 0.0 <= t <= duration)))
     measures = beats[::4]
     combined = tuple(sorted(set(
         rounded for t in (*beats, *onsets)
@@ -201,6 +248,9 @@ def analyze_audio(
         measures=measures,
         onsets=onsets,
         combined=combined,
+        bass=bass,
+        bass_sensitivity=bass_sensitivity,
+        bass_min_gap_sec=bass_min_gap_sec,
     )
 
     if use_cache and cache_dir is not None:
