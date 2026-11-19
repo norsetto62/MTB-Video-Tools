@@ -19,13 +19,13 @@ def reject_torch(name, *args, **kwargs):
 
 builtins.__import__ = reject_torch
 
-import autocut.ml.lightgbm_model
-import autocut.ml.lightgbm_checkpoint
-import autocut.ml.lightgbm_fit
-import autocut.ml.lightgbm_inference
-import autocut.ml.lightgbm_training
-import autocut.pipeline.lightgbm_training
-import autocut.pipeline.lightgbm_hpo
+import autocut.ml.lightgbm.model
+import autocut.ml.lightgbm.checkpoint
+import autocut.ml.lightgbm.fit
+import autocut.ml.lightgbm.inference
+import autocut.ml.lightgbm.training
+import autocut.pipeline.training
+import autocut.pipeline.hpo
 import autocut.pipeline.run
 """
     subprocess.run([sys.executable, "-c", script], check=True)

@@ -20,10 +20,10 @@ from autocut.dataset.cache_paths import feature_cache_dir
 from autocut.dataset.normalization import normalize_per_video_features
 from autocut.dataset.sequence import build_feature_sequence
 from autocut.dataset.windows import build_lightgbm_windows_from_features
-from autocut.ml.lightgbm_checkpoint import load_lightgbm_checkpoint
-from autocut.ml.lightgbm_model import LightGBMRanker
+from autocut.ml.lightgbm.checkpoint import load_lightgbm_checkpoint
+from autocut.ml.lightgbm.model import LightGBMRanker
 from autocut.motion.engineered import engineer_lightgbm_sequence
-from autocut.pipeline.lightgbm_training import _data_config
+from autocut.pipeline.training import _data_config
 from autocut.video.probe import get_video_info
 
 

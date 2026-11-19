@@ -6,12 +6,12 @@ pytest.importorskip("lightgbm")
 
 from autocut.data_models import FeatureWindows
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-from autocut.ml.lightgbm_training import (
+from autocut.ml.lightgbm.training import (
     LightGBMVideoData,
     train_lightgbm_group_fold,
     train_lightgbm_lovo,
 )
-from autocut.ml.lightgbm_model import LightGBMConfig
+from autocut.ml.lightgbm.model import LightGBMConfig
 
 
 def _video_data(seed, labels):

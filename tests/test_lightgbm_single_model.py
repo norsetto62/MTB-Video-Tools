@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from autocut.ml.lightgbm_model import LightGBMConfig
-from autocut.pipeline import lightgbm_training as pipeline
+from autocut.ml.lightgbm.model import LightGBMConfig
+from autocut.pipeline import training as pipeline
 
 
 def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):

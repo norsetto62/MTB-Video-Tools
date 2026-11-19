@@ -30,8 +30,8 @@ from ..dataset.sequence import (
 from ..dataset.windows import build_lightgbm_windows_from_features, append_pitch_rate_rms_feature
 from ..motion.dji import pitch_rate_rms_from_series
 from ..motion.engineered import engineer_lightgbm_sequence
-from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
-from ..ml.lightgbm_model import LightGBMRanker
+from ..ml.lightgbm.checkpoint import load_lightgbm_checkpoint
+from ..ml.lightgbm.model import LightGBMRanker
 from ..video.probe import get_video_info
 
 logger = logging.getLogger(__name__)

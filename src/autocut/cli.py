@@ -112,7 +112,7 @@ def _run_tests(pytest_args: Sequence[str]) -> int:
 
 
 def _inspect_checkpoint(checkpoint: Path) -> int:
-    from .ml.lightgbm_checkpoint import load_lightgbm_checkpoint
+    from .ml.lightgbm.checkpoint import load_lightgbm_checkpoint
 
     if not checkpoint.is_file():
         print(f"Checkpoint not found: {checkpoint}", file=sys.stderr)
@@ -199,7 +199,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "train":
         from .config_loader import load_config
-        from .pipeline.lightgbm_training import run_lightgbm_train_from_manifest
+        from .pipeline.training import run_lightgbm_train_from_manifest
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})
@@ -249,7 +249,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "lovo":
         from .config_loader import load_config
-        from .pipeline.lightgbm_training import run_lovo_from_manifest
+        from .pipeline.training import run_lovo_from_manifest
 
         settings = load_config(args.config)
         logging_section = settings.get("logging", {})

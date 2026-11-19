@@ -2,7 +2,7 @@ from pathlib import Path
 
 from autocut.cli import build_parser, main
 from autocut.config_loader import Config
-from autocut.ml.lightgbm_training import LightGBMGroupFoldResult
+from autocut.ml.lightgbm.training import LightGBMGroupFoldResult
 
 
 def test_lovo_command_parses_manifest_and_checkpoint_dir(tmp_path):
@@ -42,7 +42,7 @@ def test_lovo_dispatch_calls_manifest_pipeline(tmp_path, monkeypatch, capsys):
         captured.update(path=path, settings=loaded_settings, checkpoint_dir=checkpoint_dir)
         return expected
 
-    monkeypatch.setattr("autocut.pipeline.lightgbm_training.run_lovo_from_manifest", fake_pipeline)
+    monkeypatch.setattr("autocut.pipeline.training.run_lovo_from_manifest", fake_pipeline)
     checkpoint_dir = tmp_path / "models"
     assert main([
         "lovo", str(manifest), "--config", str(config_path),

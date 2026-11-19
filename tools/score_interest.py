@@ -24,7 +24,7 @@ from autocut.config_loader import load_config
 from autocut.data_models import Clip
 from autocut.dataset.sequence import build_feature_sequence
 from autocut.motion.features import FEATURE_NAMES
-from autocut.pipeline.lightgbm_training import _data_config
+from autocut.pipeline.training import _data_config
 from autocut.video.probe import get_video_info
 
 

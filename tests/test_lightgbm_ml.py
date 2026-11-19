@@ -7,10 +7,10 @@ lgb = pytest.importorskip("lightgbm")
 from autocut.data_models import FeatureWindows
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
 from autocut.dataset.normalization import normalize_per_video_features
-from autocut.ml.lightgbm_checkpoint import load_lightgbm_checkpoint
-from autocut.ml.lightgbm_inference import infer_lightgbm_ranking_windows
-from autocut.ml.lightgbm_model import LightGBMConfig
-from autocut.ml.lightgbm_fit import train_lightgbm
+from autocut.ml.lightgbm.checkpoint import load_lightgbm_checkpoint
+from autocut.ml.lightgbm.inference import infer_lightgbm_ranking_windows
+from autocut.ml.lightgbm.model import LightGBMConfig
+from autocut.ml.lightgbm.fit import train_lightgbm
 
 
 def _data(seed=9, rows=120):

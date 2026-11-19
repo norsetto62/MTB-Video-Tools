@@ -2,7 +2,7 @@
 
 from .candidate_types import CandidateClip, WindowEvidence
 from .selection import MandatoryClip, SelectionCandidate, SelectionResult, select_candidates
-from .lightgbm_candidates import RankedSegment, RankedWindow, select_ranked_segments
+from .candidates import RankedSegment, RankedWindow, select_ranked_segments
 from .timeline import Timeline, TimelineClip, assemble_timeline
 
 __all__ = [

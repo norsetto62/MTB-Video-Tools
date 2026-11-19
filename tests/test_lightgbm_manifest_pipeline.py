@@ -7,9 +7,9 @@ import pytest
 from autocut.data_models import Annotation, FeatureSequence, VideoInfo
 from autocut.dataset.manifest import DatasetRecord
 from autocut.motion.features import FEATURE_NAMES
-from autocut.ml.lightgbm_training import LightGBMGroupFoldResult
-from autocut.ml.lightgbm_model import LightGBMConfig
-from autocut.pipeline import lightgbm_training as pipeline
+from autocut.ml.lightgbm.training import LightGBMGroupFoldResult
+from autocut.ml.lightgbm.model import LightGBMConfig
+from autocut.pipeline import training as pipeline
 
 
 def _record(tmp_path, record_id, group_id):
@@ -134,7 +134,7 @@ def test_manifest_runner_passes_prepared_data_to_grouped_lovo(tmp_path, monkeypa
 
     monkeypatch.setattr(pipeline, "train_lightgbm_lovo", fake_lovo)
     config = LightGBMConfig(num_iterations=10, min_data_in_leaf=2)
-    results = pipeline.run_lightgbm_lovo_from_manifest(
+    results = pipeline.run_lovo_from_manifest(
         tmp_path / "manifest.yaml",
         {"paths": {"cache_dir": str(tmp_path / "cache")}},
         config=config,

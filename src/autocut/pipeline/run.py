@@ -247,8 +247,8 @@ def run_pipeline(
 
     lightgbm_windows_by_video: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
     lightgbm_range_orders: dict[str, list[tuple[float, float, int]]] = {}
-    from ..ml.lightgbm_checkpoint import load_lightgbm_checkpoint
-    from ..ml.lightgbm_model import LightGBMRanker
+    from ..ml.lightgbm.checkpoint import load_lightgbm_checkpoint
+    from ..ml.lightgbm.model import LightGBMRanker
     from ..dataset.sequence import (
         DEFAULT_PROCESSING_WIDTH, DEFAULT_SAMPLE_FPS, validate_roi,
     )
@@ -360,7 +360,7 @@ def run_pipeline(
         })
         continue
 
-    from ..selection.lightgbm_candidates import select_ranked_segments
+    from ..selection.candidates import select_ranked_segments
     from ..selection.candidate_types import CandidateClip, WindowEvidence
     for video_name, batches in lightgbm_windows_by_video.items():
         timestamps = np.concatenate([batch[0] for batch in batches], axis=0)

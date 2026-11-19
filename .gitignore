@@ -32,6 +32,8 @@ tools/compare_global_segment_rankings.py
 tools/parse_avinox_imu.py
 tools/dji-telemetry-export.exe
 tools/compare_imu.py
+tools/dji_imu_analysis.py
+tools/dji_pitch_analysis.py
 
 # Widgets
 output_widgets/

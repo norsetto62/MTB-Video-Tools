@@ -7,8 +7,8 @@ from typing import Any, Sequence
 import numpy as np
 
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-from autocut.ml.lightgbm_model import LightGBMConfig, LightGBMRanker
-from autocut.ml.lightgbm_checkpoint import save_lightgbm_checkpoint
+from autocut.ml.lightgbm.model import LightGBMConfig, LightGBMRanker
+from autocut.ml.lightgbm.checkpoint import save_lightgbm_checkpoint
 
 # LightGBM ranking training for the tabular representation.
 # ---------------------------------------------------------------------------

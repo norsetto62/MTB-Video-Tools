@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from autocut.selection.lightgbm_candidates import select_ranked_segments
+from autocut.selection.candidates import select_ranked_segments
 
 
 def test_lightgbm_segments_use_hierarchical_ranking_and_allow_negative_scores():

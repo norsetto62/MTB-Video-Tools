@@ -134,7 +134,7 @@ def test_lightgbm_train_cli_dispatches_to_single_model_pipeline(tmp_path, monkey
         return {"checkpoint_path": str(checkpoint), "training_rows": 12}
 
     monkeypatch.setattr(
-        "autocut.pipeline.lightgbm_training.run_lightgbm_train_from_manifest",
+        "autocut.pipeline.training.run_lightgbm_train_from_manifest",
         fake_train,
     )
     assert main([

@@ -11,10 +11,10 @@ import optuna
 import numpy as np
 
 from ..config_loader import Config
-from ..ml.lightgbm_model import LightGBMConfig
-from ..ml.lightgbm_training import train_lightgbm_lovo
+from ..ml.lightgbm.model import LightGBMConfig
+from ..ml.lightgbm.training import train_lightgbm_lovo
 from ..dataset.manifest import load_manifest
-from .lightgbm_training import (
+from .training import (
     _training_config,
     _section,
     prepare_lightgbm_manifest_data,

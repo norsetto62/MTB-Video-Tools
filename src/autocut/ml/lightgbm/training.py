@@ -16,8 +16,8 @@ import numpy as np
 
 from autocut.data_models import FeatureWindows
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-from autocut.ml.lightgbm_model import LightGBMConfig, LightGBMRanker
-from autocut.ml.lightgbm_fit import train_lightgbm
+from autocut.ml.lightgbm.model import LightGBMConfig, LightGBMRanker
+from autocut.ml.lightgbm.fit import train_lightgbm
 
 
 @dataclass(frozen=True)
