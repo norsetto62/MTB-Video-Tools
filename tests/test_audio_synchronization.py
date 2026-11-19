@@ -14,7 +14,7 @@ from autocut.selection.timeline import Timeline, TimelineClip
 
 
 def analysis(*, beats=(1.0, 2.0, 3.0), measures=(1.0, 3.0),
-             onsets=(0.8, 2.2), duration=5.0):
+             onsets=(0.8, 2.2), bass=(0.6, 2.4), duration=5.0):
     combined = tuple(sorted(set(round(x, 3) for x in (*beats, *onsets)
                                 if 0 <= x <= duration)))
     return AudioAnalysis(
@@ -26,6 +26,7 @@ def analysis(*, beats=(1.0, 2.0, 3.0), measures=(1.0, 3.0),
         measures=tuple(measures),
         onsets=tuple(onsets),
         combined=combined,
+        bass=tuple(bass),
     )
 
 
@@ -68,6 +69,7 @@ def timeline(clips):
         (SyncMode.MEASURE, 2.2, 3.0),
         (SyncMode.ONSET, 2.0, 2.2),
         (SyncMode.COMBINED, 2.0, 2.0),   # exact beat wins
+        (SyncMode.BASS, 2.0, 2.4),
         (SyncMode.FORWARD_BEAT, 1.01, 2.0),
         (SyncMode.FORWARD_BEAT, 3.1, 3.1),  # no later beat => unchanged
         (SyncMode.OFF, 1.234, 1.234),
@@ -166,6 +168,10 @@ def test_sync_rejects_invalid_config_values():
         AudioConfig(max_synced_clip_duration=-1)
     with pytest.raises((ValueError, TypeError)):
         AudioConfig(fade_duration=-0.1)
+    with pytest.raises((ValueError, TypeError)):
+        AudioConfig(bass_sensitivity=1.1)
+    with pytest.raises((ValueError, TypeError)):
+        AudioConfig(bass_min_gap_sec=0)
 
 
 
