@@ -51,6 +51,7 @@ def test_round_trip_cache_hit(tmp_path):
     save_cached_audio(expected, cache_dir)
     actual = load_cached_audio(music, cache_dir)
     assert actual == expected
+    assert actual.bass == expected.bass
 
 
 def test_changed_source_content_invalidates_cache(tmp_path):
