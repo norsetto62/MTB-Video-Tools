@@ -14,7 +14,9 @@ from autocut.selection.timeline import Timeline, TimelineClip
 
 
 def analysis(*, beats=(1.0, 2.0, 3.0), measures=(1.0, 3.0),
-             onsets=(0.8, 2.2), bass=(0.6, 2.4), duration=5.0):
+             onsets=(0.8, 2.2), bass=None, duration=5.0):
+    if bass is None:
+        bass = tuple(value for value in (0.6, 2.4) if value <= duration)
     combined = tuple(sorted(set(round(x, 3) for x in (*beats, *onsets)
                                 if 0 <= x <= duration)))
     return AudioAnalysis(
