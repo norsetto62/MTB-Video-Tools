@@ -70,6 +70,8 @@ def snap_timestamp(
         return value
     elif selected_mode is SyncMode.ONSET:
         grid = analysis.onsets
+    elif selected_mode is SyncMode.BASS:
+        grid = analysis.bass
     else:
         grid = analysis.combined
 
