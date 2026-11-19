@@ -68,7 +68,7 @@ class AudioConfig:
         if sensitivity > 1.0:
             raise ValueError("bass_sensitivity must be between 0.0 and 1.0.")
         object.__setattr__(self, "bass_sensitivity", sensitivity)
-        gap = _finite_nonnegative("bass_min_gap_sec", self.bass_min_gap_sec)
-        if gap <= 0:
-            raise ValueError("bass_min_gap_sec must be greater than zero.")
-        object.__setattr__(self, "bass_min_gap_sec", gap)
+        object.__setattr__(
+            self, "bass_min_gap_sec",
+            _finite_nonnegative("bass_min_gap_sec", self.bass_min_gap_sec),
+        )
