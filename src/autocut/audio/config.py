@@ -15,6 +15,7 @@ class SyncMode(str, Enum):
     FORWARD_BEAT = "forward-beat"
     ONSET = "onset"
     COMBINED = "combined"
+    BASS = "bass"
 
 
 def _finite_nonnegative(name: str, value: Real) -> float:
@@ -38,6 +39,8 @@ class AudioConfig:
     sync_mode: SyncMode = SyncMode.OFF
     max_synced_clip_duration: float = 0.0
     fade_duration: float = 2.0
+    bass_sensitivity: float = 0.15
+    bass_min_gap_sec: float = 0.30
 
     def __post_init__(self) -> None:
         mode = self.sync_mode
@@ -61,3 +64,11 @@ class AudioConfig:
             self, "fade_duration",
             _finite_nonnegative("fade_duration", self.fade_duration),
         )
+        sensitivity = _finite_nonnegative("bass_sensitivity", self.bass_sensitivity)
+        if sensitivity > 1.0:
+            raise ValueError("bass_sensitivity must be between 0.0 and 1.0.")
+        object.__setattr__(self, "bass_sensitivity", sensitivity)
+        gap = _finite_nonnegative("bass_min_gap_sec", self.bass_min_gap_sec)
+        if gap <= 0:
+            raise ValueError("bass_min_gap_sec must be greater than zero.")
+        object.__setattr__(self, "bass_min_gap_sec", gap)
