@@ -59,7 +59,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/lightgbm/ranker.json"},
         "selection": {"min_clip": 3.0, "max_clip_duration": 0.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0},
-        "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0},
+        "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0, "bass_sensitivity": 0.15, "bass_min_gap_sec": 0.30},
         "logging": {"level": "INFO"},
     }
     allowed_keys = {
@@ -68,7 +68,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
         "features": {"window_duration", "window_stride"},
         "model": {"checkpoint"},
         "selection": {"min_clip", "max_clip_duration", "max_gap_to_merge", "padding_seconds"},
-        "audio": {"sync_mode", "max_synced_clip_duration", "fade_duration"},
+        "audio": {"sync_mode", "max_synced_clip_duration", "fade_duration", "bass_sensitivity", "bass_min_gap_sec"},
         "logging": {"level"},
     }
     for name, values in defaults.items():
@@ -156,6 +156,8 @@ def _config_summary(
             "sync_mode": audio_config.sync_mode.value,
             "max_synced_clip_duration": audio_config.max_synced_clip_duration,
             "fade_duration": audio_config.fade_duration,
+            "bass_sensitivity": audio_config.bass_sensitivity,
+            "bass_min_gap_sec": audio_config.bass_min_gap_sec,
         },
     }
 
@@ -238,6 +240,8 @@ def run_pipeline(
             audio_analysis = analyze_audio(
                 music_directive.path,
                 cache_dir=audio_cache_dir(settings),
+                bass_sensitivity=audio_config.bass_sensitivity,
+                bass_min_gap_sec=audio_config.bass_min_gap_sec,
             )
         except Exception as exc:
             logger.warning(
@@ -563,6 +567,8 @@ def run_pipeline(
             "mix_with_original": music_directive.mix if music_directive else False,
             "sync_mode": audio_config.sync_mode.value if music_directive else "off",
             "fade_duration": audio_config.fade_duration if music_directive else 0.0,
+            "bass_sensitivity": audio_config.bass_sensitivity if music_directive else 0.15,
+            "bass_min_gap_sec": audio_config.bass_min_gap_sec if music_directive else 0.30,
         },
         "output": {
             "path": str(render_result.output_path.resolve()),
