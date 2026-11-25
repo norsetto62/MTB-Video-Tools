@@ -622,6 +622,7 @@ def run_nested_lightgbm_evaluation(
         "outer_fold_count": len(groups),
         "inner_trials_per_outer_fold": n_trials,
         "prepared_video_count": len(prepared),
+        "class3_event_target_diagnostics": data_config.get("class3_event_target_diagnostics", {}),
         "evaluated_outer_video_count": len(all_outer_video_recalls),
         "mean_outer_segment_recall_at_5": mean_score,
         "std_outer_video_segment_recall_at_5": std_score,
