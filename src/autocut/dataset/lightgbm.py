@@ -25,6 +25,7 @@ def build_lightgbm_training_data(
     pitch_timestamps: np.ndarray,
     pitch_rate: np.ndarray,
     pitch_time_offset: float = 0.0,
+    normalization_method: str = "per_video_zscore_all_windows_ddof0",
 ) -> tuple[FeatureWindows, np.ndarray]:
     """Build aligned LightGBM rows and MTB 0..3 labels from one video sequence.
 
@@ -55,7 +56,7 @@ def build_lightgbm_training_data(
     # that have no unambiguous annotation target. Inference has no labels, so
     # its normalization statistics must be computed over the complete video.
     normalized_windows = FeatureWindows(
-        X=normalize_per_video_features(tabular_windows.X),
+        X=normalize_per_video_features(tabular_windows.X, method=normalization_method),
         timestamps=tabular_windows.timestamps,
     )
     return build_majority_vote_targets(normalized_windows, annotations)
