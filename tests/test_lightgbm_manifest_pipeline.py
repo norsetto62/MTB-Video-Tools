@@ -37,9 +37,15 @@ def _sequence():
             base = 0.2 + row * 0.4 + col * 0.15
             features[:, FEATURE_NAMES.index(f"grid_{row}_{col}_u")] = base
             features[:, FEATURE_NAMES.index(f"grid_{row}_{col}_v")] = base * 0.5
-    pitch_timestamps = np.arange(-1.0, 14.0, 0.1, dtype=np.float64)
-    pitch_rate = np.full(len(pitch_timestamps), 2.0, dtype=np.float64)
-    return FeatureSequence(features=features, timestamps=timestamps, pitch_timestamps=pitch_timestamps, pitch_rate=pitch_rate)
+    imu_timestamps = np.arange(-1.0, 14.0, 0.04, dtype=np.float64)
+    angular = np.column_stack((np.ones_like(imu_timestamps), 2.0 + imu_timestamps * 0.01, np.ones_like(imu_timestamps)))
+    acceleration = np.column_stack((np.zeros_like(imu_timestamps), np.zeros_like(imu_timestamps), 0.1 * np.sin(imu_timestamps)))
+    return FeatureSequence(
+        features=features, timestamps=timestamps,
+        imu_timestamps=imu_timestamps,
+        imu_angular_velocity=angular.astype(np.float64),
+        imu_acceleration=acceleration.astype(np.float64),
+    )
 
 
 def _annotations():
@@ -87,7 +93,7 @@ def test_prepare_manifest_data_uses_canonical_cache_and_group_ids(tmp_path, monk
 
     assert set(prepared) == {"video_a", "video_b"}
     assert groups == {"video_a": "ascoli", "video_b": "castelli"}
-    assert all(item.windows.X.shape[1] == 49 for item in prepared.values())
+    assert all(item.windows.X.shape[1] == 74 for item in prepared.values())
     assert all(call[3]["include_pitch_telemetry"] is True for call in cache_calls)
     assert all(set(np.unique(item.targets)) == {0, 1, 2, 3} for item in prepared.values())
     assert len(cache_calls) == 2
