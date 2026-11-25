@@ -236,12 +236,13 @@ hpo:
   # proxy_test_groups: [group_a, group_b]
 ```
 
-The actual Optuna study name is automatically suffixed with the metric,
-fixed-iteration, NMS aggregation and normalization identifiers. Use that full
-name when plotting, and point the plotter at the same database:
+The Optuna study name is exactly the value of `hpo.study_name`
+(`study_claude_1` in this example). No metric, evaluation or normalization
+suffixes are added. The default database path is
+`data/db/hpo_study.db`, matching the plotter's default:
 
 ```powershell
-python tools/plot_study.py study_claude_1_segment_recall_at_5_fixed_iters_nms_pooled_median_iqr_all_windows --database data/db/hpo_study.db
+python tools/plot_study.py study_claude_1
 ```
 
 To fine-tune, change `hpo.search_space` and run HPO again with the same study
