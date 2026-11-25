@@ -77,6 +77,7 @@ def train_lightgbm(
     data_config: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
     early_stopping: bool = True,
+    collect_evaluation_history: bool = True,
 ) -> tuple[LightGBMRanker, dict[str, Any]]:
     """Train LambdaRank on ordinal relevance labels grouped by query/video.
 
@@ -119,7 +120,7 @@ def train_lightgbm(
         has_validation_events = bool(np.any(valid_labels == 3))
         segment_recall_eval = (
             make_segment_recall_at_5(validation_timestamps, valid_groups)
-            if has_validation_events else None
+            if has_validation_events and collect_evaluation_history else None
         )
         if valid_features.shape[1] != train_features.shape[1]:
             raise ValueError("Training and validation feature dimensions must match.")
@@ -134,8 +135,8 @@ def train_lightgbm(
         )
         # The custom evaluator is bound to validation timestamps; evaluating
         # the training Dataset with that callback would misalign its rows.
-        valid_sets, valid_names = ([valid_dataset], ["validation"]) if has_validation_events else (None, None)
-        if has_validation_events:
+        valid_sets, valid_names = ([valid_dataset], ["validation"]) if has_validation_events and collect_evaluation_history else (None, None)
+        if has_validation_events and collect_evaluation_history:
             callbacks.extend([
                 lgb.record_evaluation(evals_result),
                 lgb.log_evaluation(period=10),
@@ -177,6 +178,7 @@ def train_lightgbm(
         "training_group_sizes": train_groups,
         "validation_group_sizes": valid_groups if val_X is not None else None,
         "evaluation_history": evals_result,
+        "evaluation_history_collected": bool(collect_evaluation_history and has_validation_events),
         "feature_count": len(LIGHTGBM_TABULAR_FEATURE_NAMES),
         "training_rows": int(len(train_features)),
         "validation_rows": int(len(val_X)) if val_X is not None else 0,
