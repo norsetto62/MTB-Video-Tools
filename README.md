@@ -220,6 +220,36 @@ hpo:
   best_params_path: output/hpo/lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json
 ```
 
+The final parameter-selection stage uses the original persistent Optuna
+workflow. It opens or creates the named SQLite study with
+`load_if_exists=True`; each invocation adds `hpo.n_trials` new trials.
+The nested outer-fold studies remain temporary and are not mixed into this
+production study. Configure the persistent study as before:
+
+```yaml
+hpo:
+  study_name: study_claude_1
+  storage_path: data/db/hpo_study.db
+  n_trials: 30
+  # Optional: restrict final parameter selection to selected groups.
+  # Nested evaluation still uses every manifest group.
+  # proxy_test_groups: [group_a, group_b]
+```
+
+The actual Optuna study name is automatically suffixed with the metric,
+fixed-iteration, NMS aggregation and normalization identifiers. Use that full
+name when plotting, and point the plotter at the same database:
+
+```powershell
+python tools/plot_study.py study_claude_1_segment_recall_at_5_fixed_iters_nms_pooled_median_iqr_all_windows --database data/db/hpo_study.db
+```
+
+To fine-tune, change `hpo.search_space` and run HPO again with the same study
+name and database; the new trials are appended and Optuna can use the existing
+trial history. Keep the same parameter distributions within a study. If you
+want to make an incompatible change to the search space or evaluation setup,
+use a new `study_name` so the trials are not mixed.
+
 Median/IQR normalization is the default. To compare normalization methods,
 run HPO again changing only:
 
