@@ -161,9 +161,9 @@ IMU statistics (roll/pitch/yaw angular-rate RMS and peaks, and dynamic
 acceleration RMS and peak). Before annotation filtering, each video's features
 are normalized across all its windows using the configured method:
 `per_video_zscore_all_windows_ddof0` or `per_video_median_iqr_all_windows`.
-The same transformation is applied during inference. The latter is the robust
-normalization candidate for the current experiment; compare both using the same
-nested group-CV procedure. The production ranker is then refit on all annotated manifest videos for the
+The same transformation is applied during inference. Median/IQR is the current
+first experiment and the default for new training runs; compare it with z-score
+using the same nested group-CV procedure. The production ranker is then refit on all annotated manifest videos for the
 selected number of iterations, including validation videos. It uses the
 canonical feature cache and writes a LightGBM JSON checkpoint containing raw
 ranking scores, not class probabilities.
@@ -209,7 +209,7 @@ python -m autocut nested-cv --config config/train.yaml
 
 Nested CV prepares features once, tunes only within the outer-training groups,
 refits using the selected fixed iteration count, and evaluates each untouched
-outer group once. Reports are written separately for each normalization method:
+outer group once. Median/IQR is the default. Reports are written separately for each normalization method:
 `output/hpo/lightgbm_nested_cv_segment_recall_at_5_zscore_all_windows_ddof0.json`
 and
 `output/hpo/lightgbm_nested_cv_segment_recall_at_5_median_iqr_all_windows.json`.
