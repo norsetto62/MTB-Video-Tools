@@ -62,6 +62,8 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     assert metrics["events"] >= 1
     assert 0.0 <= metrics["segment_recall_at_5"] <= 1.0
     assert result.summary["ranking_metric"] == "segment_recall_at_5"
+    assert result.summary["early_stopping"] is False
+    assert result.summary["best_iteration"] == _config().num_iterations
     assert result.summary["training_group_sizes"] == [16, 16]
     assert result.summary["validation_group_sizes"] == [16]
     assert model.feature_dim == 49
