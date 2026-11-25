@@ -76,6 +76,7 @@ def train_lightgbm(
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
+    early_stopping: bool = True,
 ) -> tuple[LightGBMRanker, dict[str, Any]]:
     """Train LambdaRank on ordinal relevance labels grouped by query/video.
 
@@ -136,10 +137,13 @@ def train_lightgbm(
         valid_sets, valid_names = ([valid_dataset], ["validation"]) if has_validation_events else (None, None)
         if has_validation_events:
             callbacks.extend([
-                lgb.early_stopping(config.early_stopping_rounds, first_metric_only=True, verbose=False),
                 lgb.record_evaluation(evals_result),
                 lgb.log_evaluation(period=10),
             ])
+            if early_stopping:
+                callbacks.insert(0, lgb.early_stopping(
+                    config.early_stopping_rounds, first_metric_only=True, verbose=False
+                ))
     else:
         train_dataset = lgb.Dataset(
             train_features, label=train_labels, group=train_groups,
@@ -164,7 +168,8 @@ def train_lightgbm(
         "validation_has_class3_events": bool(has_validation_events) if val_X is not None else None,
         "best_iteration": best_iteration,
         "configured_max_iterations": config.num_iterations,
-        "early_stopping_rounds": config.early_stopping_rounds if val_X is not None else None,
+        "early_stopping": bool(early_stopping) if val_X is not None and has_validation_events else False,
+        "early_stopping_rounds": config.early_stopping_rounds if val_X is not None and has_validation_events and early_stopping else None,
         "training_relevance_grades": sorted(int(x) for x in np.unique(train_labels)),
         "validation_relevance_grades": (
             sorted(int(x) for x in np.unique(valid_labels)) if val_X is not None else None
