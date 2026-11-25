@@ -193,26 +193,35 @@ the ranking defaults by the training configuration loader.
 
 ## LightGBM ranking HPO
 
-Run Optuna hyperparameter optimization with nested leave-one-group-out
-cross-validation:
+Run Optuna hyperparameter optimization and nested leave-one-group-out
+evaluation with one command:
 
 ```powershell
 python -m autocut hpo --config config/train.yaml
 ```
 
-For each outer group, HPO tunes parameters using only the remaining groups.
-The selected configuration is then refit on those outer-training groups and
-evaluated once on the untouched outer group. The reported pooled NMS event
-Segment Recall@5 is therefore an estimate of the complete tuning-and-training
-procedure, not the best inner tuning score.
+The command has two distinct stages:
 
-Features are prepared once and reused across folds. Median/IQR normalization
-is the default. Reports are written separately for each normalization method:
+1. **Nested evaluation:** for each outer group, tune only on the remaining
+   groups, refit on those groups, and evaluate once on the untouched outer
+   group. The pooled outer recall is the unbiased estimate of the complete
+   tuning-and-training procedure.
+2. **Final parameter selection:** after evaluation, run LOVO HPO across all
+   groups and select one parameter set for the production model. This tuning
+   score is for selection only and must not be reported as generalization
+   performance.
 
-- `output/hpo/lightgbm_hpo_nested_segment_recall_at_5_zscore_all_windows_ddof0.json`
-- `output/hpo/lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json`
+The JSON report contains the nested evaluation under `outer_folds` and the
+production configuration in the top-level `best_params` field. The latter
+can be consumed by `train` through:
 
-To compare normalization methods, run HPO twice, changing only:
+```yaml
+hpo:
+  best_params_path: output/hpo/lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json
+```
+
+Median/IQR normalization is the default. To compare normalization methods,
+run HPO again changing only:
 
 ```yaml
 data:
