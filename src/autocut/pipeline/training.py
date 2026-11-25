@@ -107,6 +107,12 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
     pitch_time_offset = data.get("pitch_time_offset", 0.0)
     if isinstance(pitch_time_offset, bool) or not isinstance(pitch_time_offset, (int, float)) or not np.isfinite(float(pitch_time_offset)):
         raise ValueError("data.pitch_time_offset must be a finite number.")
+    normalization = data.get("feature_normalization", "per_video_zscore_all_windows_ddof0")
+    from ..dataset.normalization import SUPPORTED_FEATURE_NORMALIZATIONS
+    if normalization not in SUPPORTED_FEATURE_NORMALIZATIONS:
+        raise ValueError(
+            f"data.feature_normalization must be one of {SUPPORTED_FEATURE_NORMALIZATIONS}."
+        )
     return {
         "sampling_fps": sample_fps,
         "processing_width": processing_width,
@@ -116,7 +122,7 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         "roi_right": roi[1],
         "roi_bottom": roi[2],
         "roi_top": roi[3],
-        "feature_normalization": "per_video_zscore_all_windows_ddof0",
+        "feature_normalization": normalization,
         "pitch_time_offset": float(data.get("pitch_time_offset", 0.0)),
     }
 
@@ -198,6 +204,7 @@ def prepare_lightgbm_manifest_data(
             pitch_timestamps=sequence.pitch_timestamps,
             pitch_rate=sequence.pitch_rate,
             pitch_time_offset=params["pitch_time_offset"],
+            normalization_method=params["feature_normalization"],
         )
         if len(targets) == 0:
             raise ValueError(
