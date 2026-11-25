@@ -22,6 +22,10 @@ def _canonical(grid_vectors, *, flow_u=0.0, flow_v=0.0):
             values[:, FEATURE_NAMES.index(f"grid_{row}_{col}_v")] = np.asarray(
                 grid_vectors
             )[:, row * 3 + col, 1]
+            values[:, FEATURE_NAMES.index(f"grid_{row}_{col}_magnitude")] = np.hypot(
+                np.asarray(grid_vectors)[:, row * 3 + col, 0],
+                np.asarray(grid_vectors)[:, row * 3 + col, 1],
+            )
     values[:, FEATURE_NAMES.index("flow_u")] = flow_u
     values[:, FEATURE_NAMES.index("flow_v")] = flow_v
     return values
