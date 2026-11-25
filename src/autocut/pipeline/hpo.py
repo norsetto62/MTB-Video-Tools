@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
     "objective": {"choices": ["lambdarank", "rank_xendcg"]},
     "num_leaves": {"choices": [15, 31, 63]},
-    # Iteration count is selected inside inner group CV, never on the outer fold.
-    "num_iterations": {"choices": [300, 600, 1000, 1600]},
-    "learning_rate": {"low": 0.01, "high": 0.1, "log": True},
+    # Each candidate is trained for this fixed number of rounds; no fold early stopping.
+    "num_iterations": {"choices": [300, 500, 800]},
+    "learning_rate": {"low": 0.02, "high": 0.08, "log": True},
     "max_depth": {"choices": [3, 4, 5, 6]},
     "min_data_in_leaf": {"choices": [10, 20, 50, 100]},
     "feature_fraction": {"low": 0.6, "high": 1.0},
@@ -116,6 +116,10 @@ def _validated_search_space(settings: Any) -> dict[str, dict[str, Any]]:
                         raise ValueError(f"Integer search parameter {name!r} requires an integer step.")
                     if "step" in spec:
                         spec["step"] = int(spec["step"])
+                    if log_scale and spec.get("step", 1) != 1:
+                        raise ValueError(
+                            f"Integer search parameter {name!r} cannot combine log=true with step != 1."
+                        )
                     spec["low"] = int(low)
                     spec["high"] = int(high)
                 elif "step" in spec and spec["log"]:
@@ -196,9 +200,11 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     study_name = section.get("study_name", "ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
-    # Do not mix historical NDCG trial values with the new event-recall objective.
-    if not study_name.endswith("_segment_recall_at_5"):
-        study_name = f"{study_name}_segment_recall_at_5"
+    # Isolate fixed-iteration trials from all historical early-stopped studies.
+    if not study_name.endswith("_segment_recall_at_5_fixed_iters"):
+        if not study_name.endswith("_segment_recall_at_5"):
+            study_name = f"{study_name}_segment_recall_at_5"
+        study_name = f"{study_name}_fixed_iters"
     progress = section.get("progress", True)
     if not isinstance(progress, bool):
         raise ValueError("hpo.progress must be true or false.")
