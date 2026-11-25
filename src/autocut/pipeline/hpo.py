@@ -529,6 +529,23 @@ def run_nested_lightgbm_evaluation(
                 "inner_hpo_best_params": best_params,
             },
         )
+        history = outer_fold.summary.get("evaluation_history", {})
+        recall_curve = history.get("validation", {}).get("segment_recall_at_5", [])
+        if recall_curve:
+            peak_offset = int(np.argmax(recall_curve))
+            iteration_diagnostic = {
+                "configured_iterations": int(selected_config.num_iterations),
+                "peak_iteration": peak_offset + 1,
+                "peak_recall_at_5": float(recall_curve[peak_offset]),
+                "recall_at_configured_iteration": float(recall_curve[-1]),
+                "peak_minus_final": float(recall_curve[peak_offset] - recall_curve[-1]),
+                "interpretation": "post-hoc diagnostic only; never used for iteration or hyperparameter selection",
+            }
+        else:
+            iteration_diagnostic = {
+                "configured_iterations": int(selected_config.num_iterations),
+                "curve_available": False,
+            }
         outer_metrics = outer_fold.summary.get("validation_metrics", {})
         outer_per_video = outer_metrics.get("per_video", {})
         # segment_recall_at_k numbers videos by their position in the
@@ -562,9 +579,8 @@ def run_nested_lightgbm_evaluation(
             "outer_evaluated_videos": len(outer_recalls),
             "outer_training_video_ids": list(outer_fold.train_video_ids),
             "outer_test_video_ids": list(outer_fold.validation_video_ids),
-            "outer_evaluation_history": outer_fold.summary.get(
-                "evaluation_history", {}
-            ),
+            "outer_evaluation_history": history,
+            "iteration_curve_diagnostic": iteration_diagnostic,
         })
         report(
             f"Outer fold {outer_index + 1}/{len(groups)} complete: "
