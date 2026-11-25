@@ -95,7 +95,11 @@ LIGHTGBM_TABULAR_FEATURE_NAMES = tuple(
     f"{signal}_{statistic}"
     for signal in LIGHTGBM_FEATURE_NAMES
     for statistic in LIGHTGBM_WINDOW_STATISTICS
-) + ("pitch_rate_rms",)
+) + (
+    "roll_rate_rms", "pitch_rate_rms", "yaw_rate_rms",
+    "roll_rate_peak", "pitch_rate_peak", "yaw_rate_peak",
+    "accel_dynamic_rms", "accel_dynamic_peak",
+)
 
 
 def append_pitch_rate_rms_feature(windows: FeatureWindows, pitch_rate_rms: np.ndarray) -> FeatureWindows:
@@ -109,6 +113,22 @@ def append_pitch_rate_rms_feature(windows: FeatureWindows, pitch_rate_rms: np.nd
         raise ValueError("pitch_rate_rms must contain one finite value per window.")
     return FeatureWindows(
         X=np.column_stack((values, rms)).astype(np.float32, copy=False),
+        timestamps=np.asarray(windows.timestamps, dtype=np.float64).copy(),
+    )
+
+
+
+def append_imu_features(windows: FeatureWindows, imu_statistics: np.ndarray) -> FeatureWindows:
+    """Append eight window-level DJI IMU statistics to optical-flow rows."""
+    values = np.asarray(windows.X, dtype=np.float32)
+    imu = np.asarray(imu_statistics, dtype=np.float32)
+    expected = len(LIGHTGBM_FEATURE_NAMES) * len(LIGHTGBM_WINDOW_STATISTICS)
+    if values.ndim != 2 or values.shape[1] != expected:
+        raise ValueError(f"Expected {expected} optical-flow columns; got {values.shape}.")
+    if imu.shape != (values.shape[0], 8) or not np.isfinite(imu).all():
+        raise ValueError("imu_statistics must have shape (N,8) and contain finite values.")
+    return FeatureWindows(
+        X=np.column_stack((values, imu)).astype(np.float32, copy=False),
         timestamps=np.asarray(windows.timestamps, dtype=np.float64).copy(),
     )
 
