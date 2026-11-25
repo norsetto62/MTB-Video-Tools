@@ -95,7 +95,7 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     assert inner_group_sets[-1] == {"group_a", "group_b", "group_c"}
     assert result["best_params"]["num_iterations"] == 7
     assert result["final_parameter_selection"]["purpose"] == "production_parameter_selection_only"
-    assert result["study_name"] == "test_nested_segment_recall_at_5_fixed_iters_nms_pooled_median_iqr_all_windows"
+    assert result["study_name"] == "test_nested"
     assert (tmp_path / "hpo.sqlite3").is_file()
     persisted = optuna.load_study(
         study_name=result["study_name"],
