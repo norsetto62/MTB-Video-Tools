@@ -150,6 +150,18 @@ def build_feature_sequence(
             include_pitch_telemetry=include_pitch_telemetry,
         )
         if cached is not None:
+            if include_pitch_telemetry:
+                from ..motion.dji import load_imu_series
+                imu_times, angular_velocity, dynamic_acceleration = load_imu_series(video_path)
+                cached = FeatureSequence(
+                    features=cached.features,
+                    timestamps=cached.timestamps,
+                    pitch_timestamps=cached.pitch_timestamps,
+                    pitch_rate=cached.pitch_rate,
+                    imu_timestamps=imu_times,
+                    imu_angular_velocity=angular_velocity,
+                    imu_acceleration=dynamic_acceleration,
+                )
             logger.info("Feature cache hit: %s (%d rows)", video_path, len(cached.features))
             return cached
         logger.info("Feature cache miss: %s; decoding video", video_path)
@@ -246,12 +258,17 @@ def build_feature_sequence(
     )
 
     pitch_timestamps = pitch_rate = None
+    imu_timestamps = imu_angular_velocity = imu_acceleration = None
     if include_pitch_telemetry:
-        from ..motion.dji import load_pitch_rate_series
+        from ..motion.dji import load_pitch_rate_series, load_imu_series
         pitch_timestamps, pitch_rate = load_pitch_rate_series(video_path)
+        imu_timestamps, imu_angular_velocity, imu_acceleration = load_imu_series(video_path)
     sequence = FeatureSequence(
         features=features, timestamps=timestamp_array,
         pitch_timestamps=pitch_timestamps, pitch_rate=pitch_rate,
+        imu_timestamps=imu_timestamps,
+        imu_angular_velocity=imu_angular_velocity,
+        imu_acceleration=imu_acceleration,
     )
     logger.info(
         "Feature extraction complete: %s (%d rows from %d sampled frames in %.1fs)",
