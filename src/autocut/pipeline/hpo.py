@@ -211,7 +211,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
         study_name = f"{study_name}_fixed_iters"
     if not study_name.endswith("_nms_pooled"):
         study_name = f"{study_name}_nms_pooled"
-    normalization_name = _data_section(settings).get(
+    normalization_name = _section(settings, "data").get(
         "feature_normalization", "per_video_zscore_all_windows_ddof0"
     )
     normalization_slug = str(normalization_name).replace("per_video_", "")
