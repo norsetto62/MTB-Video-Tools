@@ -120,3 +120,11 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
         assert fold["inner_best_params"]["num_iterations"] == 7
         assert fold["outer_group"] not in fold["inner_groups"]
     assert (tmp_path / "lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json").is_file()
+
+    # A second invocation with the same study identity appends trials.
+    hpo.run_hpo("manifest.yaml", settings)
+    resumed = optuna.load_study(
+        study_name=result["study_name"],
+        storage=f"sqlite:///{(tmp_path / 'hpo.sqlite3').as_posix()}",
+    )
+    assert len(resumed.trials) == 2
