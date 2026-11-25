@@ -32,6 +32,8 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
                 held_out_group=group,
                 summary={
                     "validation_metrics": {
+                        "events": 2,
+                        "hit_events": 1,
                         "per_video": {"0": {"recall": 0.5}}
                     }
                 },
@@ -54,7 +56,8 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
             summary={
                 "validation_metrics": {
                     "segment_recall_at_5": 0.75,
-                    "events": 2,
+                    "events": 4,
+                    "hit_events": 3,
                     "per_video": {
                         str(index): {"recall": 0.75}
                         for index, _ in enumerate(validation_ids)
