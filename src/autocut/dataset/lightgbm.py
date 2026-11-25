@@ -11,9 +11,9 @@ import numpy as np
 from ..data_models import Annotation, FeatureSequence, FeatureWindows
 from .normalization import normalize_per_video_features
 from ..motion.engineered import engineer_lightgbm_sequence
-from ..motion.dji import pitch_rate_rms_from_series
+from ..motion.dji import imu_window_statistics
 from .targets import build_majority_vote_targets
-from .windows import append_pitch_rate_rms_feature, build_lightgbm_windows_from_features
+from .windows import append_imu_features, build_lightgbm_windows_from_features
 
 
 def build_lightgbm_training_data(
@@ -22,8 +22,9 @@ def build_lightgbm_training_data(
     *,
     window: float,
     stride: float,
-    pitch_timestamps: np.ndarray,
-    pitch_rate: np.ndarray,
+    imu_timestamps: np.ndarray,
+    imu_angular_velocity: np.ndarray,
+    imu_acceleration: np.ndarray,
     pitch_time_offset: float = 0.0,
     normalization_method: str = "per_video_zscore_all_windows_ddof0",
 ) -> tuple[FeatureWindows, np.ndarray]:
@@ -31,12 +32,13 @@ def build_lightgbm_training_data(
 
     The eight signals are engineered over the entire continuous sequence before
     windowing. Each temporal window is aggregated to 48 optical-flow statistics and receives
-    one additional DJI pitch-rate RMS feature (49 columns total). Targets are duration-weighted majority votes
+    eight DJI IMU statistics (three-axis angular-rate RMS/peaks and dynamic
+    acceleration RMS/peak) are appended to the optical-flow statistics. Targets are duration-weighted majority votes
     over annotated portions of each window, with ties assigned to the higher
     MTB class. Windows with no annotation overlap are omitted.
 
     Returns:
-        A FeatureWindows object whose X has shape (N, 49), plus an int64 target
+        A FeatureWindows object whose X has shape (N, 74), plus an int64 target
         vector of shape (N,). X rows and labels are aligned after unlabeled
         windows have been filtered out.
     """
@@ -47,11 +49,14 @@ def build_lightgbm_training_data(
     tabular_windows = build_lightgbm_windows_from_features(
         signals, sequence.timestamps, window=window, stride=stride,
     )
-    pitch_rms = pitch_rate_rms_from_series(
-        pitch_timestamps, pitch_rate, tabular_windows.timestamps,
+    imu_statistics = imu_window_statistics(
+        imu_timestamps,
+        imu_angular_velocity,
+        imu_acceleration,
+        tabular_windows.timestamps,
         time_offset=pitch_time_offset,
     )
-    tabular_windows = append_pitch_rate_rms_feature(tabular_windows, pitch_rms)
+    tabular_windows = append_imu_features(tabular_windows, imu_statistics)
     # Normalize over every window from this video before dropping windows
     # that have no unambiguous annotation target. Inference has no labels, so
     # its normalization statistics must be computed over the complete video.
