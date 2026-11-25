@@ -211,6 +211,12 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
         study_name = f"{study_name}_fixed_iters"
     if not study_name.endswith("_nms_pooled"):
         study_name = f"{study_name}_nms_pooled"
+    normalization_name = _data_section(settings).get(
+        "feature_normalization", "per_video_zscore_all_windows_ddof0"
+    )
+    normalization_slug = str(normalization_name).replace("per_video_", "")
+    if not study_name.endswith(f"_{normalization_slug}"):
+        study_name = f"{study_name}_{normalization_slug}"
     progress = section.get("progress", True)
     if not isinstance(progress, bool):
         raise ValueError("hpo.progress must be true or false.")
@@ -609,7 +615,11 @@ def run_nested_lightgbm_evaluation(
     )
     output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "lightgbm_nested_cv_segment_recall_at_5.json"
+    normalization_name = data_config.get(
+        "feature_normalization", "per_video_zscore_all_windows_ddof0"
+    )
+    normalization_slug = str(normalization_name).replace("per_video_", "")
+    output_path = output_dir / f"lightgbm_nested_cv_segment_recall_at_5_{normalization_slug}.json"
     payload = {
         "evaluation": "nested_leave_one_group_out_hpo",
         "metric": "segment_recall_at_5",
