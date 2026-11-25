@@ -52,6 +52,9 @@ class FeatureSequence:
     timestamps: np.ndarray
     pitch_timestamps: np.ndarray | None = None
     pitch_rate: np.ndarray | None = None
+    imu_timestamps: np.ndarray | None = None
+    imu_angular_velocity: np.ndarray | None = None
+    imu_acceleration: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.features.ndim != 2:
@@ -103,6 +106,34 @@ class FeatureSequence:
                 raise ValueError("pitch telemetry arrays must contain only finite values.")
             if not np.all(np.diff(self.pitch_timestamps) > 0):
                 raise ValueError("pitch_timestamps must be strictly increasing.")
+        imu_fields = (
+            self.imu_timestamps,
+            self.imu_angular_velocity,
+            self.imu_acceleration,
+        )
+        if any(value is not None for value in imu_fields):
+            if any(value is None for value in imu_fields):
+                raise ValueError("All IMU telemetry arrays must be provided together.")
+            if self.imu_timestamps.ndim != 1:
+                raise ValueError("imu_timestamps must be one-dimensional.")
+            if self.imu_angular_velocity.shape != (len(self.imu_timestamps), 3):
+                raise ValueError("imu_angular_velocity must have shape (N,3).")
+            if self.imu_acceleration.shape != (len(self.imu_timestamps), 3):
+                raise ValueError("imu_acceleration must have shape (N,3).")
+            if len(self.imu_timestamps) < 3:
+                raise ValueError("IMU telemetry must contain at least three samples.")
+            if any(
+                array.dtype != np.float64
+                for array in (self.imu_timestamps, self.imu_angular_velocity, self.imu_acceleration)
+            ):
+                raise ValueError("IMU telemetry arrays must have dtype float64.")
+            if not all(
+                np.isfinite(array).all()
+                for array in (self.imu_timestamps, self.imu_angular_velocity, self.imu_acceleration)
+            ):
+                raise ValueError("IMU telemetry arrays must contain only finite values.")
+            if not np.all(np.diff(self.imu_timestamps) > 0):
+                raise ValueError("imu_timestamps must be strictly increasing.")
 
 
 @dataclass(frozen=True)
