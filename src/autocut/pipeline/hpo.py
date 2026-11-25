@@ -383,14 +383,6 @@ def run_hpo(
     study_name = section.get("study_name", "ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
-    if not study_name.endswith("_segment_recall_at_5_fixed_iters"):
-        if not study_name.endswith("_segment_recall_at_5"):
-            study_name = f"{study_name}_segment_recall_at_5"
-        study_name = f"{study_name}_fixed_iters"
-    if not study_name.endswith("_nms_pooled"):
-        study_name = f"{study_name}_nms_pooled"
-    if not study_name.endswith(f"_{normalization_slug}"):
-        study_name = f"{study_name}_{normalization_slug}"
 
     # Preserve the old HPO proxy-group option for the production-parameter
     # search only. Nested evaluation above always uses every manifest group.
@@ -431,7 +423,7 @@ def run_hpo(
             + f" ({len(final_prepared)} videos)."
         )
 
-    db_path = Path(section.get("storage_path", "data/db/hpo.db")).expanduser()
+    db_path = Path(section.get("storage_path", "data/db/hpo_study.db")).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{db_path.resolve().as_posix()}"
     final_study = optuna.create_study(
