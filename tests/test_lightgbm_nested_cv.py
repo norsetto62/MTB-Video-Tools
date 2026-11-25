@@ -1,4 +1,4 @@
-"""Tests for nested leave-one-group-out LightGBM HPO evaluation."""
+"""Tests for nested evaluation and final parameter selection in LightGBM HPO."""
 from types import SimpleNamespace
 
 import pytest
@@ -24,8 +24,11 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     )
 
     inner_group_sets = []
+    lovo_call_count = 0
 
     def fake_lovo(video_data, group_by_video, *, config, collect_evaluation_history=True, data_config=None):
+        nonlocal lovo_call_count
+        lovo_call_count += 1
         inner_group_sets.append(set(group_by_video.values()))
         return tuple(
             SimpleNamespace(
@@ -85,7 +88,11 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     }
     result = hpo.run_hpo("manifest.yaml", settings)
 
-    assert len(inner_group_sets) == 3
+    assert len(inner_group_sets) == 4
+    assert lovo_call_count == 4
+    assert inner_group_sets[-1] == {"group_a", "group_b", "group_c"}
+    assert result["best_params"]["num_iterations"] == 7
+    assert result["final_parameter_selection"]["purpose"] == "production_parameter_selection_only"
     assert inner_group_sets == [
         {"group_b", "group_c"},
         {"group_a", "group_c"},
