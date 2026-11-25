@@ -212,7 +212,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     if not study_name.endswith("_nms_pooled"):
         study_name = f"{study_name}_nms_pooled"
     normalization_name = _section(settings, "data").get(
-        "feature_normalization", "per_video_zscore_all_windows_ddof0"
+        "feature_normalization", "per_video_median_iqr_all_windows"
     )
     normalization_slug = str(normalization_name).replace("per_video_", "")
     if not study_name.endswith(f"_{normalization_slug}"):
@@ -616,7 +616,7 @@ def run_nested_lightgbm_evaluation(
     output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     normalization_name = data_config.get(
-        "feature_normalization", "per_video_zscore_all_windows_ddof0"
+        "feature_normalization", "per_video_median_iqr_all_windows"
     )
     normalization_slug = str(normalization_name).replace("per_video_", "")
     output_path = output_dir / f"lightgbm_nested_cv_segment_recall_at_5_{normalization_slug}.json"
