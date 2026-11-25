@@ -7,6 +7,7 @@ each video query.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 import json
 from pathlib import Path
 from typing import Any
@@ -392,12 +393,15 @@ def run_lightgbm_train_from_manifest(
             raise ValueError(
                 f"HPO results file {hpo_best_params_path} has no best_params mapping."
             )
-        allowed_params = set(LightGBMConfig.__dataclass_fields__) - {"task"}
+        allowed_params = set(LightGBMConfig.__dataclass_fields__)
         unknown_params = sorted(set(best_params) - allowed_params)
         if unknown_params:
             raise ValueError(
                 f"HPO results contain unsupported LightGBM parameter(s): {unknown_params}."
             )
+        if best_params.get("task", "train") != "train":
+            raise ValueError("HPO best_params task must be train.")
+        best_params = {key: value for key, value in best_params.items() if key != "task"}
         try:
             config = replace(config, **best_params)
         except (TypeError, ValueError) as exc:
