@@ -295,21 +295,21 @@ The previous PU/BiLSTM implementation is retired from this development branch. I
 
 ## 17. Feature Preparation
 
-The canonical optical-flow sequence is transformed into the eight LightGBM motion signals, then windowed and aggregated into the 48-column tabular feature schema.
+The canonical optical-flow sequence is transformed into eleven LightGBM motion signals: the original directional/relative signals, mean grid-flow magnitude, and signed divergence and curl. These are windowed and aggregated into 66 optical-flow statistics. Eight DJI IMU statistics are appended: roll/pitch/yaw angular-rate RMS and peak absolute rate, plus dynamic-acceleration RMS and peak magnitude. The resulting model input has 74 columns.
 
-Feature normalization is performed independently per video across all of that video's windows (population standard deviation, ddof=0; constant columns become zero). Training and inference must use the same feature order, transformations, and normalization policy. These choices are recorded in the checkpoint metadata.
+Quaternion-derived angular rates use relative WXYZ quaternion rotations rather than Euler-angle differentiation. Dynamic acceleration is gravity-compensated using the DJI telemetry parser; the parser must identify accelerometer units as g, m/s2, or mg before these features are accepted. The model input uses per-video normalization selected in the training data configuration: z-score or median/IQR.
 
-DJI pitch-rate RMS remains a separately tested telemetry feature candidate; it is not silently included in the active 48-column schema.
+Training and inference must use the same feature order, transformations, and normalization policy. These choices are recorded in checkpoint metadata.
 
 ---
 
 ## 18. Training and Validation
 
-The primary training command fits one production LightGBM ranker using the configured training/validation group split to select the number of boosting iterations, then refits on all annotated videos.
+The active Segment Recall@5 metric uses greedy temporal non-maximum suppression (IoU threshold 0.3) before selecting the top five windows independently per video. Its headline value is pooled event recall: total distinct class-3 events hit divided by total class-3 events. Per-video recall remains a diagnostic, not the headline aggregation.
 
-LOVO validation holds out one complete manifest group at a time. Each video remains an independent ranking query, and evaluation reports ranking/segment metrics.
+The primary evaluation command runs nested leave-one-group-out CV. For each outer group, Optuna tunes only on the remaining inner groups, then a fixed-iteration model is refit on those groups and scored once on the untouched outer group. The final production model uses the selected HPO parameters and fixed iteration count; the production validation split does not choose a new best iteration.
 
-Optuna HPO compares the configured LightGBM ranking objectives over the same grouped folds. Trials must be compared using the same manifest, feature cache, and fold set.
+Optuna HPO trials must be compared using the same manifest, feature cache, normalization method, and fold set. Use separate nested-CV runs for z-score and median/IQR normalization; their reports are written to distinct files.
 
 ---
 
