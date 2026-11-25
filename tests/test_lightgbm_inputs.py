@@ -61,6 +61,24 @@ def test_lightgbm_signals_use_global_net_flow_and_relative_center_residual():
 
 
 
+
+def test_scene_flow_energy_survives_vector_cancellation_and_signed_derivatives():
+    vectors = np.zeros((1, 9, 2), dtype=np.float32)
+    # Opposing horizontal vectors cancel in the global mean vector, but their
+    # magnitudes remain high. u=x and v=y also form a positive-divergence field.
+    for row in range(3):
+        for col in range(3):
+            vectors[0, row * 3 + col] = (float(col - 1), float(row - 1))
+    canonical = _canonical(vectors, flow_u=0.0, flow_v=0.0)
+    result = engineer_lightgbm_sequence(canonical)
+    assert result[0, 5] == pytest.approx(0.0)  # net/global vector magnitude
+    assert result[0, 8] == pytest.approx(np.mean(np.hypot(
+        vectors[0, :, 0], vectors[0, :, 1]
+    )))
+    assert result[0, 9] == pytest.approx(4.0)  # du/dx + dv/dy
+    assert result[0, 10] == pytest.approx(0.0)  # dv/dx - du/dy
+
+
 def test_tunnel_vision_uses_all_eight_peripheral_cell_residuals():
     vectors = np.zeros((1, 9, 2), dtype=np.float32)
     vectors[0, :, 0] = [3.0, 4.0, 5.0, 6.0, 1.0, 7.0, 8.0, 9.0, 10.0]
