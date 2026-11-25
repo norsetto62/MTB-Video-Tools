@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-COMMANDS = ("run", "audit", "train", "test", "score-report", "lovo", "hpo", "nested-cv", "models")
+COMMANDS = ("run", "audit", "train", "test", "score-report", "lovo", "hpo", "models")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,13 +86,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Training and HPO YAML configuration file",
     )
     hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
-
-    nested_cv = subparsers.add_parser(
-        "nested-cv",
-        help="Estimate LightGBM HPO performance with nested leave-one-group-out validation.",
-    )
-    nested_cv.add_argument("--config", type=Path, default=Path("config/train.yaml"))
-    nested_cv.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
     models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
@@ -288,28 +281,6 @@ def dispatch(args: argparse.Namespace) -> int:
         ], indent=2, default=str))
         return 0
 
-
-    if args.command == "nested-cv":
-        from .config_loader import load_config
-        from .pipeline.hpo import run_nested_lightgbm_evaluation
-
-        settings = load_config(args.config)
-        logging_section = settings.get("logging", {})
-        if not hasattr(logging_section, "get"):
-            raise ValueError("Configuration section 'logging' must be a mapping.")
-        _configure_logging(logging_section.get("level", "INFO"))
-        data = settings.get("data", {})
-        if not hasattr(data, "get"):
-            raise ValueError("Configuration section 'data' must be a mapping.")
-        manifest = args.manifest or Path(
-            data.get("manifest", "data/manifest/annotations_manifest.yaml")
-        ).expanduser()
-        if not manifest.is_file():
-            print(f"Dataset manifest not found: {manifest}", file=sys.stderr)
-            return 2
-        result = run_nested_lightgbm_evaluation(manifest, settings)
-        print(json.dumps(result, indent=2, default=str))
-        return 0
 
     if args.command == "hpo":
         from .config_loader import load_config
