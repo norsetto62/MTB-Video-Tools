@@ -101,4 +101,4 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
         }
         assert fold["inner_best_params"]["num_iterations"] == 7
         assert fold["outer_group"] not in fold["inner_groups"]
-    assert (tmp_path / "lightgbm_nested_cv_segment_recall_at_5.json").is_file()
+    assert (tmp_path / "lightgbm_nested_cv_segment_recall_at_5_zscore_all_windows_ddof0.json").is_file()
