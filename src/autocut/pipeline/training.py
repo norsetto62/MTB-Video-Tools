@@ -201,8 +201,9 @@ def prepare_lightgbm_manifest_data(
             sequence,
             annotations,
             window=params["window"], stride=params["stride"],
-            pitch_timestamps=sequence.pitch_timestamps,
-            pitch_rate=sequence.pitch_rate,
+            imu_timestamps=sequence.imu_timestamps,
+            imu_angular_velocity=sequence.imu_angular_velocity,
+            imu_acceleration=sequence.imu_acceleration,
             pitch_time_offset=params["pitch_time_offset"],
             normalization_method=params["feature_normalization"],
         )
