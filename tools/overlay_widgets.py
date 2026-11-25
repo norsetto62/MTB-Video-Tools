@@ -797,9 +797,76 @@ def upsample_samples(samples: list[dict], target_fps: float) -> list[dict]:
     upsampled.append(samples[-1])
     return upsampled
 
+
+def run_video_pitch_only(args, parser) -> None:
+    """Generate a camera-pitch overlay directly from video IMU, without telemetry."""
+    if args.video is None or not args.video.is_file():
+        parser.error("Specifica un file video valido con --video per generare il widget pitch.")
+
+    print(f"Estrazione dati IMU da {args.video}...")
+    try:
+        imu_samples, _ = extract_clip(args.video)
+        rows, _ = process(imu_samples, "quat", 1.0, True, "auto", ())
+    except Exception as exc:
+        parser.error(f"Impossibile estrarre/elaborare i dati IMU dal video: {exc}")
+
+    if not rows:
+        parser.error("Il video non contiene campioni IMU utilizzabili per il widget pitch.")
+
+    log_times = [float(row["sample"]["t"]) for row in rows]
+    pitches = [row.get("pitch") for row in rows]
+    if len(log_times) != len(pitches) or any(
+        later <= earlier for earlier, later in zip(log_times, log_times[1:])
+    ):
+        parser.error("La timeline IMU del video non è valida.")
+
+    start_time = log_times[0] + args.start
+    end_time = log_times[-1]
+    if args.duration is not None:
+        end_time = min(end_time, start_time + args.duration)
+    if start_time > end_time:
+        parser.error("L'intervallo richiesto non contiene campioni IMU.")
+
+    source_deltas = [
+        later - earlier for earlier, later in zip(log_times, log_times[1:])
+        if later > earlier
+    ]
+    source_fps = 1.0 / statistics.median(source_deltas) if source_deltas else 1.0
+    fps = args.fps or source_fps
+    output_times = output_timestamps(start_time, end_time, fps)
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    width = int(args.size * 2.36)
+    writer = WebMWriter(
+        args.output_dir / "pitch.webm", width, args.size, fps, args.crf
+    )
+    try:
+        for index, timestamp in enumerate(output_times):
+            pitch = interpolate_series(log_times, pitches, timestamp, angular=True)
+            value = "----" if pitch is None else f"{pitch:.1f}"
+            color = (
+                (70, 220, 100, 255)
+                if pitch is None or pitch >= 0 else (240, 100, 90, 255)
+            )
+            writer.write(create_single_widget(
+                "CAMERA PITCH", value, "°", args.size, width, color,
+            ))
+            if (index + 1) % max(1, int(fps * 10)) == 0:
+                print(f"Generati {index + 1}/{len(output_times)} frame...", flush=True)
+        writer.close()
+    except Exception:
+        if writer.process.poll() is None:
+            writer.process.terminate()
+            writer.process.wait()
+        raise
+
+    print(f"Esportazione pitch completata: {len(output_times)} frame @ {fps:.3f} FPS")
+    print(f"  - {args.output_dir / 'pitch.webm'}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Genera overlay WebM trasparenti da telemetria Avinox (.proto) o DJI (.srt)"
+        description="Genera overlay WebM trasparenti da telemetria Avinox/DJI o dal pitch IMU del video"
     )
     parser.add_argument("recording", nargs="?", type=Path, help="File telemetria .proto Avinox oppure .srt DJI")
     parser.add_argument("--output-dir", type=Path, default=Path("output_widgets"),
@@ -847,10 +914,6 @@ def main():
         print("        python tools/overlay_widgets.py drone.srt --widgets rel_alt,abs_alt,camera,track\n")
         return
 
-    if not args.recording:
-        parser.error("Specifica un file .proto Avinox o .srt DJI (oppure usa --list-widgets).")
-    if not args.recording.is_file():
-        parser.error(f"File di telemetria non trovato: {args.recording}")
     if args.size <= 0:
         parser.error("--size deve essere maggiore di zero.")
     if args.fps is not None and args.fps <= 0:
@@ -859,6 +922,23 @@ def main():
         parser.error("--crf deve essere compreso tra 0 e 63.")
     if not shutil.which("ffmpeg"):
         parser.error("ffmpeg non trovato. Installa FFmpeg e assicurati che sia nel PATH.")
+
+    if args.recording is None:
+        requested_widgets = args.widgets if args.widgets is not None else "pitch"
+        selected_widgets = list(dict.fromkeys(
+            widget.strip().lower()
+            for widget in requested_widgets.split(",") if widget.strip()
+        ))
+        if selected_widgets != ["pitch"]:
+            parser.error(
+                "Senza un file .proto/.srt è disponibile solo il widget pitch da video. "
+                "Usa --widgets pitch."
+            )
+        run_video_pitch_only(args, parser)
+        return
+
+    if not args.recording.is_file():
+        parser.error(f"File di telemetria non trovato: {args.recording}")
 
     source_suffix = args.recording.suffix.lower()
     if source_suffix == ".srt":
