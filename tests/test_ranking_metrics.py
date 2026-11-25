@@ -38,7 +38,9 @@ def test_pooled_recall_weights_videos_by_event_count():
     assert result["per_video"]["1"]["recall"] == pytest.approx(0.0)
     assert result["mean_per_video_event_recall"] == pytest.approx(0.5)
     assert result["pooled_event_recall"] == pytest.approx(2 / 5)
-    assert result["segment_recall_at_5"] == pytest.approx(2 / 5)
+    assert result["segment_recall_at_k"] == pytest.approx(2 / 5)
+    assert result["pooled_event_recall"] == pytest.approx(2 / 5)
+    assert result["segment_recall_at_5"] is None  # k=2; the named @5 field is intentionally unset
 
 
 def test_class2_does_not_join_or_create_class3_event():
