@@ -189,12 +189,12 @@ def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str,
     return params
 
 def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
-    """Tune LightGBM hyperparameters by mean per-video MTB-3 Segment Recall@5.
+    """Tune LightGBM hyperparameters by pooled NMS-suppressed MTB-3 event Recall@5.
 
     Each video is a separate query for LambdaRank and evaluation. Optuna
-    maximizes the unweighted mean per-video Segment Recall@5 pooled across all
-    held-out LOVO folds; groups with more evaluated videos therefore contribute
-    proportionally more to the objective. This best-trial value is a tuning
+    maximizes total distinct events hit divided by total annotated events across
+    held-out LOVO folds. This is pooled across events, not an average of video
+    recalls; videos with more annotated events contribute proportionally more. This best-trial value is a tuning
     score, not an unbiased performance estimate; use nested CV's outer scores.
     """
     section = _hpo_section(settings)
@@ -299,39 +299,38 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
                 "ranking_hpo_trial": trial.number,
             },
         )
-        per_video_scores: list[float] = []
+        total_events = total_hits = 0
         per_fold: dict[str, float] = {}
         for fold in folds:
             metrics = fold.summary.get("validation_metrics", {})
-            score = metrics.get("segment_recall_at_5")
-            if score is not None and np.isfinite(float(score)):
-                per_fold[fold.held_out_group] = float(score)
-                per_video = metrics.get("per_video", {})
-                per_video_scores.extend(
-                    float(item["recall"])
-                    for item in per_video.values()
-                    if np.isfinite(float(item["recall"]))
-                )
-        if not per_video_scores:
+            events = int(metrics.get("events", 0))
+            hits = int(metrics.get("hit_events", 0))
+            if events:
+                per_fold[fold.held_out_group] = hits / events
+                total_events += events
+                total_hits += hits
+        if total_events == 0:
             raise ValueError(
-                f"Trial {trial.number} produced no validation videos with class-3 events."
+                f"Trial {trial.number} produced no validation class-3 events."
             )
-        mean_recall = float(np.mean(per_video_scores))
-        trial.set_user_attr("metric", "segment_recall_at_5")
-        trial.set_user_attr("mean_segment_recall_at_5", mean_recall)
+        pooled_recall = float(total_hits / total_events)
+        trial.set_user_attr("metric", "nms_pooled_segment_recall_at_5")
+        trial.set_user_attr("pooled_segment_recall_at_5", pooled_recall)
+        trial.set_user_attr("total_events", total_events)
+        trial.set_user_attr("total_hits", total_hits)
         trial.set_user_attr("fold_segment_recall_at_5", per_fold)
-        trial.set_user_attr("evaluated_video_count", len(per_video_scores))
+        trial.set_user_attr("evaluated_event_count", total_events)
         trial.set_user_attr("evaluated_folds", sorted(per_fold))
         logger.info(
             "LightGBM HPO trial %d: objective=%s, mean Segment Recall@5=%.5f, folds=%s",
             trial.number, params.get("objective", base_config.objective),
-            mean_recall, per_fold,
+            pooled_recall, per_fold,
         )
         report(
             f"Trial {trial_counter}/{n_trials} finished: "
-            f"mean Segment Recall@5={mean_recall:.5f}."
+            f"pooled NMS Segment Recall@5={pooled_recall:.5f}."
         )
-        return mean_recall
+        return pooled_recall
 
     objective_description = (
         search_space["objective"].get("choices", search_space["objective"].get("fixed"))
@@ -363,7 +362,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "study_name": study_name,
-        "objective": "mean_per_video_segment_recall_at_5",
+        "objective": "pooled_nms_event_segment_recall_at_5",
         "metric": "segment_recall_at_5",
         "direction": "maximize",
         "evaluated_groups": sorted(set(group_by_video.values())),
@@ -371,6 +370,8 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
         "completed_trials": len(completed),
         "best_trial_number": best.number,
         "best_value": best.value,
+        "best_total_events": best.user_attrs.get("total_events"),
+        "best_total_hits": best.user_attrs.get("total_hits"),
         "fixed_search_params": fixed_search_params,
         "best_params": _effective_params(base_config, search_space, best.params),
         "best_fold_segment_recall_at_5": best.user_attrs.get("fold_segment_recall_at_5", {}),
@@ -439,6 +440,7 @@ def run_nested_lightgbm_evaluation(
         )
 
     outer_results: list[dict[str, Any]] = []
+    outer_total_events = outer_total_hits = 0
     all_outer_video_recalls: list[float] = []
     for outer_index, outer_group in enumerate(groups):
         inner_groups = [group for group in groups if group != outer_group]
@@ -476,29 +478,24 @@ def run_nested_lightgbm_evaluation(
                     "trial": trial.number,
                 },
             )
-            recalls: list[float] = []
+            total_events = total_hits = 0
             per_fold: dict[str, float | None] = {}
             for inner_fold in inner_folds:
                 metrics = inner_fold.summary.get("validation_metrics", {})
-                per_video = metrics.get("per_video", {})
-                values = [
-                    float(item["recall"])
-                    for item in per_video.values()
-                    if item.get("recall") is not None
-                    and np.isfinite(float(item["recall"]))
-                ]
-                per_fold[inner_fold.held_out_group] = (
-                    float(np.mean(values)) if values else None
-                )
-                recalls.extend(values)
-            if not recalls:
+                events = int(metrics.get("events", 0))
+                hits = int(metrics.get("hit_events", 0))
+                per_fold[inner_fold.held_out_group] = hits / events if events else None
+                total_events += events
+                total_hits += hits
+            if total_events == 0:
                 raise ValueError(
                     f"Outer group {outer_group!r}, inner trial {trial.number} "
-                    "has no inner-validation videos with class-3 events."
+                    "has no inner-validation class-3 events."
                 )
-            score = float(np.mean(recalls))
+            score = float(total_hits / total_events)
             trial.set_user_attr("inner_fold_segment_recall_at_5", per_fold)
-            trial.set_user_attr("inner_evaluated_video_count", len(recalls))
+            trial.set_user_attr("inner_event_count", total_events)
+            trial.set_user_attr("inner_event_hits", total_hits)
             return score
 
         study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
@@ -561,9 +558,11 @@ def run_nested_lightgbm_evaluation(
             ):
                 outer_recalls[video_id] = float(item["recall"])
         all_outer_video_recalls.extend(outer_recalls.values())
-        outer_score = (
-            float(np.mean(list(outer_recalls.values()))) if outer_recalls else None
-        )
+        outer_events = int(outer_metrics.get("events", 0))
+        outer_hits = int(outer_metrics.get("hit_events", 0))
+        outer_total_events += outer_events
+        outer_total_hits += outer_hits
+        outer_score = float(outer_hits / outer_events) if outer_events else None
         outer_results.append({
             "outer_group": outer_group,
             "inner_groups": inner_groups,
@@ -593,10 +592,7 @@ def run_nested_lightgbm_evaluation(
         for item in outer_results
         if item["outer_segment_recall_at_5"] is not None
     ]
-    mean_score = (
-        float(np.mean(all_outer_video_recalls))
-        if all_outer_video_recalls else None
-    )
+    mean_score = float(outer_total_hits / outer_total_events) if outer_total_events else None
     std_score = (
         float(np.std(all_outer_video_recalls, ddof=1))
         if len(all_outer_video_recalls) > 1 else (0.0 if all_outer_video_recalls else None)
@@ -615,7 +611,7 @@ def run_nested_lightgbm_evaluation(
     payload = {
         "evaluation": "nested_leave_one_group_out_hpo",
         "metric": "segment_recall_at_5",
-        "aggregation": "unweighted_mean_over_outer_test_videos_with_class3_events",
+        "aggregation": "pooled_hits_divided_by_events_after_per_video_temporal_nms",
         "direction": "maximize",
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "groups": groups,
@@ -624,6 +620,8 @@ def run_nested_lightgbm_evaluation(
         "prepared_video_count": len(prepared),
         "class3_event_target_diagnostics": data_config.get("class3_event_target_diagnostics", {}),
         "evaluated_outer_video_count": len(all_outer_video_recalls),
+        "outer_total_events": outer_total_events,
+        "outer_total_hits": outer_total_hits,
         "mean_outer_segment_recall_at_5": mean_score,
         "std_outer_video_segment_recall_at_5": std_score,
         "mean_outer_group_segment_recall_at_5": mean_fold_score,
@@ -637,7 +635,7 @@ def run_nested_lightgbm_evaluation(
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     payload["results_path"] = str(output_path)
     report(
-        f"Nested CV complete: mean outer per-video Segment Recall@5="
+        f"Nested CV complete: pooled outer NMS Segment Recall@5="
         f"{mean_score if mean_score is not None else 'undefined'}; "
         f"results saved to {output_path}."
     )
