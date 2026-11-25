@@ -180,61 +180,66 @@ python -m autocut train data/manifest/annotations_manifest.yaml --config config/
 
 The LightGBM hyperparameters are configured in the `training` YAML section. The former PU/BiLSTM `training` options (epochs, batch size, hidden dimensions, dropout, positive prior and threshold, and related fields) are no longer used and should be removed. The former `lightgbm` section has been renamed to `training`.
 
-The pitch-rate RMS is computed from the DJI quaternion telemetry stored in each source MP4. Existing optical-flow NPZ caches are augmented atomically with the raw pitch timestamps and rates; the cached optical-flow arrays are not regenerated. Set `data.pitch_time_offset` only when the telemetry and video elapsed-time origins differ (default: `0.0`).
+The IMU features are computed from DJI WXYZ quaternion telemetry and gravity-compensated accelerometer samples stored in each source MP4. Angular rates are derived from relative quaternion rotations; acceleration features are expressed in g after the telemetry parser identifies the source units. Set `data.pitch_time_offset` only when the telemetry and video elapsed-time origins differ (default: `0.0`; the key retains its legacy name).
 
 The default checkpoint is `models/lightgbm/ranker.json`, overridable with
 `--checkpoint` or `experiment.lightgbm_model_path` in the configuration.
 Ranking does not require every grade in every split, but at least one
 training video must contain multiple relevance grades so that preference pairs
-exist. The summary includes the selected iteration, validation NDCG history,
+exist. The summary includes the configured fixed iteration count, validation metric history,
 configured group/video IDs, query sizes, checkpoint path, and row counts.
 Older YAML settings `objective: multiclass` and `num_class: 4` are migrated to
 the ranking defaults by the training configuration loader.
 
 ## LightGBM ranking HPO
 
-Tune the LightGBM ranking hyperparameters with Optuna. The default search
-space explicitly compares `lambdarank` and `rank_xendcg` while holding the
-data preparation and per-video query grouping fixed. Trials are scored by the
-mean held-out-group NDCG at the configured `hpo.ndcg_cutoff` (default
-10); use the same manifest and fold set when comparing objectives. The study
-is persisted in `data/db/hpo.db` and the trial table plus best
-parameters are exported to `output/hpo/ranking_hpo_results.json`.
+Tune LightGBM hyperparameters with Optuna. The objective is NMS-suppressed,
+pooled event Segment Recall@5: greedy temporal NMS (IoU 0.3) removes redundant
+overlapping windows before selecting five predictions per video, and the score
+is total distinct events hit divided by total class-3 events. It is not an
+unweighted mean of per-video recalls.
+
+The standard HPO command runs trials over grouped LOVO folds. Its best trial
+is still a tuning result, not an unbiased performance estimate. Use nested
+leave-one-group-out evaluation for the estimate:
+
+```powershell
+python -m autocut nested-cv --config config/train.yaml
+```
+
+Nested CV prepares features once, tunes only within the outer-training groups,
+refits using the selected fixed iteration count, and evaluates each untouched
+outer group once. Reports are written separately for each normalization method:
+`output/hpo/lightgbm_nested_cv_segment_recall_at_5_zscore_all_windows_ddof0.json`
+and
+`output/hpo/lightgbm_nested_cv_segment_recall_at_5_median_iqr_all_windows.json`.
+
+To compare normalization, run the same nested procedure twice, changing only:
+
+```yaml
+data:
+  feature_normalization: per_video_zscore_all_windows_ddof0
+```
+
+or:
+
+```yaml
+data:
+  feature_normalization: per_video_median_iqr_all_windows
+```
+
+The full-data HPO command remains available:
 
 ```powershell
 python -m autocut hpo --config config/train.yaml
 ```
 
-Optional configuration belongs in the `hpo` YAML section:
+Its study name is versioned by metric and normalization so trials from the
+previous early-stopped objective or a different normalizer cannot contaminate
+the current search. To apply the exported parameters to production training,
+set the results JSON as `hpo.best_params_path` and run `train`; the selected
+fixed `num_iterations` is used unchanged by the production refit.
 
-```yaml
-hpo:
-  study_name: lightgbm_ranking_hpo
-  n_trials: 30
-  ndcg_cutoff: 10
-  storage_path: data/db/hpo.db
-  output_dir: output/hpo
-  search_space:
-    objective:
-      choices: [lambdarank, rank_xendcg]
-    bagging_frequency:
-      choices: [1, 3, 5]
-    lambda_l1:
-      low: 0.01
-      high: 1.0
-      log: true
-    lambda_l2:
-      low: 0.001
-      high: 10.0
-      log: true
-```
-
-The default search space is used for parameters not explicitly listed. The
-objective choices must include both ranking objectives so the comparison is
-not accidentally disabled. HPO exports the best parameter set; it does not
-silently launch a production refit. Review the results, set the selected values
-under the `training` configuration section, then run `train` to
-create the production checkpoint.
 ## Feature-cache cleanup
 
 The SQLite feature-cache catalog is a rebuildable index; NPZ files are the stored
