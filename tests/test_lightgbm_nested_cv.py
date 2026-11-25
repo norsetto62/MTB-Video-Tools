@@ -80,6 +80,8 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
             "n_trials": 1,
             "progress": False,
             "output_dir": str(tmp_path),
+            "storage_path": str(tmp_path / "hpo.sqlite3"),
+            "study_name": "test_nested",
             "search_space": {
                 "objective": {"fixed": "lambdarank"},
                 "num_iterations": {"fixed": 7},
@@ -93,6 +95,14 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     assert inner_group_sets[-1] == {"group_a", "group_b", "group_c"}
     assert result["best_params"]["num_iterations"] == 7
     assert result["final_parameter_selection"]["purpose"] == "production_parameter_selection_only"
+    assert result["study_name"] == "test_nested_segment_recall_at_5_fixed_iters_nms_pooled_median_iqr_all_windows"
+    assert (tmp_path / "hpo.sqlite3").is_file()
+    persisted = optuna.load_study(
+        study_name=result["study_name"],
+        storage=f"sqlite:///{(tmp_path / 'hpo.sqlite3').as_posix()}",
+    )
+    assert len(persisted.trials) == 1
+    assert persisted.best_trial.user_attrs["metric"] == "nms_pooled_segment_recall_at_5"
     assert inner_group_sets == [
         {"group_b", "group_c"},
         {"group_a", "group_c"},
