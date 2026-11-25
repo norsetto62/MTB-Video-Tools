@@ -80,6 +80,7 @@ def _effective_data_config(
         "roi_bottom": roi[2],
         "roi_top": roi[3],
         "pitch_time_offset": float(choose("pitch_time_offset", 0.0)),
+        "feature_normalization": choose("feature_normalization", "per_video_zscore_all_windows_ddof0"),
     }
 
 
