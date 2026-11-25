@@ -148,6 +148,7 @@ def prepare_lightgbm_manifest_data(
     cache_dir = feature_cache_dir(settings)
     prepared: dict[str, LightGBMVideoData] = {}
     group_by_video: dict[str, str] = {}
+    class3_event_diagnostics: dict[str, dict[str, Any]] = {}
 
     total_records = len(records)
     for record_index, record in enumerate(records, start=1):
@@ -204,6 +205,41 @@ def prepare_lightgbm_manifest_data(
             raise ValueError(f"Manifest entry {record.id!r} produced non-finite LightGBM features.")
         prepared[record.id] = LightGBMVideoData(windows=windows, targets=targets)
         group_by_video[record.id] = record.group_id
+
+        # Report class-3 annotation events that never yield a class-3
+        # majority-vote window. These events are invisible to the current
+        # event-recall metric, so keep their durations explicit in diagnostics.
+        class3_annotations = [annotation for annotation in annotations if annotation.score == 3]
+        class3_events: list[list[Any]] = []
+        for annotation in class3_annotations:
+            if class3_events and abs(class3_events[-1][-1].end - annotation.start) <= 1e-9:
+                class3_events[-1].append(annotation)
+            else:
+                class3_events.append([annotation])
+        class3_window_mask = targets == 3
+        class3_window_intervals = windows.timestamps[class3_window_mask]
+        missed_events = []
+        for event in class3_events:
+            event_start = float(event[0].start)
+            event_end = float(event[-1].end)
+            represented = bool(
+                len(class3_window_intervals)
+                and np.any(
+                    (class3_window_intervals[:, 0] < event_end)
+                    & (class3_window_intervals[:, 1] > event_start)
+                )
+            )
+            if not represented:
+                missed_events.append({
+                    "start": event_start,
+                    "end": event_end,
+                    "duration_seconds": event_end - event_start,
+                })
+        class3_event_diagnostics[record.id] = {
+            "annotated_class3_event_count": len(class3_events),
+            "represented_by_class3_window_count": len(class3_events) - len(missed_events),
+            "unrepresented_class3_events": missed_events,
+        }
         if progress_callback is not None:
             progress_callback(
                 f"Prepared {record_index}/{total_records}: {record.id} "
@@ -214,6 +250,7 @@ def prepare_lightgbm_manifest_data(
         raise ValueError("The manifest contains no annotated videos for LightGBM training.")
     if require_multiple_groups and len({group_by_video[video_id] for video_id in prepared}) < 2:
         raise ValueError("At least two annotated manifest groups are required for LOVO validation.")
+    params["class3_event_target_diagnostics"] = class3_event_diagnostics
     return prepared, group_by_video, params
 
 
