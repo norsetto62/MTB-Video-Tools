@@ -307,7 +307,7 @@ Training and inference must use the same feature order, transformations, and nor
 
 The active Segment Recall@5 metric uses greedy temporal non-maximum suppression (IoU threshold 0.3) before selecting the top five windows independently per video. Its headline value is pooled event recall: total distinct class-3 events hit divided by total class-3 events. Per-video recall remains a diagnostic, not the headline aggregation.
 
-The `hpo` command runs nested leave-one-group-out CV. For each outer group, Optuna tunes only on the remaining inner groups, then a fixed-iteration model is refit on those groups and scored once on the untouched outer group. The final production model uses the selected HPO parameters and fixed iteration count; the production validation split does not choose a new best iteration.
+The `hpo` command first runs nested leave-one-group-out CV for an unbiased estimate, then runs full-dataset LOVO HPO to select one production parameter set. The full-dataset tuning score is for selection only. For each outer group, Optuna tunes only on the remaining inner groups, then a fixed-iteration model is refit on those groups and scored once on the untouched outer group. The final production model uses the selected HPO parameters and fixed iteration count; the production validation split does not choose a new best iteration.
 
 Optuna HPO trials must be compared using the same manifest, feature cache, normalization method, and fold set. Use separate `hpo` runs for z-score and median/IQR normalization; their reports are written to distinct files.
 
