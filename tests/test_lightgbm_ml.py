@@ -143,5 +143,5 @@ def test_ranking_inference_normalizes_the_complete_video_when_checkpoint_request
     result = infer_lightgbm_ranking_windows(
         payload, FeatureWindows(X=X, timestamps=timestamps)
     )
-    np.testing.assert_allclose(booster.seen[:, 0], [-1.2247474, 0.0, 1.2247474], atol=1e-6)
+    np.testing.assert_allclose(booster.seen[:, 0], [-1.2247449, 0.0, 1.2247449], atol=1e-6)
     np.testing.assert_array_equal(result.scores, np.zeros(3, dtype=np.float32))
