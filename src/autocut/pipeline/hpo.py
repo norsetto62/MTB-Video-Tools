@@ -292,6 +292,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
             prepared,
             group_by_video,
             config=trial_config,
+            collect_evaluation_history=False,
             data_config={
                 **data_config,
                 "manifest": str(Path(manifest_path).expanduser().resolve()),
@@ -466,6 +467,7 @@ def run_nested_lightgbm_evaluation(
                 inner_data,
                 inner_group_map,
                 config=trial_config,
+                collect_evaluation_history=False,
                 data_config={
                     **data_config,
                     "nested_cv_role": "inner_validation",
@@ -518,6 +520,7 @@ def run_nested_lightgbm_evaluation(
             group_by_video,
             held_out_group=outer_group,
             config=selected_config,
+            collect_evaluation_history=True,
             data_config={
                 **data_config,
                 "nested_cv_role": "outer_test",
