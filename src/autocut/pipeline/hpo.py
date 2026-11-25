@@ -524,12 +524,18 @@ def run_nested_lightgbm_evaluation(
         )
         outer_metrics = outer_fold.summary.get("validation_metrics", {})
         outer_per_video = outer_metrics.get("per_video", {})
-        outer_recalls = {
-            video_id: float(item["recall"])
-            for video_id, item in outer_per_video.items()
-            if item.get("recall") is not None
-            and np.isfinite(float(item["recall"]))
-        }
+        # segment_recall_at_k numbers videos by their position in the
+        # concatenated validation arrays; translate those positions back to
+        # stable manifest video IDs for an interpretable report.
+        outer_recalls = {}
+        for video_index, video_id in enumerate(outer_fold.validation_video_ids):
+            item = outer_per_video.get(str(video_index))
+            if (
+                item is not None
+                and item.get("recall") is not None
+                and np.isfinite(float(item["recall"]))
+            ):
+                outer_recalls[video_id] = float(item["recall"])
         all_outer_video_recalls.extend(outer_recalls.values())
         outer_score = (
             float(np.mean(list(outer_recalls.values()))) if outer_recalls else None
@@ -559,6 +565,11 @@ def run_nested_lightgbm_evaluation(
             f"outer recall@5={outer_score if outer_score is not None else 'undefined'}."
         )
 
+    outer_fold_scores = [
+        float(item["outer_segment_recall_at_5"])
+        for item in outer_results
+        if item["outer_segment_recall_at_5"] is not None
+    ]
     mean_score = (
         float(np.mean(all_outer_video_recalls))
         if all_outer_video_recalls else None
@@ -566,6 +577,14 @@ def run_nested_lightgbm_evaluation(
     std_score = (
         float(np.std(all_outer_video_recalls, ddof=1))
         if len(all_outer_video_recalls) > 1 else (0.0 if all_outer_video_recalls else None)
+    )
+    mean_fold_score = (
+        float(np.mean(outer_fold_scores)) if outer_fold_scores else None
+    )
+    std_fold_score = (
+        float(np.std(outer_fold_scores, ddof=1))
+        if len(outer_fold_scores) > 1
+        else (0.0 if outer_fold_scores else None)
     )
     output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -583,6 +602,8 @@ def run_nested_lightgbm_evaluation(
         "evaluated_outer_video_count": len(all_outer_video_recalls),
         "mean_outer_segment_recall_at_5": mean_score,
         "std_outer_video_segment_recall_at_5": std_score,
+        "mean_outer_group_segment_recall_at_5": mean_fold_score,
+        "std_outer_group_segment_recall_at_5": std_fold_score,
         "outer_folds": outer_results,
         "interpretation": (
             "Estimates the HPO-and-refit procedure. It is not the score of a "
