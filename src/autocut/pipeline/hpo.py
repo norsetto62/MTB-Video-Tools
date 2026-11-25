@@ -204,11 +204,13 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     study_name = section.get("study_name", "ranking_hpo")
     if not isinstance(study_name, str) or not study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
-    # Isolate fixed-iteration trials from all historical early-stopped studies.
+    # Isolate fixed-iteration, NMS-pooled trials from every previous metric version.
     if not study_name.endswith("_segment_recall_at_5_fixed_iters"):
         if not study_name.endswith("_segment_recall_at_5"):
             study_name = f"{study_name}_segment_recall_at_5"
         study_name = f"{study_name}_fixed_iters"
+    if not study_name.endswith("_nms_pooled"):
+        study_name = f"{study_name}_nms_pooled"
     progress = section.get("progress", True)
     if not isinstance(progress, bool):
         raise ValueError("hpo.progress must be true or false.")
@@ -322,7 +324,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
         trial.set_user_attr("evaluated_event_count", total_events)
         trial.set_user_attr("evaluated_folds", sorted(per_fold))
         logger.info(
-            "LightGBM HPO trial %d: objective=%s, mean Segment Recall@5=%.5f, folds=%s",
+            "LightGBM HPO trial %d: objective=%s, pooled NMS Segment Recall@5=%.5f, folds=%s",
             trial.number, params.get("objective", base_config.objective),
             pooled_recall, per_fold,
         )
@@ -343,7 +345,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     report(
         f"Study '{study_name}': running {n_trials} new trials "
         f"({len(study.trials)} trial records already in the database); "
-        "optimizing mean Segment Recall@5. "
+        "optimizing pooled NMS Segment Recall@5. "
         "A trial may take time while its LOVO folds run."
     )
     study.optimize(objective, n_trials=n_trials, gc_after_trial=True)
@@ -396,7 +398,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     report(
         f"Finished. Best trial #{best.number}: "
         f"objective={best.params.get('objective', base_config.objective)}, "
-        f"mean Segment Recall@5={float(best.value):.5f}. "
+        f"pooled NMS Segment Recall@5={float(best.value):.5f}. "
         f"Results saved to {output_path}; database: {db_path}."
     )
     return {**payload, "results_path": str(output_path)}
