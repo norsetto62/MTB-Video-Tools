@@ -343,8 +343,8 @@ def run_lightgbm_train_from_manifest(
     if len(val_y) == 0:
         raise ValueError("The configured validation groups produced no labeled windows.")
 
-    # This first fit is strictly group-held-out. Its Segment Recall@5 history
-    # and best iteration determine the final all-data refit's iteration count.
+    # This diagnostic fit is group-held-out and runs for the configured fixed
+    # iteration count. Its recall curve is recorded for inspection only.
     _, validation_summary = train_lightgbm(
         train_X,
         train_y,
@@ -433,7 +433,6 @@ def run_lightgbm_train_from_manifest(
         "configured_num_iterations": selected_iterations,
         "evaluation_history": validation_summary.get("evaluation_history", {}),
         "early_stopping": False,
-        "configured_num_iterations": selected_iterations,
     }
     summary["training_video_ids"] = all_ids
     summary["training_group_ids"] = sorted(set(group_by_video.values()))
