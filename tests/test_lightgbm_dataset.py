@@ -11,7 +11,7 @@ def _sequence(sample_count=25):
     timestamps = np.arange(sample_count, dtype=np.float64) * 0.5
     features = np.zeros((sample_count, len(FEATURE_NAMES)), dtype=np.float32)
     # Give the flow fields and each grid cell distinct, finite values so all
-    # eight engineered signals are exercised by the real transform.
+    # eleven engineered signals are exercised by the real transform.
     for row in range(3):
         for col in range(3):
             features[:, FEATURE_NAMES.index(f"grid_{row}_{col}_u")] = (
@@ -22,9 +22,23 @@ def _sequence(sample_count=25):
             )
     features[:, FEATURE_NAMES.index("flow_u")] = 0.75 + timestamps * 0.02
     features[:, FEATURE_NAMES.index("flow_v")] = 0.25 + timestamps * 0.01
-    pitch_timestamps = np.arange(-1.0, 14.0, 0.1, dtype=np.float64)
-    pitch_rate = (1.0 + 0.15 * pitch_timestamps + 0.01 * pitch_timestamps**2).astype(np.float64)
-    return FeatureSequence(features=features, timestamps=timestamps, pitch_timestamps=pitch_timestamps, pitch_rate=pitch_rate)
+    imu_timestamps = np.arange(-1.0, 14.0, 0.04, dtype=np.float64)
+    angular = np.column_stack((
+        2.0 + 0.1 * imu_timestamps,
+        1.0 + 0.15 * imu_timestamps + 0.01 * imu_timestamps**2,
+        0.5 + 0.05 * imu_timestamps,
+    )).astype(np.float64)
+    acceleration = np.column_stack((
+        0.1 * np.sin(imu_timestamps),
+        0.2 * np.cos(imu_timestamps),
+        0.05 * np.sin(2 * imu_timestamps),
+    )).astype(np.float64)
+    return FeatureSequence(
+        features=features, timestamps=timestamps,
+        imu_timestamps=imu_timestamps,
+        imu_angular_velocity=angular,
+        imu_acceleration=acceleration,
+    )
 
 
 def _annotation(start, end, score):
@@ -43,17 +57,24 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
 
     windows, labels = build_lightgbm_training_data(
         sequence, annotations, window=4.0, stride=2.0,
-        pitch_timestamps=sequence.pitch_timestamps, pitch_rate=sequence.pitch_rate,
+        imu_timestamps=sequence.imu_timestamps,
+        imu_angular_velocity=sequence.imu_angular_velocity,
+        imu_acceleration=sequence.imu_acceleration,
     )
 
     assert windows.X.ndim == 2
-    assert windows.X.shape[1] == 49
+    assert windows.X.shape[1] == 74
     assert windows.X.shape[0] == len(labels)
-    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 49
-    assert LIGHTGBM_TABULAR_FEATURE_NAMES[-1] == "pitch_rate_rms"
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 74
+    assert LIGHTGBM_TABULAR_FEATURE_NAMES[-8:] == (
+        "roll_rate_rms", "pitch_rate_rms", "yaw_rate_rms",
+        "roll_rate_peak", "pitch_rate_peak", "yaw_rate_peak",
+        "accel_dynamic_rms", "accel_dynamic_peak",
+    )
     assert labels.dtype == np.int64
     assert np.isfinite(windows.X).all()
-    assert np.std(windows.X[:, -1]) > 0.0
+    assert np.std(windows.X[:, -8:-2]) > 0.0
+    assert np.std(windows.X[:, -2:]) > 0.0
     assert windows.timestamps.shape == (len(labels), 2)
     # The first window is won by class 2; the next three windows are won by
     # class 2 or 3 according to annotated overlap. The last window has no
@@ -68,8 +89,10 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
 def test_lightgbm_training_data_returns_empty_tabular_dataset_without_annotations():
     windows, labels = build_lightgbm_training_data(
         _sequence(), [], window=4.0, stride=2.0,
-        pitch_timestamps=_sequence().pitch_timestamps, pitch_rate=_sequence().pitch_rate,
+        imu_timestamps=_sequence().imu_timestamps,
+        imu_angular_velocity=_sequence().imu_angular_velocity,
+        imu_acceleration=_sequence().imu_acceleration,
     )
-    assert windows.X.shape == (0, 49)
+    assert windows.X.shape == (0, 74)
     assert windows.timestamps.shape == (0, 2)
     assert labels.shape == (0,)
