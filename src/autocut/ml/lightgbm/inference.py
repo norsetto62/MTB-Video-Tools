@@ -84,8 +84,9 @@ def infer_lightgbm_ranking_windows(
     # New ranker checkpoints explicitly opt into per-video normalization.
     # Older checkpoints without this metadata retain their original behavior.
     data_config = payload.get("data_config") or {}
-    normalization_method = data_config.get("feature_normalization", LIGHTGBM_FEATURE_NORMALIZATION)
-    X = normalize_per_video_features(X, method=normalization_method)
+    normalization_method = data_config.get("feature_normalization")
+    if normalization_method is not None:
+        X = normalize_per_video_features(X, method=normalization_method)
     model = LightGBMRanker(payload["_booster"], feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     scores = model.predict(X)
     return LightGBMRankingInferenceResult(timestamps=timestamps.copy(), scores=scores)
