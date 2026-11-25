@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
     "objective": {"choices": ["lambdarank", "rank_xendcg"]},
     "num_leaves": {"choices": [15, 31, 63]},
+    # Iteration count is selected inside inner group CV, never on the outer fold.
+    "num_iterations": {"choices": [300, 600, 1000, 1600]},
     "learning_rate": {"low": 0.01, "high": 0.1, "log": True},
     "max_depth": {"choices": [3, 4, 5, 6]},
     "min_data_in_leaf": {"choices": [10, 20, 50, 100]},
@@ -168,7 +170,8 @@ def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str,
             params[name] = trial.suggest_categorical(name, spec["choices"])
         elif name in integer_params:
             params[name] = trial.suggest_int(
-                name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1))
+                name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1)),
+                log=spec.get("log", False),
             )
         elif "step" in spec:
             params[name] = trial.suggest_float(
