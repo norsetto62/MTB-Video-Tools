@@ -168,7 +168,7 @@ def prepare_lightgbm_manifest_data(
             raise ValueError(f"Manifest entry {record.id!r} has no MTB annotations.")
 
         video_info = get_video_info(record.video_path)
-        timeline_end = float(annotations[-1].end)
+        timeline_end = max(float(annotation.end) for annotation in annotations)
         if timeline_end > float(video_info.duration) + 0.05:
             raise ValueError(
                 f"Annotation end ({timeline_end:.3f}s) exceeds video duration "
@@ -359,17 +359,16 @@ def run_lightgbm_train_from_manifest(
             "feature_cache_dir": str(feature_cache_dir(settings)),
             "target_policy": "ordinal relevance grades 0..3 from annotated-duration-majority; ties to higher class",
         },
+        early_stopping=False,
         metadata={
-            "training_strategy": "configured_group_validation",
+            "training_strategy": "configured_group_validation_fixed_iterations",
             "train_groups": list(train_groups),
             "validation_groups": list(validation_groups),
             "training_video_ids": train_ids,
             "validation_video_ids": validation_ids,
         },
     )
-    best_iteration = int(validation_summary["best_iteration"])
-    if best_iteration <= 0:
-        raise ValueError(f"Validation training returned invalid best_iteration={best_iteration}.")
+    selected_iterations = int(config.num_iterations)
 
     # Refit the production checkpoint on all annotated videos, including the
     # validation group, for the selected number of boosting iterations.
@@ -389,8 +388,7 @@ def run_lightgbm_train_from_manifest(
     if destination.exists() and destination.is_dir():
         raise ValueError(f"LightGBM checkpoint path is a directory: {destination}")
 
-    from dataclasses import replace
-    final_config = replace(config, num_iterations=best_iteration)
+    final_config = config
     training_config = {
         **data_config,
         "manifest": str(Path(manifest_path).expanduser().resolve()),
@@ -403,7 +401,7 @@ def run_lightgbm_train_from_manifest(
         "validation_selection": {
             "train_groups": list(train_groups),
             "validation_groups": list(validation_groups),
-            "best_iteration": best_iteration,
+            "configured_num_iterations": selected_iterations,
             "evaluation_history": validation_summary.get("evaluation_history", {}),
         },
     }
@@ -421,7 +419,7 @@ def run_lightgbm_train_from_manifest(
             "validation_groups_for_iteration_selection": list(validation_groups),
             "validation_training_rows": int(len(train_X)),
             "validation_rows": int(len(val_X)),
-            "best_iteration_from_validation": best_iteration,
+            "configured_num_iterations": selected_iterations,
         },
     )
     summary["validation_selection"] = {
@@ -433,7 +431,8 @@ def run_lightgbm_train_from_manifest(
         "validation_rows": int(len(val_X)),
         "best_iteration": best_iteration,
         "evaluation_history": validation_summary.get("evaluation_history", {}),
-        "early_stopping_rounds": config.early_stopping_rounds,
+        "early_stopping": False,
+        "configured_num_iterations": selected_iterations,
     }
     summary["training_video_ids"] = all_ids
     summary["training_group_ids"] = sorted(set(group_by_video.values()))
