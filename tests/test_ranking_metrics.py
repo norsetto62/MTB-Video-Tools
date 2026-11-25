@@ -17,7 +17,7 @@ def test_overlapping_class3_windows_form_one_event():
 
 def test_nms_suppresses_adjacent_overlapping_predictions_before_top_k():
     labels = np.array([3, 3, 0, 3, 0, 0])
-    times = np.array([[0, 4], [2, 6], [4, 8], [10, 14], [12, 16], [20, 24]], dtype=float)
+    times = np.array([[0, 4], [2, 6], [1, 5], [10, 14], [12, 16], [20, 24]], dtype=float)
     scores = np.array([0.99, 0.98, 0.97, 0.96, 0.95, 0.94])
     result = segment_recall_at_k(labels, scores, [6], times, k=2)
     assert result["hit_events"] == 2
@@ -32,7 +32,7 @@ def test_pooled_recall_weights_videos_by_event_count():
         [0, 4], [4, 8], [8, 12], [20, 24], [24, 28], [28, 32],
         [40, 44], [44, 48], [60, 64], [64, 68], [80, 84], [84, 88],
     ], dtype=float)
-    scores = np.array([0.99, 0.1, 0.1, 0.98, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
+    scores = np.array([0.99, 0.1, 0.1, 0.98, 0.1, 0.1, 0.1, 0.2, 0.1, 0.19, 0.1, 0.0])
     result = segment_recall_at_k(labels, scores, [6, 6], times, k=2)
     assert result["per_video"]["0"]["recall"] == pytest.approx(1.0)
     assert result["per_video"]["1"]["recall"] == pytest.approx(0.0)
