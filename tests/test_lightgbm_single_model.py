@@ -107,10 +107,11 @@ def test_single_model_uses_yaml_groups_for_validation_then_refits_all_data(tmp_p
     assert validation_call["config"] is config
     _, _, refit_call = captured["train_calls"][1]
     assert refit_call.get("val_X") is None
-    assert refit_call["config"].num_iterations == 7
+    assert refit_call["config"].num_iterations == 10
     assert refit_call["checkpoint_path"] == checkpoint
     assert result["validation_selection"]["validation_groups"] == ["validation"]
-    assert result["validation_selection"]["best_iteration"] == 7
+    assert result["validation_selection"]["configured_num_iterations"] == 10
+    assert result["validation_selection"]["early_stopping"] is False
     assert result["validation_selection"]["evaluation_history"]["validation"]["segment_recall_at_5"] == [0.8]
     assert result["training_video_ids"] == ["video-a", "video-b", "video-c"]
 
