@@ -25,7 +25,7 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
 
     inner_group_sets = []
 
-    def fake_lovo(video_data, group_by_video, *, config, data_config=None):
+    def fake_lovo(video_data, group_by_video, *, config, collect_evaluation_history=True, data_config=None):
         inner_group_sets.append(set(group_by_video.values()))
         return tuple(
             SimpleNamespace(
@@ -42,7 +42,7 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
         )
 
     def fake_outer_fold(
-        video_data, group_by_video, *, held_out_group, config, data_config=None
+        video_data, group_by_video, *, held_out_group, config, collect_evaluation_history=True, data_config=None
     ):
         validation_ids = tuple(sorted(
             video_id for video_id, group in group_by_video.items()
