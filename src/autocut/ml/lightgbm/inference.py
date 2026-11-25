@@ -54,7 +54,7 @@ def infer_lightgbm_ranking_windows(
             raise ValueError("Unsupported or invalid LightGBM checkpoint.")
         names = payload.get("feature_names")
         if names != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
-            raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+            raise ValueError("Checkpoint feature names do not match the canonical 74-column schema.")
         booster = payload.get("_booster")
         if booster is None:
             import lightgbm as lgb
@@ -68,7 +68,7 @@ def infer_lightgbm_ranking_windows(
     if payload.get("model_class") != "LightGBMRanker":
         raise ValueError("Checkpoint is not a LightGBMRanker; use infer_lightgbm_windows for legacy classifiers.")
     if payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
-        raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+        raise ValueError("Checkpoint feature names do not match the canonical 74-column schema.")
     X = np.asarray(windows.X, dtype=np.float32)
     timestamps = np.asarray(windows.timestamps, dtype=np.float64)
     if X.ndim != 2 or X.shape[0] == 0 or X.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
@@ -84,8 +84,8 @@ def infer_lightgbm_ranking_windows(
     # New ranker checkpoints explicitly opt into per-video normalization.
     # Older checkpoints without this metadata retain their original behavior.
     data_config = payload.get("data_config") or {}
-    if data_config.get("feature_normalization") == LIGHTGBM_FEATURE_NORMALIZATION:
-        X = normalize_per_video_features(X)
+    normalization_method = data_config.get("feature_normalization", LIGHTGBM_FEATURE_NORMALIZATION)
+    X = normalize_per_video_features(X, method=normalization_method)
     model = LightGBMRanker(payload["_booster"], feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     scores = model.predict(X)
     return LightGBMRankingInferenceResult(timestamps=timestamps.copy(), scores=scores)
@@ -111,7 +111,7 @@ def infer_lightgbm_windows(
             raise ValueError("Unsupported or invalid LightGBM checkpoint.")
         names = payload.get("feature_names")
         if names != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
-            raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+            raise ValueError("Checkpoint feature names do not match the canonical 74-column schema.")
         booster = payload.get("_booster")
         if booster is None:
             import lightgbm as lgb
@@ -123,7 +123,7 @@ def infer_lightgbm_windows(
     else:
         raise TypeError("checkpoint must be a path or checkpoint mapping.")
     if payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
-        raise ValueError("Checkpoint feature names do not match the canonical 48-column schema.")
+        raise ValueError("Checkpoint feature names do not match the canonical 74-column schema.")
     X = np.asarray(windows.X, dtype=np.float32)
     timestamps = np.asarray(windows.timestamps, dtype=np.float64)
     if X.ndim != 2 or X.shape[0] == 0 or X.shape[1] != len(LIGHTGBM_TABULAR_FEATURE_NAMES):
