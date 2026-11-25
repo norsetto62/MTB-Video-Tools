@@ -102,22 +102,6 @@ LIGHTGBM_TABULAR_FEATURE_NAMES = tuple(
 )
 
 
-def append_pitch_rate_rms_feature(windows: FeatureWindows, pitch_rate_rms: np.ndarray) -> FeatureWindows:
-    """Append one window-level pitch-rate RMS value to each optical-flow row."""
-    values = np.asarray(windows.X, dtype=np.float32)
-    rms = np.asarray(pitch_rate_rms, dtype=np.float32)
-    expected_columns = len(LIGHTGBM_FEATURE_NAMES) * len(LIGHTGBM_WINDOW_STATISTICS)
-    if values.ndim != 2 or values.shape[1] != expected_columns:
-        raise ValueError(f"Expected {expected_columns} optical-flow columns; got {values.shape}.")
-    if rms.shape != (values.shape[0],) or not np.isfinite(rms).all():
-        raise ValueError("pitch_rate_rms must contain one finite value per window.")
-    return FeatureWindows(
-        X=np.column_stack((values, rms)).astype(np.float32, copy=False),
-        timestamps=np.asarray(windows.timestamps, dtype=np.float64).copy(),
-    )
-
-
-
 def append_imu_features(windows: FeatureWindows, imu_statistics: np.ndarray) -> FeatureWindows:
     """Append eight window-level DJI IMU statistics to optical-flow rows."""
     values = np.asarray(windows.X, dtype=np.float32)
