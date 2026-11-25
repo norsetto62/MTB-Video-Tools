@@ -27,8 +27,8 @@ from ..dataset.sequence import (
     build_feature_sequence,
     validate_roi,
 )
-from ..dataset.windows import build_lightgbm_windows_from_features, append_pitch_rate_rms_feature
-from ..motion.dji import pitch_rate_rms_from_series
+from ..dataset.windows import build_lightgbm_windows_from_features, append_imu_features
+from ..motion.dji import imu_window_statistics
 from ..motion.engineered import engineer_lightgbm_sequence
 from ..ml.lightgbm.checkpoint import load_lightgbm_checkpoint
 from ..ml.lightgbm.model import LightGBMRanker
@@ -176,14 +176,20 @@ def run_score_report(
         windows = build_lightgbm_windows_from_features(
             signals, sequence.timestamps, window=params["window"], stride=params["stride"]
         )
-        pitch_rms = pitch_rate_rms_from_series(
-            sequence.pitch_timestamps, sequence.pitch_rate, windows.timestamps,
+        imu_statistics = imu_window_statistics(
+            sequence.imu_timestamps,
+            sequence.imu_angular_velocity,
+            sequence.imu_acceleration,
+            windows.timestamps,
             time_offset=params["pitch_time_offset"],
         )
-        windows = append_pitch_rate_rms_feature(windows, pitch_rms)
+        windows = append_imu_features(windows, imu_statistics)
         # Match training: normalize the complete video's windows before labels
         # are filtered. Here no windows are filtered because this is inference.
-        normalized = normalize_per_video_features(windows.X)
+        normalized = normalize_per_video_features(
+            windows.X,
+            method=params.get("feature_normalization", "per_video_zscore_all_windows_ddof0"),
+        )
         scores = ranker.predict(normalized)
         if len(scores) != len(windows.timestamps):
             raise ValueError(f"Score/window count mismatch for video {record.id!r}.")
