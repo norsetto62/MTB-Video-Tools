@@ -2,7 +2,7 @@
 
 The preparation order is intentionally centralized:
 canonical continuous features -> continuous engineered signals -> temporal
-windows -> 48 optical-flow statistics plus pitch-rate RMS -> duration-weighted annotation targets.
+windows -> 66 optical-flow statistics plus eight DJI IMU statistics -> normalization -> duration-weighted targets.
 """
 from __future__ import annotations
 
@@ -30,10 +30,10 @@ def build_lightgbm_training_data(
 ) -> tuple[FeatureWindows, np.ndarray]:
     """Build aligned LightGBM rows and MTB 0..3 labels from one video sequence.
 
-    The eight signals are engineered over the entire continuous sequence before
-    windowing. Each temporal window is aggregated to 48 optical-flow statistics and receives
+    Eleven signals are engineered over the entire continuous sequence before
+    windowing. Each temporal window is aggregated to 66 optical-flow statistics;
     eight DJI IMU statistics (three-axis angular-rate RMS/peaks and dynamic
-    acceleration RMS/peak) are appended to the optical-flow statistics. Targets are duration-weighted majority votes
+    acceleration RMS/peak) are appended. Targets are duration-weighted majority votes
     over annotated portions of each window, with ties assigned to the higher
     MTB class. Windows with no annotation overlap are omitted.
 
