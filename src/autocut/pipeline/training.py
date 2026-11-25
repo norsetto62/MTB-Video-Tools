@@ -268,8 +268,9 @@ def run_lightgbm_train_from_manifest(
     """Validate on configured held-out groups, then refit one final model.
 
     data.train_groups and data.validation_groups define a disjoint group-level
-    split. Validation NDCG selects the iteration count; the final checkpoint
-    is then refit on all annotated manifest videos using that iteration count.
+    split. The configured training.num_iterations is used unchanged for the
+    diagnostic validation fit and final all-video refit; validation does not
+    select the production iteration count.
     """
     if not isinstance(settings, Mapping):
         raise ValueError("settings must be a configuration mapping.")
@@ -413,10 +414,10 @@ def run_lightgbm_train_from_manifest(
         checkpoint_path=destination,
         data_config=training_config,
         metadata={
-            "training_strategy": "configured_group_validation_then_all_data_refit",
+            "training_strategy": "configured_group_validation_fixed_iterations_then_all_data_refit",
             "training_video_ids": all_ids,
             "training_group_ids": sorted(set(group_by_video.values())),
-            "validation_groups_for_iteration_selection": list(validation_groups),
+            "validation_groups_for_diagnostic_only": list(validation_groups),
             "validation_training_rows": int(len(train_X)),
             "validation_rows": int(len(val_X)),
             "configured_num_iterations": selected_iterations,
@@ -429,7 +430,7 @@ def run_lightgbm_train_from_manifest(
         "validation_video_ids": validation_ids,
         "training_rows": int(len(train_X)),
         "validation_rows": int(len(val_X)),
-        "best_iteration": best_iteration,
+        "configured_num_iterations": selected_iterations,
         "evaluation_history": validation_summary.get("evaluation_history", {}),
         "early_stopping": False,
         "configured_num_iterations": selected_iterations,
