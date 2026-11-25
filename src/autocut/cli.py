@@ -87,7 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hpo.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
 
-    nested_cv = subparsers.add_parser(\n        "nested-cv",\n        help="Estimate LightGBM HPO performance with nested leave-one-group-out validation.",\n    )\n    nested_cv.add_argument("--config", type=Path, default=Path("config/train.yaml"))\n    nested_cv.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")\n\n    models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
+    nested_cv = subparsers.add_parser(
+        "nested-cv",
+        help="Estimate LightGBM HPO performance with nested leave-one-group-out validation.",
+    )
+    nested_cv.add_argument("--config", type=Path, default=Path("config/train.yaml"))
+    nested_cv.add_argument("manifest", type=Path, nargs="?", help="Dataset manifest (overrides YAML).")
+
+    models = subparsers.add_parser("models", help="Inspect a saved checkpoint.")
     models.add_argument("checkpoint", type=Path, nargs="?", help="Checkpoint to inspect.")
     models.add_argument("--config", type=Path, default=Path("config/autocut.yaml"))
 
