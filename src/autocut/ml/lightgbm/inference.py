@@ -93,7 +93,7 @@ def infer_lightgbm_windows(
     checkpoint: str | Path | Mapping[str, Any],
     windows: FeatureWindows,
 ) -> LightGBMInferenceResult:
-    """Predict annotation classes from tabular 48-column LightGBM windows.
+    """Predict annotation classes from tabular 74-column LightGBM windows.
 
     This API deliberately accepts aggregated rows only. Continuous sequence
     engineering, temporal windowing and aggregation must use the same canonical
