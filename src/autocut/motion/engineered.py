@@ -45,6 +45,11 @@ _GRID_V_INDICES = np.asarray(
      for row in range(3) for col in range(3)],
     dtype=np.int64,
 )
+_GRID_MAGNITUDE_INDICES = np.asarray(
+    [FEATURE_NAMES.index(f"grid_{row}_{col}_magnitude")
+     for row in range(3) for col in range(3)],
+    dtype=np.int64,
+)
 _FLOW_U = FEATURE_NAMES.index("flow_u")
 _FLOW_V = FEATURE_NAMES.index("flow_v")
 
@@ -100,7 +105,7 @@ def engineer_lightgbm_sequence(X: np.ndarray) -> np.ndarray:
     dv_dy, dv_dx = np.gradient(grid_v, 0.5, 0.5, axis=(1, 2))
     signed_divergence = np.mean(du_dx + dv_dy, axis=(1, 2))
     signed_curl = np.mean(dv_dx - du_dy, axis=(1, 2))
-    mean_flow_magnitude = np.mean(magnitudes, axis=(1, 2))
+    mean_flow_magnitude = np.mean(values[:, _GRID_MAGNITUDE_INDICES], axis=1)
 
     result = np.stack(
         (
