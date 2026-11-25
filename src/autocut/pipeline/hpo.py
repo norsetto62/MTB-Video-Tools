@@ -13,7 +13,6 @@ import numpy as np
 from ..config_loader import Config
 from ..ml.lightgbm.model import LightGBMConfig
 from ..ml.lightgbm.training import train_lightgbm_group_fold, train_lightgbm_lovo
-from ..dataset.manifest import load_manifest
 from .training import (
     _training_config,
     _section,
