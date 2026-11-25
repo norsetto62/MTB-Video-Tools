@@ -135,7 +135,7 @@ def prepare_lightgbm_manifest_data(
     require_multiple_groups: bool = True,
     progress_callback: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, LightGBMVideoData], dict[str, str], dict[str, Any]]:
-    """Load/reuse per-video cached features and build labeled 49-column rows.
+    """Load/reuse per-video cached features and build labeled 74-column rows.
 
     Each manifest record must have an annotation file because this is a
     supervised MTB 0..3 workflow. Existing NPZ feature caches are augmented with raw DJI pitch telemetry when needed; optical-flow arrays are not regenerated. Cache misses still use the canonical extractor.
