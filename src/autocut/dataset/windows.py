@@ -99,11 +99,12 @@ LIGHTGBM_TABULAR_FEATURE_NAMES = tuple(
 
 
 def append_pitch_rate_rms_feature(windows: FeatureWindows, pitch_rate_rms: np.ndarray) -> FeatureWindows:
-    """Append one window-level pitch-rate RMS value to each 48-column row."""
+    """Append one window-level pitch-rate RMS value to each optical-flow row."""
     values = np.asarray(windows.X, dtype=np.float32)
     rms = np.asarray(pitch_rate_rms, dtype=np.float32)
-    if values.ndim != 2 or values.shape[1] != 48:
-        raise ValueError(f"Expected 48 optical-flow columns; got {values.shape}.")
+    expected_columns = len(LIGHTGBM_FEATURE_NAMES) * len(LIGHTGBM_WINDOW_STATISTICS)
+    if values.ndim != 2 or values.shape[1] != expected_columns:
+        raise ValueError(f"Expected {expected_columns} optical-flow columns; got {values.shape}.")
     if rms.shape != (values.shape[0],) or not np.isfinite(rms).all():
         raise ValueError("pitch_rate_rms must contain one finite value per window.")
     return FeatureWindows(
@@ -113,7 +114,7 @@ def append_pitch_rate_rms_feature(windows: FeatureWindows, pitch_rate_rms: np.nd
 
 
 def aggregate_lightgbm_windows(windows: FeatureWindows) -> FeatureWindows:
-    """Aggregate (N,T,8) signal windows into an (N,48) tabular matrix.
+    """Aggregate (N,T,F) signal windows into an (N,F*6) tabular matrix.
 
     Columns are grouped by signal, with statistics in the fixed order
     mean, max, population standard deviation (ddof=0), median, 90th percentile,
@@ -123,8 +124,8 @@ def aggregate_lightgbm_windows(windows: FeatureWindows) -> FeatureWindows:
     timestamps = np.asarray(windows.timestamps, dtype=np.float64)
     if values.ndim != 3 or values.shape[0] == 0 or values.shape[1] == 0:
         raise ValueError("windows.X must have shape (N,T,F) with N,T >= 1.")
-    if values.shape[2] != 8:
-        raise ValueError(f"LightGBM aggregation requires 8 signals; got {values.shape[2]}.")
+    if values.shape[2] != len(LIGHTGBM_FEATURE_NAMES):
+        raise ValueError(f"LightGBM aggregation requires {len(LIGHTGBM_FEATURE_NAMES)} signals; got {values.shape[2]}.")
     if timestamps.shape != (values.shape[0], 2):
         raise ValueError("window timestamps must have shape (N,2).")
     if not np.isfinite(values).all() or not np.isfinite(timestamps).all():
@@ -139,7 +140,7 @@ def aggregate_lightgbm_windows(windows: FeatureWindows) -> FeatureWindows:
         np.min(values, axis=1),
     )
     # (N,F,stats) -> (N,F*stats), keeping each signal's statistics adjacent.
-    matrix = np.stack(stats, axis=2).reshape(values.shape[0], 8 * 6)
+    matrix = np.stack(stats, axis=2).reshape(values.shape[0], len(LIGHTGBM_FEATURE_NAMES) * len(LIGHTGBM_WINDOW_STATISTICS))
     return FeatureWindows(X=matrix.astype(np.float32, copy=False), timestamps=timestamps.copy())
 
 
@@ -150,7 +151,7 @@ def build_lightgbm_windows_from_features(
     window: float,
     stride: float,
 ) -> FeatureWindows:
-    """Build 48-column LightGBM rows from a continuous (T,8) signal sequence."""
+    """Build tabular LightGBM rows from a continuous engineered signal sequence."""
     temporal = build_windows_from_features(
         features, timestamps, window=window, stride=stride
     )
