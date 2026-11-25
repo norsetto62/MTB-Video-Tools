@@ -264,8 +264,8 @@ def run_pipeline(
     from ..dataset.sequence import (
         DEFAULT_PROCESSING_WIDTH, DEFAULT_SAMPLE_FPS, validate_roi,
     )
-    from ..dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES, append_pitch_rate_rms_feature
-    from ..motion.dji import pitch_rate_rms_from_series
+    from ..dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES, append_imu_features
+    from ..motion.dji import imu_window_statistics
     checkpoint_payload = load_lightgbm_checkpoint(settings.model.checkpoint)
     if checkpoint_payload.get("model_class") != "LightGBMRanker":
         raise ValueError(f"Expected LightGBMRanker checkpoint, got {checkpoint_payload.get('model_class')!r}.")
@@ -347,12 +347,18 @@ def run_pipeline(
         windows = build_lightgbm_windows_from_features(
             signals, sequence.timestamps, window=lightgbm_params["window"], stride=lightgbm_params["stride"]
         )
-        pitch_rms = pitch_rate_rms_from_series(
-            sequence.pitch_timestamps, sequence.pitch_rate, windows.timestamps,
+        imu_statistics = imu_window_statistics(
+            sequence.imu_timestamps,
+            sequence.imu_angular_velocity,
+            sequence.imu_acceleration,
+            windows.timestamps,
             time_offset=float(saved_or("pitch_time_offset", 0.0)),
         )
-        windows = append_pitch_rate_rms_feature(windows, pitch_rms)
-        normalized = normalize_per_video_features(windows.X)
+        windows = append_imu_features(windows, imu_statistics)
+        normalized = normalize_per_video_features(
+            windows.X,
+            method=saved_or("feature_normalization", "per_video_zscore_all_windows_ddof0"),
+        )
         scores = lightgbm_ranker.predict(normalized)
         lightgbm_windows_by_video.setdefault(video_name, []).append((
             np.asarray(windows.timestamps, dtype=np.float64),
