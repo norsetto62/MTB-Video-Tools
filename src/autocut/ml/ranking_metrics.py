@@ -15,7 +15,7 @@ def segment_recall_at_k(
     k: int = 5,
     suppression_iou_threshold: float = 0.3,
 ) -> dict[str, Any]:
-    """Mean per-video recall of distinct class-3 events found in each video's Top K.
+    """Pooled recall of distinct class-3 events found after temporal NMS and Top K.
 
     Consecutive or overlapping class-3 intervals form one event. Greedy
     temporal NMS suppresses redundant overlapping predictions before Top K.
