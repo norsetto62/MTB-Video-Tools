@@ -38,8 +38,9 @@ def test_lightgbm_signal_order_and_shape():
         "vertical_flow_gradient", "lateral_flow_asymmetry",
         "expansion_index", "roll_index", "directional_turbulence",
         "global_flow_magnitude", "center_residual", "tunnel_vision",
+        "mean_flow_magnitude", "signed_divergence", "signed_curl",
     )
-    assert result.shape == (3, 8)
+    assert result.shape == (3, 11)
     assert result.dtype == np.float32
     assert np.isfinite(result).all()
 
@@ -52,6 +53,7 @@ def test_lightgbm_signals_use_global_net_flow_and_relative_center_residual():
     result = engineer_lightgbm_sequence(canonical)
     assert result[0, 5] == pytest.approx(5.0)  # hypot(global flow_u, flow_v)
     assert result[0, 6] == pytest.approx(5.0)  # center vector residual: (3,4)
+    assert result[0, 8] == pytest.approx(np.mean(np.hypot(vectors[0, :, 0], vectors[0, :, 1])))
 
 
 
@@ -65,18 +67,22 @@ def test_tunnel_vision_uses_all_eight_peripheral_cell_residuals():
     assert result[0, 7] == pytest.approx(6.5 / (1.0 + 1e-5), rel=1e-6)
 
 
-def test_lightgbm_window_aggregation_has_48_optical_flow_columns_in_stable_order():
-    # Two windows, three timesteps, two signals repeated across signal slots.
-    temporal = np.zeros((2, 3, 8), dtype=np.float32)
+def test_lightgbm_window_aggregation_has_66_optical_flow_columns_in_stable_order():
+    # Two windows, three timesteps, eleven signals.
+    temporal = np.zeros((2, 3, 11), dtype=np.float32)
     temporal[0, :, 0] = [1.0, 2.0, 3.0]
     temporal[0, :, 1] = [-2.0, 0.0, 2.0]
     temporal[1, :, 0] = [4.0, 4.0, 4.0]
     timestamps = np.array([[0.0, 3.0], [1.0, 4.0]], dtype=np.float64)
     result = aggregate_lightgbm_windows(FeatureWindows(temporal, timestamps))
-    assert result.X.shape == (2, 48)
-    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 49
-    assert LIGHTGBM_TABULAR_FEATURE_NAMES[-1] == "pitch_rate_rms"
-    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES[:-1]) == 48
+    assert result.X.shape == (2, 66)
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES) == 74
+    assert LIGHTGBM_TABULAR_FEATURE_NAMES[-8:] == (
+        "roll_rate_rms", "pitch_rate_rms", "yaw_rate_rms",
+        "roll_rate_peak", "pitch_rate_peak", "yaw_rate_peak",
+        "accel_dynamic_rms", "accel_dynamic_peak",
+    )
+    assert len(LIGHTGBM_TABULAR_FEATURE_NAMES[:-8]) == 66
     assert LIGHTGBM_TABULAR_FEATURE_NAMES[:6] == (
         "vertical_flow_gradient_mean", "vertical_flow_gradient_max",
         "vertical_flow_gradient_std", "vertical_flow_gradient_median",
@@ -127,17 +133,17 @@ def test_majority_vote_ignores_uncovered_time_but_drops_unannotated_windows():
 
 def test_majority_vote_returns_correct_empty_shapes():
     windows = FeatureWindows(
-        X=np.zeros((2, 48), dtype=np.float32),
+        X=np.zeros((2, 66), dtype=np.float32),
         timestamps=np.array([[0.0, 4.0], [4.0, 8.0]], dtype=np.float64),
     )
     kept, labels = build_majority_vote_targets(windows, [])
-    assert kept.X.shape == (0, 48)
+    assert kept.X.shape == (0, 66)
     assert kept.timestamps.shape == (0, 2)
     assert labels.shape == (0,)
     assert labels.dtype == np.int64
 
 
-@pytest.mark.parametrize("bad", [np.zeros((4, 7)), np.zeros((0, 8))])
+@pytest.mark.parametrize("bad", [np.zeros((4, 10)), np.zeros((0, 11))])
 def test_lightgbm_aggregation_rejects_wrong_or_empty_signal_windows(bad):
     timestamps = np.tile(np.array([[0.0, 4.0]]), (len(bad), 1)).astype(np.float64)
     with pytest.raises(ValueError):
