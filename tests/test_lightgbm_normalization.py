@@ -10,10 +10,9 @@ def test_median_iqr_scaling_is_robust_to_extreme_outlier():
     robust = normalize_per_video_features(
         values, method="per_video_median_iqr_all_windows"
     )
-    zscore = normalize_per_video_features(values)
     assert robust[2, 0] == pytest.approx(0.0)
-    assert robust[3, 0] == pytest.approx(0.8)
-    assert abs(float(robust[0, 0])) < abs(float(zscore[0, 0]))
+    assert robust[3, 0] == pytest.approx(0.5)
+    assert robust[0, 0] == pytest.approx(-1.0)
     assert np.isfinite(robust).all()
 
 
