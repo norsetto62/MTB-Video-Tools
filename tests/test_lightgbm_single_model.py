@@ -46,7 +46,7 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
         ids = tuple(video_ids)
         captured.setdefault("combine", []).append(ids)
         labels = np.concatenate([labels_by_video[video_id] for video_id in ids])
-        return np.zeros((len(labels), 48), dtype=np.float32), labels
+        return np.zeros((len(labels), 74), dtype=np.float32), labels
 
     def fake_combine_with_group_sizes(data, video_ids):
         ids = tuple(video_ids)
