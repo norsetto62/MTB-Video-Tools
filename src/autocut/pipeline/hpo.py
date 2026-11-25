@@ -24,12 +24,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SEARCH_SPACE: dict[str, dict[str, Any]] = {
     "objective": {"choices": ["lambdarank", "rank_xendcg"]},
-    "num_leaves": {"choices": [15, 31, 63]},
+    "num_leaves": {"low": 15, "high": 63},
     # Each candidate is trained for this fixed number of rounds; no fold early stopping.
-    "num_iterations": {"choices": [300, 500, 800]},
+    "num_iterations": {"low": 300, "high": 800, "step": 100},
     "learning_rate": {"low": 0.02, "high": 0.08, "log": True},
-    "max_depth": {"choices": [3, 4, 5, 6]},
-    "min_data_in_leaf": {"choices": [10, 20, 50, 100]},
+    # Keep max_depth at the training-config default (6) while tuning leaves;
+    # jointly sampling both creates many redundant/capped combinations.
+    "min_data_in_leaf": {"low": 10, "high": 100, "log": True},
     "feature_fraction": {"low": 0.6, "high": 1.0},
     "bagging_fraction": {"low": 0.6, "high": 1.0},
     "lambda_l1": {"low": 1e-4, "high": 10.0, "log": True},
@@ -190,8 +191,11 @@ def _suggest(trial: optuna.Trial, space: dict[str, dict[str, Any]]) -> dict[str,
 def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     """Tune LightGBM hyperparameters by mean per-video MTB-3 Segment Recall@5.
 
-    Each video is a separate query for LambdaRank and for evaluation. Optuna
-    maximizes the unweighted mean Segment Recall@5 across held-out LOVO groups.
+    Each video is a separate query for LambdaRank and evaluation. Optuna
+    maximizes the unweighted mean per-video Segment Recall@5 pooled across all
+    held-out LOVO folds; groups with more evaluated videos therefore contribute
+    proportionally more to the objective. This best-trial value is a tuning
+    score, not an unbiased performance estimate; use nested CV's outer scores.
     """
     section = _hpo_section(settings)
     n_trials = section.get("n_trials", 30)
