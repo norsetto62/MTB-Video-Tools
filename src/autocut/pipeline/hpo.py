@@ -397,7 +397,7 @@ def run_hpo(manifest_path: str | Path, settings: Any) -> dict[str, Any]:
     output_path = output_dir / f"{study_name}_results.json"
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     logger.info(
-        "LightGBM HPO complete: best trial %d, objective=%s, mean Segment Recall@5=%.5f; results: %s",
+        "LightGBM HPO complete: best trial %d, objective=%s, pooled NMS Segment Recall@5=%.5f; results: %s",
         best.number, best.params.get("objective", base_config.objective),
         float(best.value), output_path,
     )
