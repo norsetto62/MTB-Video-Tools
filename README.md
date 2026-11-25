@@ -193,28 +193,26 @@ the ranking defaults by the training configuration loader.
 
 ## LightGBM ranking HPO
 
-Tune LightGBM hyperparameters with Optuna. The objective is NMS-suppressed,
-pooled event Segment Recall@5: greedy temporal NMS (IoU 0.3) removes redundant
-overlapping windows before selecting five predictions per video, and the score
-is total distinct events hit divided by total class-3 events. It is not an
-unweighted mean of per-video recalls.
-
-The standard HPO command runs trials over grouped LOVO folds. Its best trial
-is still a tuning result, not an unbiased performance estimate. Use nested
-leave-one-group-out evaluation for the estimate:
+Run Optuna hyperparameter optimization with nested leave-one-group-out
+cross-validation:
 
 ```powershell
 python -m autocut hpo --config config/train.yaml
 ```
 
-Nested CV prepares features once, tunes only within the outer-training groups,
-refits using the selected fixed iteration count, and evaluates each untouched
-outer group once. Median/IQR is the default. Reports are written separately for each normalization method:
-`output/hpo/lightgbm_hpo_nested_segment_recall_at_5_zscore_all_windows_ddof0.json`
-and
-`output/hpo/lightgbm_nested_cv_segment_recall_at_5_median_iqr_all_windows.json`.
+For each outer group, HPO tunes parameters using only the remaining groups.
+The selected configuration is then refit on those outer-training groups and
+evaluated once on the untouched outer group. The reported pooled NMS event
+Segment Recall@5 is therefore an estimate of the complete tuning-and-training
+procedure, not the best inner tuning score.
 
-To compare normalization, run HPO twice (each run uses nested cross-validation), changing only:
+Features are prepared once and reused across folds. Median/IQR normalization
+is the default. Reports are written separately for each normalization method:
+
+- `output/hpo/lightgbm_hpo_nested_segment_recall_at_5_zscore_all_windows_ddof0.json`
+- `output/hpo/lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json`
+
+To compare normalization methods, run HPO twice, changing only:
 
 ```yaml
 data:
@@ -227,18 +225,6 @@ or:
 data:
   feature_normalization: per_video_median_iqr_all_windows
 ```
-
-The full-data HPO command remains available:
-
-```powershell
-python -m autocut hpo --config config/train.yaml
-```
-
-Its study name is versioned by metric and normalization so trials from the
-previous early-stopped objective or a different normalizer cannot contaminate
-the current search. To apply the exported parameters to production training,
-set the results JSON as `hpo.best_params_path` and run `train`; the selected
-fixed `num_iterations` is used unchanged by the production refit.
 
 ## Feature-cache cleanup
 
