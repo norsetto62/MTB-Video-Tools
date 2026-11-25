@@ -7,6 +7,7 @@ each video query.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import json
 from pathlib import Path
 from typing import Any
 
@@ -367,6 +368,43 @@ def run_lightgbm_train_from_manifest(
 
     if config is None:
         config = _training_config(settings)
+
+    # Optional hand-off from a completed full-data HPO run. This makes the
+    # production refit use the exact fixed-round configuration HPO evaluated,
+    # rather than silently reverting to early-stopping-based iteration choice.
+    hpo_section = _section(settings, "hpo")
+    best_params_path_value = hpo_section.get("best_params_path")
+    hpo_best_params_path = None
+    if best_params_path_value is not None:
+        hpo_best_params_path = Path(best_params_path_value).expanduser()
+        if not hpo_best_params_path.is_file():
+            raise FileNotFoundError(
+                f"hpo.best_params_path does not exist: {hpo_best_params_path}"
+            )
+        try:
+            hpo_payload = json.loads(hpo_best_params_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Cannot read HPO results from {hpo_best_params_path}: {exc}"
+            ) from exc
+        best_params = hpo_payload.get("best_params")
+        if not isinstance(best_params, dict):
+            raise ValueError(
+                f"HPO results file {hpo_best_params_path} has no best_params mapping."
+            )
+        allowed_params = set(LightGBMConfig.__dataclass_fields__) - {"task"}
+        unknown_params = sorted(set(best_params) - allowed_params)
+        if unknown_params:
+            raise ValueError(
+                f"HPO results contain unsupported LightGBM parameter(s): {unknown_params}."
+            )
+        try:
+            config = replace(config, **best_params)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"HPO best_params in {hpo_best_params_path} are invalid: {exc}"
+            ) from exc
+
     train_X, train_y, train_group_sizes = _combine_with_group_sizes(prepared, train_ids)
     val_X, val_y, val_group_sizes = _combine_with_group_sizes(prepared, validation_ids)
     val_timestamps = np.concatenate(
@@ -458,6 +496,7 @@ def run_lightgbm_train_from_manifest(
             "validation_training_rows": int(len(train_X)),
             "validation_rows": int(len(val_X)),
             "configured_num_iterations": selected_iterations,
+            "hpo_best_params_path": str(hpo_best_params_path) if hpo_best_params_path else None,
         },
     )
     summary["validation_selection"] = {
