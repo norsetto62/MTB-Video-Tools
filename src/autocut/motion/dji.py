@@ -96,7 +96,12 @@ def _load_imu_series(
             raise
 
     samples, _metadata = module.extract_clip(Path(source_path))
-    rows, _processing = module.process(samples, gravity_mode="quat", level=False)
+    rows, processing = module.process(samples, gravity_mode="quat", level=False)
+    if processing.get("unit") not in {"g", "m/s2", "mg"}:
+        raise ValueError(
+            f"DJI accelerometer units in {source_path} could not be identified "
+            f"(detected {processing.get('unit')!r}); refusing to create scale-ambiguous IMU features."
+        )
     sample_times = np.asarray([float(sample["t"]) for sample in samples], dtype=np.float64)
     quaternions = [module.q_normalize(sample["quat"]) if sample.get("quat") is not None else None for sample in samples]
     dynamic_acceleration = [row.get("processed") for row in rows]
