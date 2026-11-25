@@ -204,17 +204,17 @@ is still a tuning result, not an unbiased performance estimate. Use nested
 leave-one-group-out evaluation for the estimate:
 
 ```powershell
-python -m autocut nested-cv --config config/train.yaml
+python -m autocut hpo --config config/train.yaml
 ```
 
 Nested CV prepares features once, tunes only within the outer-training groups,
 refits using the selected fixed iteration count, and evaluates each untouched
 outer group once. Median/IQR is the default. Reports are written separately for each normalization method:
-`output/hpo/lightgbm_nested_cv_segment_recall_at_5_zscore_all_windows_ddof0.json`
+`output/hpo/lightgbm_hpo_nested_segment_recall_at_5_zscore_all_windows_ddof0.json`
 and
 `output/hpo/lightgbm_nested_cv_segment_recall_at_5_median_iqr_all_windows.json`.
 
-To compare normalization, run the same nested procedure twice, changing only:
+To compare normalization, run HPO twice (each run uses nested cross-validation), changing only:
 
 ```yaml
 data:
