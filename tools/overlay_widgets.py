@@ -129,6 +129,104 @@ def estimate_srt_fps(samples: list[dict]) -> float:
 
 
 
+def output_timestamps(start: float, end: float, fps: float) -> list[float]:
+    """Build an output timeline at the requested FPS, including its first sample."""
+    if end < start:
+        return []
+    frame_count = int(math.floor((end - start) * fps + 1e-9)) + 1
+    return [start + index / fps for index in range(frame_count)]
+
+
+def _interpolate_angle_degrees(before: float, after: float, fraction: float) -> float:
+    """Interpolate an angle along the shortest path across the +/-180 degree boundary."""
+    delta = (after - before + 180.0) % 360.0 - 180.0
+    return before + fraction * delta
+
+
+def resample_records(
+    samples: list[dict],
+    timestamps: list[float],
+    target_times: list[float],
+    numeric_fields: tuple[str, ...],
+    angle_fields: tuple[str, ...] = (),
+) -> list[dict]:
+    """Sample timestamped records onto a new timeline.
+
+    Numeric values are linearly interpolated, angular values use the shortest
+    angular path, and other fields are copied from the nearest source record.
+    Values outside the source range are held at the nearest endpoint.
+    """
+    if not samples:
+        return []
+    if len(samples) != len(timestamps):
+        raise ValueError("Il numero di timestamp deve corrispondere ai campioni.")
+    if any(later <= earlier for earlier, later in zip(timestamps, timestamps[1:])):
+        raise ValueError("I timestamp sorgente devono essere strettamente crescenti.")
+
+    result = []
+    for target in target_times:
+        right = bisect.bisect_left(timestamps, target)
+        if right <= 0:
+            result.append(samples[0].copy())
+            continue
+        if right >= len(samples):
+            result.append(samples[-1].copy())
+            continue
+
+        left = right - 1
+        before_time, after_time = timestamps[left], timestamps[right]
+        fraction = (target - before_time) / (after_time - before_time)
+        nearest = left if target - before_time <= after_time - target else right
+        sampled = samples[nearest].copy()
+
+        for key in numeric_fields:
+            before, after = samples[left].get(key), samples[right].get(key)
+            if before is not None and after is not None:
+                sampled[key] = float(before) + (float(after) - float(before)) * fraction
+            elif before is not None:
+                sampled[key] = before
+            elif after is not None:
+                sampled[key] = after
+
+        for key in angle_fields:
+            before, after = samples[left].get(key), samples[right].get(key)
+            if before is not None and after is not None:
+                sampled[key] = _interpolate_angle_degrees(
+                    float(before), float(after), fraction
+                )
+            elif before is not None:
+                sampled[key] = before
+            elif after is not None:
+                sampled[key] = after
+
+        result.append(sampled)
+    return result
+
+
+def interpolate_series(
+    timestamps: list[float], values: list[float | None], target: float,
+    *, angular: bool = False,
+) -> float | None:
+    """Interpolate one scalar series at target time, holding endpoint values."""
+    if not timestamps:
+        return None
+    right = bisect.bisect_left(timestamps, target)
+    if right <= 0:
+        return values[0]
+    if right >= len(timestamps):
+        return values[-1]
+    left = right - 1
+    before, after = values[left], values[right]
+    if before is None:
+        return after
+    if after is None:
+        return before
+    fraction = (target - timestamps[left]) / (timestamps[right] - timestamps[left])
+    if angular:
+        return _interpolate_angle_degrees(float(before), float(after), fraction)
+    return float(before) + (float(after) - float(before)) * fraction
+
+
 def create_dji_altitude_widget(label: str, value: float | None, height: int, width: int) -> Image.Image:
     """Draw a DJI altitude value with its unit aligned to the value baseline."""
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -194,7 +292,6 @@ def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
         imu_samples, _ = extract_clip(args.video)
         rows, _ = process(imu_samples, "quat", 1.0, True, "auto", ())
         log_times = [row["sample"]["t"] for row in rows]
-        max_log_idx = len(rows) - 1
         if max_log_idx < 0:
             parser.error("Il video non contiene campioni IMU utilizzabili per il widget pitch.")
 
@@ -207,6 +304,17 @@ def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
         parser.error("Nessun record SRT nell'intervallo temporale richiesto.")
 
     fps = args.fps or estimate_srt_fps(filtered)
+    source_times = [sample["timestamp"] for sample in filtered]
+    output_times = output_timestamps(source_times[0], source_times[-1], fps)
+    filtered = resample_records(
+        filtered,
+        source_times,
+        output_times,
+        numeric_fields=(
+            "iso", "aperture", "ev", "color_temperature", "latitude",
+            "longitude", "relative_altitude", "absolute_altitude",
+        ),
+    )
     gps_samples = [
         sample for sample in samples
         if sample["latitude"] is not None and sample["longitude"] is not None
@@ -259,16 +367,11 @@ def run_dji_widgets(args, parser, selected_widgets: list[str]) -> None:
                 )
                 writers["track"].write(create_track_widget(lats, lons, track_idx, size))
             if "pitch" in writers:
-                current_time = sample["timestamp"]
-                log_idx = bisect.bisect_left(log_times, current_time)
-                if log_idx == 0:
-                    best_idx = 0
-                elif log_idx > max_log_idx:
-                    best_idx = max_log_idx
-                else:
-                    before, after = log_times[log_idx - 1], log_times[log_idx]
-                    best_idx = log_idx - 1 if abs(current_time - before) <= abs(current_time - after) else log_idx
-                pitch = rows[best_idx]["pitch"]
+                current_time = sample["timestamp"] - samples[0]["timestamp"]
+                pitch = interpolate_series(
+                    log_times, [row["pitch"] for row in rows], current_time,
+                    angular=True,
+                )
                 pitch_text = "----" if pitch is None else f"{pitch:.1f}"
                 pitch_color = (70, 220, 100, 255) if pitch is None or pitch >= 0 else (240, 100, 90, 255)
                 writers["pitch"].write(create_single_widget(
@@ -796,7 +899,6 @@ def main():
         print(f"Extracted {len(samples)} samples.")
         rows,_=process(samples, "quat", 1.0, True,"auto",())
         log_times = [r["sample"]["t"] for r in rows]
-        max_log_idx = len(rows) - 1
         print(f"Processed {len(samples)} samples.")
 
     all_samples = sorted(
@@ -834,12 +936,26 @@ def main():
         return
 
     fps = args.fps or estimate_fps(filtered_samples)
+    source_times = [
+        float(sample["timestamp"]) - avinox_start for sample in filtered_samples
+    ]
+    output_times = output_timestamps(source_times[0], source_times[-1], fps)
+    filtered_samples = resample_records(
+        filtered_samples,
+        source_times,
+        output_times,
+        numeric_fields=(
+            "speed", "gradient", "altitude", "totalPower",
+            "latitude", "longitude",
+        ),
+    )
+    for sample, output_time in zip(filtered_samples, output_times):
+        sample["timestamp"] = avinox_start + output_time
 
     print(
-        f"Upsamplig di {len(filtered_samples)} frame per widget @ {fps:.3f} FPS "
+        f"Resampling di {len(source_times)} campioni sorgente in "
+        f"{len(filtered_samples)} frame @ {fps:.3f} FPS"
     )
-    if fps > 1.0:
-        filtered_samples = upsample_samples(filtered_samples, fps)
 
     # Preparazione liste globali per traccia e altimetria (sull'intero file o sulla finestra)
     gps_samples = [s for s in all_samples if s.get("latitude") is not None and s.get("longitude") is not None]
@@ -965,22 +1081,16 @@ def main():
 
 
             if "pitch" in writers:
-                current_time = idx_out / fps
-                log_idx = bisect.bisect_left(log_times, current_time)
-                if log_idx == 0:
-                    best_idx = 0
-                elif log_idx > max_log_idx:
-                    best_idx = max_log_idx
-                else:
-                    t_before = log_times[log_idx - 1]
-                    t_after = log_times[log_idx]
-                    if abs(current_time - t_before) <= abs(current_time - t_after):
-                        best_idx = log_idx - 1
-                    else:
-                        best_idx = log_idx
-                pitch = rows[best_idx]["pitch"]
-                pitch_text = f"{pitch:.1f}"
-                pitch_color = (70, 220, 100, 255) if pitch >= 0 else (240, 100, 90, 255)
+                current_time = float(sample["timestamp"]) - avinox_start
+                pitch = interpolate_series(
+                    log_times, [row["pitch"] for row in rows], current_time,
+                    angular=True,
+                )
+                pitch_text = "----" if pitch is None else f"{pitch:.1f}"
+                pitch_color = (
+                    (70, 220, 100, 255)
+                    if pitch is None or pitch >= 0 else (240, 100, 90, 255)
+                )
                 writers["pitch"].write(
                     create_single_widget(
                         "CAMERA PITCH", pitch_text, "°", height=args.size, width=widget_widths["pitch"], value_color=pitch_color
