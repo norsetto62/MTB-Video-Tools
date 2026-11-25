@@ -97,6 +97,7 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
         {"group_b", "group_c"},
         {"group_a", "group_c"},
         {"group_a", "group_b"},
+        {"group_a", "group_b", "group_c"},
     ]
     assert result["outer_fold_count"] == 3
     assert result["mean_outer_segment_recall_at_5"] == pytest.approx(0.75)
