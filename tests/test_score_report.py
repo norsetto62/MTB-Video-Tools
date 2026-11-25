@@ -58,6 +58,7 @@ def test_effective_config_prefers_checkpoint_preprocessing():
         "roi_bottom": 0.6,
         "roi_top": 0.2,
         "pitch_time_offset": 0.0,
+        "feature_normalization": "per_video_zscore_all_windows_ddof0",
     }
 
 
@@ -69,7 +70,7 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
     checkpoint.write_text("placeholder", encoding="utf-8")
     timestamps = np.asarray([[0.0, 4.0], [2.0, 6.0], [4.0, 8.0]])
     windows = FeatureWindows(
-        X=np.zeros((3, 48), dtype=np.float32),
+        X=np.zeros((3, 66), dtype=np.float32),
         timestamps=timestamps,
     )
     sequence = FeatureSequence(
@@ -77,6 +78,9 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
         timestamps=np.arange(12, dtype=np.float64) * 0.5,
         pitch_timestamps=np.arange(0.0, 8.1, 0.1, dtype=np.float64),
         pitch_rate=np.ones(81, dtype=np.float64),
+        imu_timestamps=np.arange(0.0, 8.1, 0.04, dtype=np.float64),
+        imu_angular_velocity=np.ones((203, 3), dtype=np.float64),
+        imu_acceleration=np.zeros((203, 3), dtype=np.float64),
     )
 
     monkeypatch.setattr(report, "load_lightgbm_checkpoint", lambda path: {
@@ -96,7 +100,8 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
     monkeypatch.setattr(report, "build_feature_sequence", lambda *args, **kwargs: sequence)
     monkeypatch.setattr(report, "engineer_lightgbm_sequence", lambda features: np.zeros((12, 8), dtype=np.float32))
     monkeypatch.setattr(report, "build_lightgbm_windows_from_features", lambda *args, **kwargs: windows)
-    monkeypatch.setattr(report, "normalize_per_video_features", lambda values: values)
+    monkeypatch.setattr(report, "imu_window_statistics", lambda *args, **kwargs: np.zeros((3, 8), dtype=np.float32))
+    monkeypatch.setattr(report, "normalize_per_video_features", lambda values, **kwargs: values)
 
     settings = Config({"paths": {"cache_dir": str(tmp_path / "cache")}})
     output = tmp_path / "scores.csv"
