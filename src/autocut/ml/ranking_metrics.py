@@ -82,25 +82,33 @@ def segment_recall_at_k(
             videos_with_events += 1
             ranked = np.argsort(-video_scores, kind="stable")
             selected: list[int] = []
+            selected_mask = np.zeros(size, dtype=bool)
             suppressed = np.zeros(size, dtype=bool)
+            starts = video_intervals[:, 0]
+            ends = video_intervals[:, 1]
+            durations = ends - starts
             for candidate_raw in ranked:
                 candidate = int(candidate_raw)
                 if suppressed[candidate]:
                     continue
                 selected.append(candidate)
+                selected_mask[candidate] = True
                 if len(selected) >= min(k, size):
                     break
-                c_start, c_end = map(float, video_intervals[candidate])
-                for other_raw in ranked:
-                    other = int(other_raw)
-                    if other == candidate or suppressed[other]:
-                        continue
-                    o_start, o_end = map(float, video_intervals[other])
-                    intersection = max(0.0, min(c_end, o_end) - max(c_start, o_start))
-                    union = (c_end - c_start) + (o_end - o_start) - intersection
-                    iou = intersection / union if union > 0 else 0.0
-                    if iou > suppression_iou_threshold:
-                        suppressed[other] = True
+                c_start, c_end = video_intervals[candidate]
+                intersection = np.maximum(
+                    0.0,
+                    np.minimum(c_end, ends) - np.maximum(c_start, starts),
+                )
+                union = durations[candidate] + durations - intersection
+                iou = np.divide(
+                    intersection, union,
+                    out=np.zeros_like(intersection), where=union > 0,
+                )
+                suppressed |= (
+                    (iou > suppression_iou_threshold)
+                    & ~selected_mask
+                )
             top_set = set(selected)
             hits = sum(bool(top_set.intersection(event)) for event in events)
             suppressed_count = int(np.count_nonzero(suppressed))
