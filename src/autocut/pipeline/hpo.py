@@ -373,6 +373,93 @@ def run_hpo(
             f"outer recall@5={outer_score if outer_score is not None else 'undefined'}."
         )
 
+    # After the unbiased nested estimate is complete, run one final
+    # full-dataset LOVO search to select parameters for the production model.
+    # This score is for parameter selection only, not a generalization estimate.
+    report(
+        f"Nested evaluation complete. Running final full-dataset HPO "
+        f"({n_trials} trials across all {len(groups)} groups) to select production parameters."
+    )
+    final_study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=base_config.random_seed + len(groups)),
+    )
+
+    def final_objective(trial: optuna.Trial) -> float:
+        params = _suggest(trial, search_space)
+        trial_config = replace(base_config, **params)
+        folds = train_lightgbm_lovo(
+            prepared,
+            group_by_video,
+            config=trial_config,
+            collect_evaluation_history=False,
+            data_config={
+                **data_config,
+                "hpo_role": "final_full_dataset_parameter_selection",
+                "trial": trial.number,
+            },
+        )
+        total_events = total_hits = 0
+        per_fold: dict[str, float | None] = {}
+        for fold in folds:
+            metrics = fold.summary.get("validation_metrics", {})
+            events = int(metrics.get("events", 0))
+            hits = int(metrics.get("hit_events", 0))
+            per_fold[fold.held_out_group] = hits / events if events else None
+            total_events += events
+            total_hits += hits
+        if total_events == 0:
+            raise ValueError(
+                f"Final HPO trial {trial.number} produced no validation class-3 events."
+            )
+        score = float(total_hits / total_events)
+        trial.set_user_attr("fold_segment_recall_at_5", per_fold)
+        trial.set_user_attr("total_events", total_events)
+        trial.set_user_attr("total_hits", total_hits)
+        return score
+
+    final_study.optimize(final_objective, n_trials=n_trials, gc_after_trial=True)
+    final_completed = [
+        trial for trial in final_study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE and trial.value is not None
+    ]
+    if not final_completed:
+        raise RuntimeError("Final full-dataset HPO produced no completed trials.")
+    final_best = final_study.best_trial
+    final_best_params = _effective_params(base_config, search_space, final_best.params)
+    final_parameter_selection = {
+        "method": "full_dataset_leave_one_group_out",
+        "purpose": "production_parameter_selection_only",
+        "best_trial_number": final_best.number,
+        "best_inner_pooled_segment_recall_at_5": float(final_best.value),
+        "best_params": final_best_params,
+        "best_fold_segment_recall_at_5": final_best.user_attrs.get(
+            "fold_segment_recall_at_5", {}
+        ),
+        "total_events": final_best.user_attrs.get("total_events"),
+        "total_hits": final_best.user_attrs.get("total_hits"),
+        "completed_trials": len(final_completed),
+        "trials": [
+            {
+                "number": trial.number,
+                "value": trial.value,
+                "params": trial.params,
+                "effective_params": _effective_params(base_config, search_space, trial.params),
+                "fold_segment_recall_at_5": trial.user_attrs.get("fold_segment_recall_at_5", {}),
+            }
+            for trial in final_completed
+        ],
+        "warning": (
+            "This full-dataset LOVO score is used to select production parameters; "
+            "it is not an unbiased estimate. Use mean_outer_segment_recall_at_5 "
+            "from nested_cv for generalization performance."
+        ),
+    }
+    report(
+        f"Final production parameters selected: trial #{final_best.number}, "
+        f"full-data LOVO pooled recall@5={float(final_best.value):.5f}."
+    )
+
     outer_fold_scores = [
         float(item["outer_segment_recall_at_5"])
         for item in outer_results
@@ -417,15 +504,21 @@ def run_hpo(
         "mean_outer_group_segment_recall_at_5": mean_fold_score,
         "std_outer_group_segment_recall_at_5": std_fold_score,
         "outer_folds": outer_results,
+        # Top-level best_params is intentionally compatible with
+        # training.run_lightgbm_train_from_manifest's hpo.best_params_path.
+        "best_params": final_best_params,
+        "final_parameter_selection": final_parameter_selection,
         "interpretation": (
             "Estimates the HPO-and-refit procedure. It is not the score of a "
-            "single final model trained on all groups."
+            "single final model trained on all groups. The top-level best_params "
+            "comes from the separate full-dataset LOVO parameter-selection stage; "
+            "its score is not an unbiased performance estimate."
         ),
     }
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     payload["results_path"] = str(output_path)
     report(
-        f"Nested CV complete: pooled outer NMS Segment Recall@5="
+        f"Nested CV and final parameter selection complete: pooled outer NMS Segment Recall@5="
         f"{mean_score if mean_score is not None else 'undefined'}; "
         f"results saved to {output_path}."
     )
