@@ -30,6 +30,9 @@ LIGHTGBM_FEATURE_NAMES = (
     "global_flow_magnitude",
     "center_residual",
     "tunnel_vision",
+    "mean_flow_magnitude",
+    "signed_divergence",
+    "signed_curl",
 )
 
 _GRID_U_INDICES = np.asarray(
@@ -47,7 +50,7 @@ _FLOW_V = FEATURE_NAMES.index("flow_v")
 
 
 def engineer_lightgbm_sequence(X: np.ndarray) -> np.ndarray:
-    """Compute eight signals on a continuous canonical sequence before windowing.
+    """Compute eleven signals on a continuous canonical sequence before windowing.
 
     The representation uses directional flow, global flow magnitude, center
     residual, and peripheral residual relative to center residual. It does not
@@ -91,6 +94,14 @@ def engineer_lightgbm_sequence(X: np.ndarray) -> np.ndarray:
     mean_sin = np.mean(np.sin(angles), axis=(1, 2))
     directional_turbulence = 1.0 - np.hypot(mean_cos, mean_sin)
 
+    # Signed spatial derivatives on the 3x3 grid. Grid coordinates are evenly
+    # spaced over normalized image coordinates [0,1], hence spacing 0.5.
+    du_dy, du_dx = np.gradient(grid_u, 0.5, 0.5, axis=(1, 2))
+    dv_dy, dv_dx = np.gradient(grid_v, 0.5, 0.5, axis=(1, 2))
+    signed_divergence = np.mean(du_dx + dv_dy, axis=(1, 2))
+    signed_curl = np.mean(dv_dx - du_dy, axis=(1, 2))
+    mean_flow_magnitude = np.mean(magnitudes, axis=(1, 2))
+
     result = np.stack(
         (
             (top - bottom) / center_safe,
@@ -104,6 +115,9 @@ def engineer_lightgbm_sequence(X: np.ndarray) -> np.ndarray:
             np.hypot(flow_u, flow_v),
             center_residual,
             edge_residual / (center_residual + epsilon),
+            mean_flow_magnitude,
+            signed_divergence,
+            signed_curl,
         ),
         axis=1,
     )
