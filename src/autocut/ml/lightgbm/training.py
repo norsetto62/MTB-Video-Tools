@@ -184,6 +184,7 @@ def train_lightgbm_group_fold(
         val_timestamps=val_timestamps,
         config=config,
         checkpoint_path=checkpoint_path,
+        early_stopping=False,
         data_config={
             **(data_config or {}),
             "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
