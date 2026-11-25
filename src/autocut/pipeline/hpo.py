@@ -373,30 +373,90 @@ def run_hpo(
             f"outer recall@5={outer_score if outer_score is not None else 'undefined'}."
         )
 
-    # After the unbiased nested estimate is complete, run one final
-    # full-dataset LOVO search to select parameters for the production model.
-    # This score is for parameter selection only, not a generalization estimate.
-    report(
-        f"Nested evaluation complete. Running final full-dataset HPO "
-        f"({n_trials} trials across all {len(groups)} groups) to select production parameters."
-    )
+    # The nested outer-fold studies above remain temporary and isolated.
+    # The final full-dataset LOVO study is the persistent, resumable study used
+    # for production parameter selection and interactive fine-tuning.
+    study_name = section.get("study_name", "ranking_hpo")
+    if not isinstance(study_name, str) or not study_name.strip():
+        raise ValueError("hpo.study_name must be a non-empty string.")
+    if not study_name.endswith("_segment_recall_at_5_fixed_iters"):
+        if not study_name.endswith("_segment_recall_at_5"):
+            study_name = f"{study_name}_segment_recall_at_5"
+        study_name = f"{study_name}_fixed_iters"
+    if not study_name.endswith("_nms_pooled"):
+        study_name = f"{study_name}_nms_pooled"
+    if not study_name.endswith(f"_{normalization_slug}"):
+        study_name = f"{study_name}_{normalization_slug}"
+
+    # Preserve the old HPO proxy-group option for the production-parameter
+    # search only. Nested evaluation above always uses every manifest group.
+    final_prepared = prepared
+    final_group_by_video = group_by_video
+    proxy_value = section.get("proxy_test_groups")
+    if proxy_value is not None:
+        if isinstance(proxy_value, Config):
+            proxy_value = proxy_value.to_dict()
+        if not isinstance(proxy_value, (tuple, list)) or not proxy_value:
+            raise ValueError("hpo.proxy_test_groups must be a non-empty list of group IDs.")
+        proxy_groups: list[str] = []
+        for item in proxy_value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("hpo.proxy_test_groups must contain non-empty string group IDs.")
+            group = item.strip()
+            if group in proxy_groups:
+                raise ValueError(f"hpo.proxy_test_groups contains duplicate group ID {group!r}.")
+            proxy_groups.append(group)
+        unknown_groups = sorted(set(proxy_groups) - set(groups))
+        if unknown_groups:
+            raise ValueError(
+                "hpo.proxy_test_groups not found in manifest: " + ", ".join(unknown_groups)
+            )
+        final_video_ids = sorted(
+            video_id for video_id, group in group_by_video.items()
+            if group in proxy_groups
+        )
+        final_prepared = {video_id: prepared[video_id] for video_id in final_video_ids}
+        final_group_by_video = {
+            video_id: group_by_video[video_id] for video_id in final_video_ids
+        }
+        if len(set(final_group_by_video.values())) < 2:
+            raise ValueError("Proxy-group HPO requires at least two groups for LOVO evaluation.")
+        report(
+            "Final parameter-selection proxy groups: "
+            + ", ".join(proxy_groups)
+            + f" ({len(final_prepared)} videos)."
+        )
+
+    db_path = Path(section.get("storage_path", "data/db/hpo.db")).expanduser()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    storage = f"sqlite:///{db_path.resolve().as_posix()}"
     final_study = optuna.create_study(
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=True,
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=base_config.random_seed + len(groups)),
+    )
+    report(
+        f"Nested evaluation complete. Persistent study '{study_name}' opened at {db_path}; "
+        f"running {n_trials} additional final HPO trials across "
+        f"{len(set(final_group_by_video.values()))} groups "
+        f"({len(final_study.trials)} existing trial records)."
     )
 
     def final_objective(trial: optuna.Trial) -> float:
         params = _suggest(trial, search_space)
         trial_config = replace(base_config, **params)
         folds = train_lightgbm_lovo(
-            prepared,
-            group_by_video,
+            final_prepared,
+            final_group_by_video,
             config=trial_config,
             collect_evaluation_history=False,
             data_config={
                 **data_config,
                 "hpo_role": "final_full_dataset_parameter_selection",
-                "trial": trial.number,
+                "manifest": str(Path(manifest_path).expanduser().resolve()),
+                "ranking_hpo_trial": trial.number,
             },
         )
         total_events = total_hits = 0
@@ -413,9 +473,17 @@ def run_hpo(
                 f"Final HPO trial {trial.number} produced no validation class-3 events."
             )
         score = float(total_hits / total_events)
+        trial.set_user_attr("metric", "nms_pooled_segment_recall_at_5")
+        trial.set_user_attr("pooled_segment_recall_at_5", score)
         trial.set_user_attr("fold_segment_recall_at_5", per_fold)
         trial.set_user_attr("total_events", total_events)
         trial.set_user_attr("total_hits", total_hits)
+        trial.set_user_attr("evaluated_event_count", total_events)
+        trial.set_user_attr("evaluated_folds", sorted(per_fold))
+        logger.info(
+            "LightGBM final HPO trial %d: objective=%s, pooled NMS Segment Recall@5=%.5f, folds=%s",
+            trial.number, params.get("objective", base_config.objective), score, per_fold,
+        )
         return score
 
     final_study.optimize(final_objective, n_trials=n_trials, gc_after_trial=True)
@@ -428,8 +496,11 @@ def run_hpo(
     final_best = final_study.best_trial
     final_best_params = _effective_params(base_config, search_space, final_best.params)
     final_parameter_selection = {
-        "method": "full_dataset_leave_one_group_out",
+        "method": "leave_one_group_out",
         "purpose": "production_parameter_selection_only",
+        "study_name": study_name,
+        "storage_path": str(db_path.resolve()),
+        "proxy_test_groups": sorted(set(final_group_by_video.values())) if proxy_value is not None else None,
         "best_trial_number": final_best.number,
         "best_inner_pooled_segment_recall_at_5": float(final_best.value),
         "best_params": final_best_params,
@@ -439,6 +510,7 @@ def run_hpo(
         "total_events": final_best.user_attrs.get("total_events"),
         "total_hits": final_best.user_attrs.get("total_hits"),
         "completed_trials": len(final_completed),
+        "new_trials_this_run": n_trials,
         "trials": [
             {
                 "number": trial.number,
@@ -457,7 +529,9 @@ def run_hpo(
     }
     report(
         f"Final production parameters selected: trial #{final_best.number}, "
-        f"full-data LOVO pooled recall@5={float(final_best.value):.5f}."
+        f"full-data LOVO pooled recall@5={float(final_best.value):.5f}. "
+        f"Study '{study_name}' now contains {len(final_study.trials)} trial records; "
+        f"database: {db_path}."
     )
 
     outer_fold_scores = [
@@ -507,6 +581,8 @@ def run_hpo(
         # Top-level best_params is intentionally compatible with
         # training.run_lightgbm_train_from_manifest's hpo.best_params_path.
         "best_params": final_best_params,
+        "study_name": study_name,
+        "study_storage_path": str(db_path.resolve()),
         "final_parameter_selection": final_parameter_selection,
         "interpretation": (
             "Estimates the HPO-and-refit procedure. It is not the score of a "
