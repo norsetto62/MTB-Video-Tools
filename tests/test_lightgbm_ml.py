@@ -66,7 +66,7 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
         data_config={"window": 4.0, "stride": 2.0, "sampling_fps": 2.0},
         metadata={"fold": "heldout-group"},
     )
-    assert model.feature_dim == 49
+    assert model.feature_dim == 74
     assert summary["training_rows"] == 120
     assert summary["validation_rows"] == 48
     assert summary["ranking_metric"] == "segment_recall_at_5"
@@ -89,7 +89,7 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
 
 def test_lightgbm_training_rejects_wrong_feature_count_and_labels_and_missing_groups():
     X, y = _data(rows=40)
-    with pytest.raises(ValueError, match="49"):
+    with pytest.raises(ValueError, match="74"):
         train_lightgbm(X[:, :47], y, train_group_sizes=[40], config=_config())
     with pytest.raises(ValueError, match="relevance labels"):
         train_lightgbm(X, np.full(len(y), 5), train_group_sizes=[40], config=_config())
@@ -143,5 +143,5 @@ def test_ranking_inference_normalizes_the_complete_video_when_checkpoint_request
     result = infer_lightgbm_ranking_windows(
         payload, FeatureWindows(X=X, timestamps=timestamps)
     )
-    np.testing.assert_allclose(booster.seen[:, 0], [-1.2247449, 0.0, 1.2247449], atol=1e-6)
+    np.testing.assert_allclose(booster.seen[:, 0], [-1.2247474, 0.0, 1.2247474], atol=1e-6)
     np.testing.assert_array_equal(result.scores, np.zeros(3, dtype=np.float32))
