@@ -107,7 +107,7 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
     pitch_time_offset = data.get("pitch_time_offset", 0.0)
     if isinstance(pitch_time_offset, bool) or not isinstance(pitch_time_offset, (int, float)) or not np.isfinite(float(pitch_time_offset)):
         raise ValueError("data.pitch_time_offset must be a finite number.")
-    normalization = data.get("feature_normalization", "per_video_zscore_all_windows_ddof0")
+    normalization = data.get("feature_normalization", "per_video_median_iqr_all_windows")
     from ..dataset.normalization import SUPPORTED_FEATURE_NORMALIZATIONS
     if normalization not in SUPPORTED_FEATURE_NORMALIZATIONS:
         raise ValueError(
