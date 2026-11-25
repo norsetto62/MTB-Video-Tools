@@ -8,7 +8,7 @@ optuna = pytest.importorskip("optuna")
 from autocut.pipeline import hpo
 
 
-def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
+def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     monkeypatch, tmp_path
 ):
     prepared = {f"video_{name}": object() for name in ("a", "b", "c")}
@@ -83,7 +83,7 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
             },
         },
     }
-    result = hpo.run_nested_lightgbm_evaluation("manifest.yaml", settings)
+    result = hpo.run_hpo("manifest.yaml", settings)
 
     assert len(inner_group_sets) == 3
     assert inner_group_sets == [
@@ -101,4 +101,4 @@ def test_nested_cv_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
         }
         assert fold["inner_best_params"]["num_iterations"] == 7
         assert fold["outer_group"] not in fold["inner_groups"]
-    assert (tmp_path / "lightgbm_nested_cv_segment_recall_at_5_median_iqr_all_windows.json").is_file()
+    assert (tmp_path / "lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json").is_file()
