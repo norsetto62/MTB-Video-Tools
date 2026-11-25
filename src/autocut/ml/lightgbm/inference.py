@@ -12,10 +12,7 @@ from autocut.data_models import FeatureWindows
 from autocut.ml.lightgbm.checkpoint import load_lightgbm_checkpoint
 from autocut.ml.lightgbm.model import LightGBMClassifier, LightGBMRanker
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
-from autocut.dataset.normalization import (
-    LIGHTGBM_FEATURE_NORMALIZATION,
-    normalize_per_video_features,
-)
+from autocut.dataset.normalization import normalize_per_video_features
 
 
 @dataclass(frozen=True)
