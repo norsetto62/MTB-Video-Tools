@@ -18,6 +18,8 @@ from autocut.config_loader import load_config
 from autocut.data_models import Clip
 from autocut.dataset.cache_paths import feature_cache_dir
 from autocut.dataset.normalization import normalize_per_video_features
+from autocut.dataset.windows import append_imu_features
+from autocut.motion.dji import imu_window_statistics
 from autocut.dataset.sequence import build_feature_sequence
 from autocut.dataset.windows import build_lightgbm_windows_from_features
 from autocut.ml.lightgbm.checkpoint import load_lightgbm_checkpoint
@@ -180,8 +182,85 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     payload = load_lightgbm_checkpoint(checkpoint_path)
     saved = payload.get("data_config", {})
+    if not isinstance(saved, dict):
+        raise ValueError("Ranker checkpoint data_config must be a mapping.")
+    if payload.get("model_class") != "LightGBMRanker":
+        raise ValueError("The selected checkpoint is not a LightGBMRanker.")
+    from autocut.ml.lightgbm.checkpoint import validate_ranker_normalization_metadata
+    normalization_method = validate_ranker_normalization_metadata(payload)
     if "data" in raw_settings:
-        data = _data_config(raw_settings)
+        configured = _data_config(raw_settings)
+        data = {key: saved.get(key, value) for key, value in configured.items()}
+        data["feature_normalization"] = normalization_method
+    else:
+        video = raw_settings.get("video", {})
+        features = raw_settings.get("features", {})
+        data = {
+            "sampling_fps": float(saved.get("sampling_fps", video.get("sampling_fps", 2.0))),
+            "processing_width": int(saved.get("processing_width", video.get("processing_width", 480))),
+            "window": float(saved.get("window", saved.get("window_duration", features.get("window_duration", 4.0)))),
+            "stride": float(saved.get("stride", saved.get("window_stride", features.get("window_stride", 2.0)))),
+            "roi_left": saved.get("roi_left", video.get("roi_left", 0.15)),
+            "roi_right": saved.get("roi_right", video.get("roi_right", 0.85)),
+            "roi_bottom": saved.get("roi_bottom", video.get("roi_bottom", 0.50)),
+            "roi_top": saved.get("roi_top", video.get("roi_top", 0.10)),
+            "pitch_time_offset": float(saved.get("pitch_time_offset", 0.0)),
+            "feature_normalization": normalization_method,
+        }
+    if payload.get("model_class") != "LightGBMRanker":
+        raise ValueError("The selected checkpoint is not a LightGBMRanker.")
+    from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
+    if payload.get("feature_names") != list(LIGHTGBM_TABULAR_FEATURE_NAMES):
+        raise ValueError("Checkpoint feature schema does not match current LightGBM windows.")
+
+    info = get_video_info(video_path)
+    clip = Clip(video_name=video_path.stem, start=0.0, end=min(float(annotations[-1].end), float(info.duration)))
+    sequence = build_feature_sequence(
+        video_path, clip,
+        sample_fps=data["sampling_fps"],
+        processing_width=data["processing_width"],
+        cache_dir=feature_cache_dir(raw_settings),
+        roi_left=data["roi_left"], roi_right=data["roi_right"],
+        roi_bottom=data["roi_bottom"], roi_top=data["roi_top"],
+        window_duration=data["window"], window_stride=data["stride"],
+        include_pitch_telemetry=True,
+    )
+    signals = engineer_lightgbm_sequence(sequence.features)
+    windows = build_lightgbm_windows_from_features(
+        signals, sequence.timestamps, window=data["window"], stride=data["stride"]
+    )
+    if len(windows.X) == 0:
+        raise ValueError("Video is too short to produce LightGBM windows.")
+    imu_statistics = imu_window_statistics(
+        sequence.imu_timestamps,
+        sequence.imu_angular_velocity,
+        sequence.imu_acceleration,
+        windows.timestamps,
+        time_offset=data["pitch_time_offset"],
+    )
+    windows = append_imu_features(windows, imu_statistics)
+    normalized = normalize_per_video_features(
+        windows.X, method=data["feature_normalization"]
+    )
+    ranker = LightGBMRanker(
+        payload["_booster"], feature_names=tuple(payload["feature_names"])
+    )
+    scores = ranker.predict(normalized)
+
+    output_path = args.output or args.annotations.with_name(
+        f"{args.annotations.stem}_ranking_scores.png"
+    )
+    saved_path = plot_scores(
+        windows.timestamps, scores, annotations,
+        video_name=video_path.name, output_path=output_path, show=args.show,
+    )
+    print(f"Saved ranking-score plot: {saved_path.resolve()}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
     else:
         video = raw_settings.get("video", {})
         features = raw_settings.get("features", {})
