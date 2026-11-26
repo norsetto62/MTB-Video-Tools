@@ -20,7 +20,14 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     monkeypatch.setattr(
         hpo,
         "prepare_lightgbm_manifest_data",
-        lambda *args, **kwargs: (prepared, groups, {"prepared_once": True}),
+        lambda *args, **kwargs: (
+            prepared,
+            groups,
+            {
+                "prepared_once": True,
+                "feature_normalization": "per_video_median_iqr_all_windows",
+            },
+        ),
     )
 
     inner_group_sets = []
