@@ -21,7 +21,7 @@ from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.lightgbm import build_lightgbm_training_data
 from ..dataset.normalization import (
     DEFAULT_FEATURE_NORMALIZATION,
-    SUPPORTED_FEATURE_NORMALIZATIONS,
+    validate_feature_normalization_method,
 )
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import (
@@ -112,10 +112,10 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(pitch_time_offset, bool) or not isinstance(pitch_time_offset, (int, float)) or not np.isfinite(float(pitch_time_offset)):
         raise ValueError("data.pitch_time_offset must be a finite number.")
     normalization = data.get("feature_normalization", DEFAULT_FEATURE_NORMALIZATION)
-    if normalization not in SUPPORTED_FEATURE_NORMALIZATIONS:
-        raise ValueError(
-            f"data.feature_normalization must be one of {SUPPORTED_FEATURE_NORMALIZATIONS}."
-        )
+    try:
+        normalization = validate_feature_normalization_method(normalization)
+    except ValueError as exc:
+        raise ValueError(f"Invalid data.feature_normalization: {exc}") from exc
     return {
         "sampling_fps": sample_fps,
         "processing_width": processing_width,
