@@ -42,6 +42,7 @@ def test_effective_config_prefers_checkpoint_preprocessing():
             "roi_right": 0.9,
             "roi_bottom": 0.6,
             "roi_top": 0.2,
+            "feature_normalization": "per_video_zscore_all_windows_ddof0",
         }
     }
     result = report._effective_data_config(
@@ -90,6 +91,7 @@ def test_report_writes_global_scores_and_per_video_range(tmp_path, monkeypatch):
         "data_config": {
             "sampling_fps": 2.0, "processing_width": 480, "window": 4.0, "stride": 2.0,
             "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.5, "roi_top": 0.1,
+            "feature_normalization": "per_video_zscore_all_windows_ddof0",
         },
     })
     monkeypatch.setattr(report, "load_manifest", lambda *args, **kwargs: (record,))
