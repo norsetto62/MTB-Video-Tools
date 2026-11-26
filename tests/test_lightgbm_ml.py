@@ -63,7 +63,10 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
             for i in range(4)
         ]),
         config=_config(), checkpoint_path=path,
-        data_config={"window": 4.0, "stride": 2.0, "sampling_fps": 2.0},
+        data_config={
+            "window": 4.0, "stride": 2.0, "sampling_fps": 2.0,
+            "feature_normalization": "per_video_median_iqr_all_windows",
+        },
         metadata={"fold": "heldout-group"},
     )
     assert model.feature_dim == 74
@@ -115,9 +118,15 @@ def test_per_video_zscore_normalization_handles_constant_columns():
 
 def test_per_video_zscore_rejects_invalid_feature_matrices():
     with pytest.raises(ValueError, match="non-empty shape"):
-        normalize_per_video_features(np.empty((0, 48), dtype=np.float32))
+        normalize_per_video_features(
+            np.empty((0, 48), dtype=np.float32),
+            method="per_video_zscore_all_windows_ddof0",
+        )
     with pytest.raises(ValueError, match="finite"):
-        normalize_per_video_features(np.asarray([[np.nan]], dtype=np.float32))
+        normalize_per_video_features(
+            np.asarray([[np.nan]], dtype=np.float32),
+            method="per_video_zscore_all_windows_ddof0",
+        )
 
 
 def test_ranking_inference_normalizes_the_complete_video_when_checkpoint_requests_it():
