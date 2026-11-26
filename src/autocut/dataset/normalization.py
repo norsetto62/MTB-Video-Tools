@@ -25,6 +25,29 @@ def validate_feature_normalization_method(method: str) -> str:
     return method
 
 
+def feature_normalization_diagnostics(
+    features: np.ndarray,
+    *,
+    method: str,
+) -> dict[str, int]:
+    """Return per-video counts for columns requiring robust-scale fallback."""
+    validate_feature_normalization_method(method)
+    values = np.asarray(features, dtype=np.float64)
+    if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] == 0:
+        raise ValueError("features must have non-empty shape (N, F).")
+    if not np.isfinite(values).all():
+        raise ValueError("features must contain only finite values.")
+    if method != "per_video_median_iqr_all_windows":
+        return {"std_fallback_columns": 0, "near_constant_columns": 0}
+    q25, q75 = np.percentile(values, [25, 75], axis=0)
+    fallback = (q75 - q25) <= 1e-8
+    std = np.std(values, axis=0, ddof=0)
+    return {
+        "std_fallback_columns": int(np.count_nonzero(fallback)),
+        "near_constant_columns": int(np.count_nonzero(fallback & (std <= 1e-8))),
+    }
+
+
 def normalize_per_video_features(
     features: np.ndarray,
     *,
