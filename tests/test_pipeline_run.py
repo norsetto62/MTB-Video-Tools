@@ -113,6 +113,7 @@ def test_run_pipeline_lightgbm_backend_scores_raw_values_and_renders(tmp_path, m
                 "window": 4.0, "stride": 2.0,
                 "roi_left": 0.15, "roi_right": 0.85,
                 "roi_bottom": 0.5, "roi_top": 0.1, "pitch_time_offset": 0.0,
+                "feature_normalization": "per_video_median_iqr_all_windows",
             },
             "_booster": object(),
         },
