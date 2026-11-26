@@ -6,10 +6,17 @@ windows -> 66 optical-flow statistics plus eight DJI IMU statistics -> normaliza
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 from ..data_models import Annotation, FeatureSequence, FeatureWindows
-from .normalization import normalize_per_video_features
+from .normalization import (
+    feature_normalization_diagnostics,
+    normalize_per_video_features,
+)
+
+logger = logging.getLogger(__name__)
 from ..motion.engineered import engineer_lightgbm_sequence
 from ..motion.dji import imu_window_statistics
 from .targets import build_majority_vote_targets
@@ -60,6 +67,18 @@ def build_lightgbm_training_data(
     # Normalize over every window from this video before dropping windows
     # that have no unambiguous annotation target. Inference has no labels, so
     # its normalization statistics must be computed over the complete video.
+    diagnostics = feature_normalization_diagnostics(
+        tabular_windows.X, method=normalization_method,
+    )
+    if diagnostics["std_fallback_columns"]:
+        logger.info(
+            "Feature normalization (%s): %d/%d columns used std fallback; "
+            "%d remained near-constant.",
+            normalization_method,
+            diagnostics["std_fallback_columns"],
+            tabular_windows.X.shape[1],
+            diagnostics["near_constant_columns"],
+        )
     normalized_windows = FeatureWindows(
         X=normalize_per_video_features(tabular_windows.X, method=normalization_method),
         timestamps=tabular_windows.timestamps,
