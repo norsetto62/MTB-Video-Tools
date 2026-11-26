@@ -50,6 +50,11 @@ def save_lightgbm_checkpoint(
     data = dict(data_config or {})
     extra = dict(metadata or {})
     is_ranker = model.__class__.__name__ == "LightGBMRanker"
+    if is_ranker:
+        validate_ranker_normalization_metadata({
+            "model_class": "LightGBMRanker",
+            "data_config": data,
+        })
     payload = {
         "checkpoint_version": LIGHTGBM_CHECKPOINT_VERSION,
         "model_class": "LightGBMRanker" if is_ranker else "LightGBMClassifier",
