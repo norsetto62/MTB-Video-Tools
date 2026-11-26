@@ -26,7 +26,7 @@ def build_lightgbm_training_data(
     imu_angular_velocity: np.ndarray,
     imu_acceleration: np.ndarray,
     pitch_time_offset: float = 0.0,
-    normalization_method: str = "per_video_zscore_all_windows_ddof0",
+    normalization_method: str,
 ) -> tuple[FeatureWindows, np.ndarray]:
     """Build aligned LightGBM rows and MTB 0..3 labels from one video sequence.
 
