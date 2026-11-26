@@ -19,6 +19,10 @@ from ..config_loader import Config
 from ..data_models import Clip
 from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.lightgbm import build_lightgbm_training_data
+from ..dataset.normalization import (
+    DEFAULT_FEATURE_NORMALIZATION,
+    SUPPORTED_FEATURE_NORMALIZATIONS,
+)
 from ..dataset.manifest import DatasetRecord, load_manifest
 from ..dataset.sequence import (
     DEFAULT_PROCESSING_WIDTH,
@@ -107,8 +111,7 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
     pitch_time_offset = data.get("pitch_time_offset", 0.0)
     if isinstance(pitch_time_offset, bool) or not isinstance(pitch_time_offset, (int, float)) or not np.isfinite(float(pitch_time_offset)):
         raise ValueError("data.pitch_time_offset must be a finite number.")
-    normalization = data.get("feature_normalization", "per_video_median_iqr_all_windows")
-    from ..dataset.normalization import SUPPORTED_FEATURE_NORMALIZATIONS
+    normalization = data.get("feature_normalization", DEFAULT_FEATURE_NORMALIZATION)
     if normalization not in SUPPORTED_FEATURE_NORMALIZATIONS:
         raise ValueError(
             f"data.feature_normalization must be one of {SUPPORTED_FEATURE_NORMALIZATIONS}."
