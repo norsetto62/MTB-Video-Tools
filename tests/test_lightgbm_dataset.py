@@ -3,6 +3,7 @@ import numpy as np
 
 from autocut.data_models import Annotation, FeatureSequence
 from autocut.dataset.lightgbm import build_lightgbm_training_data
+from autocut.dataset.normalization import DEFAULT_FEATURE_NORMALIZATION
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
 from autocut.motion.features import FEATURE_NAMES
 
@@ -60,6 +61,7 @@ def test_lightgbm_training_data_connects_signals_windows_and_majority_targets():
         imu_timestamps=sequence.imu_timestamps,
         imu_angular_velocity=sequence.imu_angular_velocity,
         imu_acceleration=sequence.imu_acceleration,
+        normalization_method=DEFAULT_FEATURE_NORMALIZATION,
     )
 
     assert windows.X.ndim == 2
@@ -92,6 +94,7 @@ def test_lightgbm_training_data_returns_empty_tabular_dataset_without_annotation
         imu_timestamps=_sequence().imu_timestamps,
         imu_angular_velocity=_sequence().imu_angular_velocity,
         imu_acceleration=_sequence().imu_acceleration,
+        normalization_method=DEFAULT_FEATURE_NORMALIZATION,
     )
     assert windows.X.shape == (0, 74)
     assert windows.timestamps.shape == (0, 2)
