@@ -548,9 +548,6 @@ def run_hpo(
     )
     output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    normalization_name = data_config.get(
-        "feature_normalization", "per_video_median_iqr_all_windows"
-    )
     normalization_slug = str(normalization_name).replace("per_video_", "")
     output_path = output_dir / f"lightgbm_hpo_nested_segment_recall_at_5_{normalization_slug}.json"
     payload = {
