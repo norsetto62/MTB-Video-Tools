@@ -70,7 +70,7 @@ def build_lightgbm_training_data(
     diagnostics = feature_normalization_diagnostics(
         tabular_windows.X, method=normalization_method,
     )
-    if diagnostics["std_fallback_columns"]:
+    if normalization_method == "per_video_median_iqr_all_windows":
         logger.info(
             "Feature normalization (%s): %d/%d columns used std fallback; "
             "%d remained near-constant.",
