@@ -156,3 +156,22 @@ def test_ranking_inference_normalizes_the_complete_video_when_checkpoint_request
     )
     np.testing.assert_allclose(booster.seen[:, 0], [-1.2247449, 0.0, 1.2247449], atol=1e-6)
     np.testing.assert_array_equal(result.scores, np.zeros(3, dtype=np.float32))
+
+
+
+def test_ranking_inference_rejects_checkpoint_without_normalization_metadata():
+    X = np.ones((2, len(LIGHTGBM_TABULAR_FEATURE_NAMES)), dtype=np.float32)
+    timestamps = np.asarray([[0.0, 4.0], [2.0, 6.0]], dtype=np.float64)
+    payload = {
+        "checkpoint_version": "lightgbm-1.0",
+        "model_class": "LightGBMRanker",
+        "feature_names": list(LIGHTGBM_TABULAR_FEATURE_NAMES),
+        "_booster": type("CaptureBooster", (), {
+            "predict": lambda self, values: np.zeros(len(values), dtype=np.float32)
+        })(),
+        "data_config": {},
+    }
+    with pytest.raises(ValueError, match="missing data_config.feature_normalization"):
+        infer_lightgbm_ranking_windows(
+            payload, FeatureWindows(X=X, timestamps=timestamps)
+        )
