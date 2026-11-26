@@ -1,10 +1,14 @@
 """Per-video feature normalization used by the LightGBM ranking path."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
+logger = logging.getLogger(__name__)
 
-DEFAULT_FEATURE_NORMALIZATION = "per_video_zscore_all_windows_ddof0"
+
+DEFAULT_FEATURE_NORMALIZATION = "per_video_median_iqr_all_windows"
 SUPPORTED_FEATURE_NORMALIZATIONS = (
     DEFAULT_FEATURE_NORMALIZATION,
     "per_video_median_iqr_all_windows",
@@ -20,7 +24,8 @@ def normalize_per_video_features(
 
     per_video_median_iqr_all_windows centers by the median and scales by
     IQR (Q75-Q25), making the transformation less sensitive to heavy tails.
-    Constant or numerically near-constant columns use scale 1. Statistics are
+    Columns with near-zero IQR fall back to population standard deviation;
+    only near-constant columns use scale 1. Statistics are
     computed before annotation filtering, identically for training/inference.
     """
     try:
@@ -41,7 +46,17 @@ def normalize_per_video_features(
     if method == "per_video_median_iqr_all_windows":
         center = np.median(values64, axis=0)
         q25, q75 = np.percentile(values64, [25, 75], axis=0)
-        scale = q75 - q25
+        iqr = q75 - q25
+        std = np.std(values64, axis=0, ddof=0)
+        fallback_mask = iqr <= 1e-8
+        scale = np.where(fallback_mask, std, iqr)
+        if np.any(fallback_mask):
+            constant_count = int(np.count_nonzero(fallback_mask & (std <= 1e-8)))
+            logger.debug(
+                "Median/IQR normalization: %d/%d columns used std fallback; "
+                "%d remained near-constant.",
+                int(np.count_nonzero(fallback_mask)), values64.shape[1], constant_count,
+            )
     else:
         center = np.mean(values64, axis=0)
         scale = np.std(values64, axis=0, ddof=0)
