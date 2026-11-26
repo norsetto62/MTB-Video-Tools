@@ -2,7 +2,10 @@
 import numpy as np
 import pytest
 
-from autocut.dataset.normalization import normalize_per_video_features
+from autocut.dataset.normalization import (
+    feature_normalization_diagnostics,
+    normalize_per_video_features,
+)
 
 
 def test_median_iqr_scaling_is_robust_to_extreme_outlier():
@@ -28,3 +31,31 @@ def test_median_iqr_constant_columns_use_unit_scale():
 def test_unknown_normalization_is_rejected():
     with pytest.raises(ValueError, match="Unsupported feature normalization"):
         normalize_per_video_features(np.ones((3, 2)), method="rank")
+
+
+
+def test_iqr_fallback_uses_std_and_reports_per_video_column_counts():
+    values = np.array([
+        [0.0, 7.0],
+        [0.0, 7.0],
+        [0.0, 7.0],
+        [0.0, 7.0],
+        [10.0, 7.0],
+    ], dtype=np.float32)
+    diagnostics = feature_normalization_diagnostics(
+        values, method="per_video_median_iqr_all_windows"
+    )
+    assert diagnostics == {
+        "std_fallback_columns": 2,
+        "near_constant_columns": 1,
+    }
+    normalized = normalize_per_video_features(
+        values, method="per_video_median_iqr_all_windows"
+    )
+    assert np.isfinite(normalized).all()
+    assert normalized[-1, 0] == pytest.approx(2.0)
+
+
+def test_normalization_method_must_be_explicit():
+    with pytest.raises(TypeError, match="method"):
+        normalize_per_video_features(np.ones((3, 2)))
