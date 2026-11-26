@@ -276,6 +276,7 @@ def run_pipeline(
         raise ValueError("LightGBM checkpoint data_config must be a mapping.")
     def saved_or(key, fallback):
         return saved.get(key, fallback)
+    normalization_method = saved["feature_normalization"]
     roi = validate_roi(
         saved_or("roi_left", settings.video.roi_left),
         saved_or("roi_right", settings.video.roi_right),
@@ -356,8 +357,7 @@ def run_pipeline(
         )
         windows = append_imu_features(windows, imu_statistics)
         normalized = normalize_per_video_features(
-            windows.X,
-            method=saved_or("feature_normalization", "per_video_zscore_all_windows_ddof0"),
+            windows.X, method=normalization_method,
         )
         scores = lightgbm_ranker.predict(normalized)
         lightgbm_windows_by_video.setdefault(video_name, []).append((
