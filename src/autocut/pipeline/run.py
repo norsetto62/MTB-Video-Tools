@@ -356,23 +356,20 @@ def run_pipeline(
             time_offset=float(saved_or("pitch_time_offset", 0.0)),
         )
         windows = append_imu_features(windows, imu_statistics)
-        normalized = normalize_per_video_features(
-            windows.X, method=normalization_method,
-        )
-        scores = lightgbm_ranker.predict(normalized)
         lightgbm_windows_by_video.setdefault(video_name, []).append((
             np.asarray(windows.timestamps, dtype=np.float64),
-            np.asarray(scores, dtype=np.float64),
+            np.asarray(windows.X, dtype=np.float32),
         ))
         lightgbm_range_orders.setdefault(video_name, []).append((start, end, annotation_order))
         logger.info(
-            "LightGBM annotation #%d: scored %d window(s); pooling by video before top-10 selection.",
-            annotation_order, len(scores),
+            "LightGBM annotation #%d: prepared %d window(s); normalization and scoring "
+            "will run once after pooling all ranges for this video.",
+            annotation_order, len(windows.X),
         )
         inference_summaries.append({
             "video": video_name, "annotation_order": annotation_order,
             "range_start": start, "range_end": end,
-            "window_count": len(scores), "candidate_count": 0,
+            "window_count": len(windows.X), "candidate_count": 0,
             "status": "scored_lightgbm",
             "score_semantics": "raw LambdaRank score",
         })
@@ -381,17 +378,21 @@ def run_pipeline(
     from ..selection.candidates import select_ranked_segments
     from ..selection.candidate_types import CandidateClip, WindowEvidence
     for video_name, batches in lightgbm_windows_by_video.items():
-        timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
-        scores = np.concatenate([batch[1] for batch in batches], axis=0)
-        # Annotation ranges can overlap; deduplicate identical source windows
-        # before ranking so the same evidence cannot count twice.
-        unique: dict[tuple[float, float], float] = {}
-        for (window_start, window_end), score in zip(timestamps, scores):
+        batch_timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
+        batch_features = np.concatenate([batch[1] for batch in batches], axis=0)
+        # Annotation ranges can overlap. Deduplicate identical source windows
+        # before computing per-video normalization statistics and ranking.
+        unique: dict[tuple[float, float], np.ndarray] = {}
+        for (window_start, window_end), feature_row in zip(batch_timestamps, batch_features):
             key = (round(float(window_start), 6), round(float(window_end), 6))
-            unique[key] = max(float(score), unique.get(key, -math.inf))
+            unique.setdefault(key, feature_row)
         ordered = sorted(unique.items(), key=lambda item: (item[0][0], item[0][1]))
         timestamps = np.asarray([key for key, _ in ordered], dtype=np.float64)
-        scores = np.asarray([score for _, score in ordered], dtype=np.float64)
+        features = np.stack([row for _, row in ordered], axis=0)
+        normalized = normalize_per_video_features(
+            features, method=normalization_method,
+        )
+        scores = lightgbm_ranker.predict(normalized)
         segments = select_ranked_segments(
             timestamps, scores, top_k=10,
             max_gap_seconds=settings.selection.max_gap_to_merge,
