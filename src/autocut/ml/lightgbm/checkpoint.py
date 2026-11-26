@@ -11,6 +11,23 @@ from typing import Any, Mapping, Sequence
 LIGHTGBM_CHECKPOINT_VERSION = "lightgbm-1.0"
 
 
+def validate_ranker_normalization_metadata(payload: Mapping[str, Any]) -> str:
+    """Require a supported, explicit preprocessing method for ranker checkpoints."""
+    if payload.get("model_class") != "LightGBMRanker":
+        raise ValueError("Normalization metadata validation requires a LightGBMRanker checkpoint.")
+    data_config = payload.get("data_config")
+    if not isinstance(data_config, Mapping):
+        raise ValueError("LightGBM ranker checkpoint data_config must be a mapping.")
+    if "feature_normalization" not in data_config:
+        raise ValueError(
+            "LightGBM ranker checkpoint is missing data_config.feature_normalization. "
+            "Migrate this checkpoint explicitly or retrain the model."
+        )
+    from autocut.dataset.normalization import validate_feature_normalization_method
+    return validate_feature_normalization_method(data_config["feature_normalization"])
+
+
+
 def save_lightgbm_checkpoint(
     path: str | Path,
     model: Any,
@@ -111,5 +128,7 @@ def load_lightgbm_checkpoint(path: str | Path) -> dict[str, Any]:
     for key in ("training_config", "data_config", "metadata"):
         if not isinstance(payload.get(key), dict):
             raise ValueError(f"LightGBM checkpoint {key} must be a dictionary.")
+    if model_class == "LightGBMRanker":
+        validate_ranker_normalization_metadata(payload)
     payload["_booster"] = booster
     return payload
