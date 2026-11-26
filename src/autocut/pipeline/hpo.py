@@ -372,9 +372,7 @@ def run_hpo(
             f"outer recall@5={outer_score if outer_score is not None else 'undefined'}."
         )
 
-    normalization_name = data_config.get(
-        "feature_normalization", "per_video_median_iqr_all_windows"
-    )
+    normalization_name = data_config["feature_normalization"]
     normalization_slug = str(normalization_name).replace("per_video_", "")
 
     # The nested outer-fold studies above remain temporary and isolated.
