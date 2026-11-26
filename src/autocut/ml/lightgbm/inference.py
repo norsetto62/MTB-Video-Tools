@@ -9,7 +9,10 @@ import numpy as np
 
 from autocut.data_models import FeatureWindows
 
-from autocut.ml.lightgbm.checkpoint import load_lightgbm_checkpoint
+from autocut.ml.lightgbm.checkpoint import (
+    load_lightgbm_checkpoint,
+    validate_ranker_normalization_metadata,
+)
 from autocut.ml.lightgbm.model import LightGBMClassifier, LightGBMRanker
 from autocut.dataset.windows import LIGHTGBM_TABULAR_FEATURE_NAMES
 from autocut.dataset.normalization import normalize_per_video_features
@@ -78,12 +81,8 @@ def infer_lightgbm_ranking_windows(
         raise ValueError("Every window end timestamp must be after its start.")
     if len(timestamps) > 1 and np.any(np.diff(timestamps[:, 0]) <= 0):
         raise ValueError("Window start timestamps must be strictly increasing.")
-    # New ranker checkpoints explicitly opt into per-video normalization.
-    # Older checkpoints without this metadata retain their original behavior.
-    data_config = payload.get("data_config") or {}
-    normalization_method = data_config.get("feature_normalization")
-    if normalization_method is not None:
-        X = normalize_per_video_features(X, method=normalization_method)
+    normalization_method = validate_ranker_normalization_metadata(payload)
+    X = normalize_per_video_features(X, method=normalization_method)
     model = LightGBMRanker(payload["_booster"], feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     scores = model.predict(X)
     return LightGBMRankingInferenceResult(timestamps=timestamps.copy(), scores=scores)
