@@ -11,14 +11,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_FEATURE_NORMALIZATION = "per_video_median_iqr_all_windows"
 SUPPORTED_FEATURE_NORMALIZATIONS = (
     DEFAULT_FEATURE_NORMALIZATION,
-    "per_video_median_iqr_all_windows",
+    "per_video_zscore_all_windows_ddof0",
 )
+
+
+def validate_feature_normalization_method(method: str) -> str:
+    """Validate and return a persisted feature-normalization method."""
+    if not isinstance(method, str) or method not in SUPPORTED_FEATURE_NORMALIZATIONS:
+        raise ValueError(
+            f"Unsupported feature normalization {method!r}; "
+            f"choose one of {SUPPORTED_FEATURE_NORMALIZATIONS}."
+        )
+    return method
 
 
 def normalize_per_video_features(
     features: np.ndarray,
     *,
-    method: str = DEFAULT_FEATURE_NORMALIZATION,
+    method: str,
 ) -> np.ndarray:
     """Normalize each feature over all windows from one video.
 
@@ -36,11 +46,7 @@ def normalize_per_video_features(
         raise ValueError("features must have non-empty shape (N, F).")
     if not np.isfinite(values).all():
         raise ValueError("features must contain only finite values.")
-    if method not in SUPPORTED_FEATURE_NORMALIZATIONS:
-        raise ValueError(
-            f"Unsupported feature normalization {method!r}; "
-            f"choose one of {SUPPORTED_FEATURE_NORMALIZATIONS}."
-        )
+    validate_feature_normalization_method(method)
 
     values64 = values.astype(np.float64, copy=False)
     if method == "per_video_median_iqr_all_windows":
