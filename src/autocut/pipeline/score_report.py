@@ -16,7 +16,10 @@ from ..config_loader import Config
 from ..data_models import Clip
 from ..dataset.cache_paths import feature_cache_dir
 from ..dataset.manifest import load_manifest
-from ..dataset.normalization import normalize_per_video_features
+from ..dataset.normalization import (
+    normalize_per_video_features,
+    validate_feature_normalization_method,
+)
 from ..dataset.sequence import (
     DEFAULT_PROCESSING_WIDTH,
     DEFAULT_ROI_BOTTOM,
@@ -80,7 +83,9 @@ def _effective_data_config(
         "roi_bottom": roi[2],
         "roi_top": roi[3],
         "pitch_time_offset": float(choose("pitch_time_offset", 0.0)),
-        "feature_normalization": choose("feature_normalization", "per_video_zscore_all_windows_ddof0"),
+        "feature_normalization": validate_feature_normalization_method(
+            saved.get("feature_normalization")
+        ),
     }
 
 
@@ -189,7 +194,7 @@ def run_score_report(
         # are filtered. Here no windows are filtered because this is inference.
         normalized = normalize_per_video_features(
             windows.X,
-            method=params.get("feature_normalization", "per_video_zscore_all_windows_ddof0"),
+            method=params["feature_normalization"],
         )
         scores = ranker.predict(normalized)
         if len(scores) != len(windows.timestamps):
