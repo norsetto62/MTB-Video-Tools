@@ -104,7 +104,9 @@ def test_per_video_zscore_normalization_handles_constant_columns():
         [12.0, 4.0, 3.0],
         [14.0, 4.0, 5.0],
     ], dtype=np.float32)
-    normalized = normalize_per_video_features(X)
+    normalized = normalize_per_video_features(
+        X, method="per_video_zscore_all_windows_ddof0"
+    )
     np.testing.assert_allclose(normalized.mean(axis=0), [0.0, 0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(normalized.std(axis=0), [1.0, 0.0, 1.0], atol=1e-6)
     assert np.isfinite(normalized).all()
