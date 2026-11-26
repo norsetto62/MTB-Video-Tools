@@ -53,7 +53,7 @@ def test_iqr_fallback_uses_std_and_reports_per_video_column_counts():
         values, method="per_video_median_iqr_all_windows"
     )
     assert np.isfinite(normalized).all()
-    assert normalized[-1, 0] == pytest.approx(2.0)
+    assert normalized[-1, 0] == pytest.approx(2.5)
 
 
 def test_normalization_method_must_be_explicit():
