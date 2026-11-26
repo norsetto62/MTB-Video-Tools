@@ -51,7 +51,10 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     model, result = train_lightgbm_group_fold(
         videos, groups, held_out_group="group_c",
         config=_config(), checkpoint_path=tmp_path / "fold.json",
-        data_config={"window": 4.0, "stride": 2.0, "flow_fps": 2.0},
+        data_config={
+            "window": 4.0, "stride": 2.0, "flow_fps": 2.0,
+            "feature_normalization": "per_video_median_iqr_all_windows",
+        },
     )
     assert result.held_out_group == "group_c"
     assert result.train_video_ids == ("video_a", "video_b")
