@@ -390,7 +390,7 @@ def run_hpo(
     if not isinstance(configured_study_name, str) or not configured_study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
     # Keep Optuna histories for the old window-level NMS metric isolated.
-    study_name = f"{configured_study_name.strip()}_{METRIC_ID}"
+    study_name = configured_study_name.strip()
 
     # Preserve the old HPO proxy-group option for the production-parameter
     # search only. Nested evaluation above always uses every manifest group.
