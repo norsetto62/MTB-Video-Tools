@@ -444,6 +444,8 @@ def run_lightgbm_train_from_manifest(
     val_timestamps = np.concatenate(
         [prepared[video_id].windows.timestamps for video_id in validation_ids], axis=0
     )
+    val_video_durations = [float(prepared[video_id].video_duration_seconds) for video_id in validation_ids]
+    val_annotations = [prepared[video_id].annotation_intervals for video_id in validation_ids]
     if not any(
         len(np.unique(train_y[offset:offset + size])) > 1
         for offset, size in _group_offsets(train_group_sizes)
@@ -462,6 +464,13 @@ def run_lightgbm_train_from_manifest(
         val_y=val_y,
         val_group_sizes=val_group_sizes,
         val_timestamps=val_timestamps,
+        val_video_durations=val_video_durations,
+        val_annotations_by_video=val_annotations,
+        metric_config={
+            "max_gap_seconds": float(data_config["selection_max_gap_seconds"]),
+            "min_clip_seconds": float(data_config["selection_min_clip_seconds"]),
+            "padding_seconds": float(data_config["selection_padding_seconds"]),
+        },
         config=config,
         data_config={
             **data_config,
