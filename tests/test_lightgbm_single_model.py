@@ -17,7 +17,12 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
         SimpleNamespace(id="video-c", group_id="other"),
     )
     group_by_video = {record.id: record.group_id for record in records}
-    data_config = {"sampling_fps": 2.0, "window": 4.0, "stride": 2.0}
+    data_config = {
+        "sampling_fps": 2.0, "window": 4.0, "stride": 2.0,
+        "selection_min_clip_seconds": 3.0,
+        "selection_max_gap_seconds": 2.0,
+        "selection_padding_seconds": 2.0,
+    }
     captured = {"train_calls": []}
     labels_by_video = {
         "video-a": np.asarray(train_labels if train_labels is not None else [0, 1, 2, 3], dtype=np.int32),
@@ -31,7 +36,20 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
                     np.arange(len(labels_by_video[record.id]), dtype=float) * 2.0,
                     np.arange(len(labels_by_video[record.id]), dtype=float) * 2.0 + 4.0,
                 ))
-            )
+            ),
+            video_duration_seconds=float(len(labels_by_video[record.id]) * 2.0 + 10.0),
+            annotation_intervals=tuple(
+                (
+                    float(start), float(end), int(label)
+                )
+                for (start, end), label in zip(
+                    np.column_stack((
+                        np.arange(len(labels_by_video[record.id]), dtype=float) * 2.0,
+                        np.arange(len(labels_by_video[record.id]), dtype=float) * 2.0 + 4.0,
+                    )),
+                    labels_by_video[record.id],
+                )
+            ),
         )
         for record in records
     }
@@ -58,7 +76,7 @@ def _fake_dataset(monkeypatch, tmp_path, *, train_labels=None):
         if kwargs.get("val_X") is not None:
             return object(), {
                 "best_iteration": 7,
-                "evaluation_history": {"validation": {"segment_recall_at_5": [0.8]}},
+                "evaluation_history": {"validation": {"candidate_event_recall_at_10_v2": [0.8]}},
             }
         return object(), {"best_iteration": 7, "training_rows": len(X), "checkpoint_path": str(kwargs["checkpoint_path"])}
 
@@ -112,7 +130,7 @@ def test_single_model_uses_yaml_groups_for_validation_then_refits_all_data(tmp_p
     assert result["validation_selection"]["validation_groups"] == ["validation"]
     assert result["validation_selection"]["configured_num_iterations"] == 10
     assert result["validation_selection"]["early_stopping"] is False
-    assert result["validation_selection"]["evaluation_history"]["validation"]["segment_recall_at_5"] == [0.8]
+    assert result["validation_selection"]["evaluation_history"]["validation"]["candidate_event_recall_at_10_v2"] == [0.8]
     assert result["training_video_ids"] == ["video-a", "video-b", "video-c"]
 
 
