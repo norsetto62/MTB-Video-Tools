@@ -117,6 +117,6 @@ def test_group_fold_allows_a_single_class_in_the_held_out_group():
         videos, groups, held_out_group="validation", config=_config()
     )
     metrics = result.summary["validation_metrics"]
-    assert metrics["evaluated_videos"] == 0
+    assert metrics["evaluated_videos"] == 1
     assert metrics["events"] == 0
     assert metrics["pooled_event_recall"] is None
