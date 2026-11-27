@@ -103,12 +103,19 @@ def candidate_event_metrics(
                 if overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS:
                     event_covered[event_index] = True
 
+            class23_intervals = sorted(
+                (max(candidate.start, ann_start), min(candidate.end, ann_end))
+                for ann_start, ann_end, label in annotations
+                if label in (2, 3)
+                and min(candidate.end, ann_end) > max(candidate.start, ann_start)
+            )
             class23_overlap = 0.0
-            for ann_start, ann_end, label in annotations:
-                if label in (2, 3):
-                    class23_overlap += max(
-                        0.0, min(candidate.end, ann_end) - max(candidate.start, ann_start)
-                    )
+            covered_until = candidate.start
+            for interval_start, interval_end in class23_intervals:
+                if interval_end <= covered_until:
+                    continue
+                class23_overlap += interval_end - max(interval_start, covered_until)
+                covered_until = interval_end
             class23_fraction = min(1.0, class23_overlap / candidate.duration)
             if class23_fraction + 1e-9 >= INTERESTING_LABEL_FRACTION:
                 interesting += 1
