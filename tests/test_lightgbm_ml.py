@@ -62,6 +62,15 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
                              np.arange(12) * 2.0 + i * 100.0 + 4.0))
             for i in range(4)
         ]),
+        val_video_durations=[30.0, 130.0, 230.0, 330.0],
+        val_annotations_by_video=[
+            tuple(
+                (float(j * 2.0 + i * 100.0), float(j * 2.0 + i * 100.0 + 4.0), int(val_y[i * 12 + j]))
+                for j in range(12)
+            )
+            for i in range(4)
+        ],
+        metric_config={"max_gap_seconds": 2.0, "min_clip_seconds": 3.0, "padding_seconds": 2.0},
         config=_config(), checkpoint_path=path,
         data_config={
             "window": 4.0, "stride": 2.0, "sampling_fps": 2.0,
@@ -72,8 +81,8 @@ def test_train_save_load_and_infer_lightgbm_ranker(tmp_path):
     assert model.feature_dim == 74
     assert summary["training_rows"] == 120
     assert summary["validation_rows"] == 48
-    assert summary["ranking_metric"] == "segment_recall_at_5"
-    assert set(summary["evaluation_history"]["validation"]) == {"segment_recall_at_5"}
+    assert summary["ranking_metric"] == "candidate_event_recall_at_10_v2"
+    assert set(summary["evaluation_history"]["validation"]) == {"candidate_event_recall_at_10_v2"}
     assert summary["training_group_sizes"] == [30, 30, 30, 30]
     assert path.is_file()
 
