@@ -26,6 +26,8 @@ class LightGBMVideoData:
 
     windows: FeatureWindows
     targets: np.ndarray
+    video_duration_seconds: float | None = None
+    annotation_intervals: tuple[tuple[float, float, int], ...] = ()
 
     def __post_init__(self) -> None:
         X = np.asarray(self.windows.X)
@@ -40,6 +42,16 @@ class LightGBMVideoData:
             raise ValueError("windows.X must contain only finite values.")
         if not np.isfinite(y).all() or not np.isin(y, [0, 1, 2, 3]).all():
             raise ValueError("targets must contain only finite relevance grades 0, 1, 2, or 3.")
+        if self.video_duration_seconds is not None and (
+            isinstance(self.video_duration_seconds, bool)
+            or not np.isfinite(self.video_duration_seconds)
+            or self.video_duration_seconds <= 0
+        ):
+            raise ValueError("video_duration_seconds must be finite and positive.")
+        for start, end, label in self.annotation_intervals:
+            if (not np.isfinite(start) or not np.isfinite(end) or start < 0
+                    or end <= start or label not in (0, 1, 2, 3)):
+                raise ValueError("annotation_intervals must contain valid (start, end, grade) tuples.")
 
 
 @dataclass(frozen=True)
@@ -159,6 +171,14 @@ def train_lightgbm_group_fold(
     train_X, train_y, train_group_sizes = _combine_with_group_sizes(video_data, train_ids)
     val_X, val_y, val_group_sizes = _combine_with_group_sizes(video_data, val_ids)
     val_timestamps = _combine_timestamps(video_data, val_ids)
+    val_video_data = [
+        video_data[video_id] for video_id in val_ids
+        if len(video_data[video_id].targets) > 0
+    ]
+    if any(item.video_duration_seconds is None for item in val_video_data):
+        raise ValueError("Validation video durations are required for candidate-level event metrics.")
+    val_video_durations = [float(item.video_duration_seconds) for item in val_video_data]
+    val_annotations = [item.annotation_intervals for item in val_video_data]
     if len(train_y) == 0 or len(val_y) == 0:
         raise ValueError("Both training and held-out group must contain labeled windows.")
     if not any(
@@ -183,6 +203,13 @@ def train_lightgbm_group_fold(
         val_y=val_y,
         val_group_sizes=val_group_sizes,
         val_timestamps=val_timestamps,
+        val_video_durations=val_video_durations,
+        val_annotations_by_video=val_annotations,
+        metric_config={
+            "max_gap_seconds": float((data_config or {}).get("selection_max_gap_seconds", 2.0)),
+            "min_clip_seconds": float((data_config or {}).get("selection_min_clip_seconds", 3.0)),
+            "padding_seconds": float((data_config or {}).get("selection_padding_seconds", 2.0)),
+        },
         config=config,
         checkpoint_path=checkpoint_path,
         early_stopping=False,
@@ -194,9 +221,13 @@ def train_lightgbm_group_fold(
         metadata=metadata,
     )
     ranking_scores = model.predict(val_X)
-    from autocut.ml.ranking_metrics import segment_recall_at_k
-    summary["validation_metrics"] = segment_recall_at_k(
-        val_y, ranking_scores, val_group_sizes, val_timestamps, k=5
+    from autocut.ml.ranking_metrics import candidate_event_metrics
+    summary["validation_metrics"] = candidate_event_metrics(
+        ranking_scores, val_group_sizes, val_timestamps,
+        val_video_durations, val_annotations,
+        max_gap_seconds=float((data_config or {}).get("selection_max_gap_seconds", 2.0)),
+        min_clip_seconds=float((data_config or {}).get("selection_min_clip_seconds", 3.0)),
+        padding_seconds=float((data_config or {}).get("selection_padding_seconds", 2.0)),
     )
     summary["held_out_group"] = held_out_group
     summary["train_video_ids"] = list(train_ids)
