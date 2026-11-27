@@ -113,7 +113,7 @@ def train_lightgbm(
     has_validation_events = False
     if val_X is not None:
         if val_timestamps is None:
-            raise ValueError("val_timestamps are required for Segment Recall@5 validation.")
+            raise ValueError("val_timestamps are required for candidate-level event validation.")
         from autocut.ml.ranking_metrics import make_candidate_event_recall_evaluator
         valid_features, valid_labels = _validate_lightgbm_data(val_X, val_y, name="validation")
         valid_groups = _validate_rank_groups(val_group_sizes, len(valid_features), name="validation")
@@ -153,7 +153,7 @@ def train_lightgbm(
             feature_name=list(LIGHTGBM_TABULAR_FEATURE_NAMES),
             reference=train_dataset, free_raw_data=False,
         )
-        # The custom evaluator is bound to validation timestamps; evaluating
+        # The custom evaluator is bound to validation video metadata; evaluating
         # the training Dataset with that callback would misalign its rows.
         valid_sets, valid_names = ([valid_dataset], ["validation"]) if has_validation_events and collect_evaluation_history else (None, None)
         if has_validation_events and collect_evaluation_history:
