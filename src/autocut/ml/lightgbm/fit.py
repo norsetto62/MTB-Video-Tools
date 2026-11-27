@@ -72,6 +72,9 @@ def train_lightgbm(
     val_y: np.ndarray | None = None,
     val_group_sizes: Sequence[int] | None = None,
     val_timestamps: np.ndarray | None = None,
+    val_video_durations: Sequence[float] | None = None,
+    val_annotations_by_video: Sequence[Sequence[tuple[float, float, int]]] | None = None,
+    metric_config: dict[str, float] | None = None,
     config: LightGBMConfig | None = None,
     checkpoint_path: str | Path | None = None,
     data_config: dict[str, Any] | None = None,
@@ -106,20 +109,37 @@ def train_lightgbm(
     valid_sets = None
     valid_names = None
     callbacks = []
-    segment_recall_eval = None
+    candidate_event_eval = None
     has_validation_events = False
     if val_X is not None:
         if val_timestamps is None:
             raise ValueError("val_timestamps are required for Segment Recall@5 validation.")
-        from autocut.ml.ranking_metrics import make_segment_recall_at_5
+        from autocut.ml.ranking_metrics import make_candidate_event_recall_evaluator
         valid_features, valid_labels = _validate_lightgbm_data(val_X, val_y, name="validation")
         valid_groups = _validate_rank_groups(val_group_sizes, len(valid_features), name="validation")
         validation_timestamps = np.asarray(val_timestamps, dtype=np.float64)
         if validation_timestamps.shape != (len(valid_features), 2):
             raise ValueError("val_timestamps must have shape (N, 2) aligned with val_X.")
-        has_validation_events = bool(np.any(valid_labels == 3))
-        segment_recall_eval = (
-            make_segment_recall_at_5(validation_timestamps, valid_groups)
+        if val_video_durations is None or val_annotations_by_video is None:
+            raise ValueError("Validation video durations and annotation intervals are required for candidate event metrics.")
+        if len(val_video_durations) != len(valid_groups) or len(val_annotations_by_video) != len(valid_groups):
+            raise ValueError("Validation video metadata must align with validation groups.")
+        has_validation_events = any(
+            int(label) == 3
+            for video_annotations in val_annotations_by_video
+            for _, _, label in video_annotations
+        )
+        metric_values = {
+            "max_gap_seconds": 2.0,
+            "min_clip_seconds": 3.0,
+            "padding_seconds": 2.0,
+            **(metric_config or {}),
+        }
+        candidate_event_eval = (
+            make_candidate_event_recall_evaluator(
+                validation_timestamps, valid_groups, val_video_durations,
+                val_annotations_by_video, **metric_values,
+            )
             if has_validation_events and collect_evaluation_history else None
         )
         if valid_features.shape[1] != train_features.shape[1]:
@@ -152,20 +172,20 @@ def train_lightgbm(
         )
     params = config.to_params()
     if val_X is not None:
-        # Disable LightGBM's native NDCG: Segment Recall@5 is the sole
+        # Disable LightGBM's native NDCG: candidate event recall is the sole
         # validation metric and therefore the early-stopping criterion.
         params["metric"] = "None"
     booster = lgb.train(
         params, train_dataset, num_boost_round=config.num_iterations,
         valid_sets=valid_sets, valid_names=valid_names, callbacks=callbacks,
-        feval=segment_recall_eval,
+        feval=candidate_event_eval,
     )
     model = LightGBMRanker(booster, feature_names=LIGHTGBM_TABULAR_FEATURE_NAMES)
     best_iteration = int(booster.best_iteration or config.num_iterations)
     summary: dict[str, Any] = {
         "objective": config.objective,
-        "ranking_metric": "segment_recall_at_5" if val_X is not None and has_validation_events else None,
-        "selection_metric": "segment_recall_at_5" if val_X is not None and has_validation_events else None,
+        "ranking_metric": "candidate_event_recall_at_10_v2" if val_X is not None and has_validation_events else None,
+        "selection_metric": "candidate_event_recall_at_10_v2" if val_X is not None and has_validation_events else None,
         "validation_has_class3_events": bool(has_validation_events) if val_X is not None else None,
         "best_iteration": best_iteration,
         "configured_max_iterations": config.num_iterations,
