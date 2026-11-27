@@ -375,8 +375,7 @@ def run_pipeline(
         })
         continue
 
-    from ..selection.candidates import select_ranked_segments
-    from ..selection.candidate_types import CandidateClip, WindowEvidence
+    from ..selection.candidates import build_candidate_clips
     for video_name, batches in lightgbm_windows_by_video.items():
         batch_timestamps = np.concatenate([batch[0] for batch in batches], axis=0)
         batch_features = np.concatenate([batch[1] for batch in batches], axis=0)
@@ -393,33 +392,19 @@ def run_pipeline(
             features, method=normalization_method,
         )
         scores = lightgbm_ranker.predict(normalized)
-        segments = select_ranked_segments(
-            timestamps, scores, top_k=10,
+        video_duration = video_metadata[video_name].duration
+        ranked_candidates = build_candidate_clips(
+            timestamps,
+            scores,
+            video_duration=video_duration,
+            top_k=10,
             max_gap_seconds=settings.selection.max_gap_to_merge,
+            min_clip_seconds=settings.selection.min_clip,
+            padding_seconds=settings.selection.padding_seconds,
         )
         range_orders = lightgbm_range_orders[video_name]
         order = video_order[video_name]
-        for segment in segments:
-            if segment.duration_seconds + 1e-9 < settings.selection.min_clip:
-                continue
-            evidence = tuple(
-                WindowEvidence(
-                    start=float(timestamps[i, 0]), end=float(timestamps[i, 1]),
-                    probability=float(scores[i]),
-                )
-                for i in segment.window_indices
-            )
-            video_duration = video_metadata[video_name].duration
-            candidate_start = max(0.0, segment.start - settings.selection.padding_seconds)
-            candidate_end = min(
-                video_duration, segment.end + settings.selection.padding_seconds
-            )
-            candidate = CandidateClip(
-                start=candidate_start, end=candidate_end,
-                duration=candidate_end - candidate_start,
-                mean_probability=segment.mean_score, max_probability=segment.max_score,
-                window_evidence=evidence,
-            )
+        for segment, candidate in ranked_candidates:
             matching_orders = [
                 annotation_order for range_start, range_end, annotation_order in range_orders
                 if range_start < segment.end and segment.start < range_end
