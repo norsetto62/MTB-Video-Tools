@@ -79,7 +79,7 @@ def candidate_event_metrics(
             padding_seconds=padding_seconds,
         )
         candidates = [candidate for _, candidate in built]
-        hits = 0
+        event_covered = [False] * len(events)
         useful = 0
         interesting = 0
         for candidate in candidates:
@@ -87,18 +87,15 @@ def candidate_event_metrics(
                 max(0.0, min(candidate.end, event_end) - max(candidate.start, event_start))
                 for event_start, event_end in events
             ]
-            if any(overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS for overlap in event_overlaps):
-                useful += 1
-            if any(overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS for overlap in event_overlaps):
-                # One selected clip can recall multiple distinct events.
-                pass
-            if any(overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS for overlap in event_overlaps):
-                useful = useful  # keep candidate precision as a segment-level count
-
-            covered_events = sum(
-                overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS for overlap in event_overlaps
+            useful_candidate = any(
+                overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS
+                for overlap in event_overlaps
             )
-            hits += covered_events
+            if useful_candidate:
+                useful += 1
+            for event_index, overlap in enumerate(event_overlaps):
+                if overlap + 1e-9 >= MIN_EVENT_OVERLAP_SECONDS:
+                    event_covered[event_index] = True
 
             class23_overlap = 0.0
             for ann_start, ann_end, label in annotations:
@@ -109,6 +106,7 @@ def candidate_event_metrics(
             class23_fraction = min(1.0, class23_overlap / candidate.duration)
             if class23_fraction + 1e-9 >= INTERESTING_LABEL_FRACTION:
                 interesting += 1
+        hits = sum(event_covered)
 
         event_count = len(events)
         recall = hits / event_count if event_count else None
