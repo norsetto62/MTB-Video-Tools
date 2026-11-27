@@ -112,6 +112,14 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(pitch_time_offset, bool) or not isinstance(pitch_time_offset, (int, float)) or not np.isfinite(float(pitch_time_offset)):
         raise ValueError("data.pitch_time_offset must be a finite number.")
     normalization = data.get("feature_normalization", DEFAULT_FEATURE_NORMALIZATION)
+    selection = _section(settings, "selection")
+    selection_min_clip = _positive_float(selection.get("min_clip", 3.0), "selection.min_clip")
+    selection_max_gap = selection.get("max_gap_to_merge", 2.0)
+    selection_padding = selection.get("padding_seconds", 2.0)
+    for value, name in ((selection_max_gap, "selection.max_gap_to_merge"),
+                        (selection_padding, "selection.padding_seconds")):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(float(value)) or value < 0:
+            raise ValueError(f"{name} must be finite and non-negative.")
     try:
         normalization = validate_feature_normalization_method(normalization)
     except ValueError as exc:
@@ -127,6 +135,9 @@ def _data_config(settings: Mapping[str, Any]) -> dict[str, Any]:
         "roi_top": roi[3],
         "feature_normalization": normalization,
         "pitch_time_offset": float(data.get("pitch_time_offset", 0.0)),
+        "selection_min_clip_seconds": selection_min_clip,
+        "selection_max_gap_seconds": float(selection_max_gap),
+        "selection_padding_seconds": float(selection_padding),
     }
 
 
@@ -216,7 +227,15 @@ def prepare_lightgbm_manifest_data(
             )
         if not np.isfinite(windows.X).all():
             raise ValueError(f"Manifest entry {record.id!r} produced non-finite LightGBM features.")
-        prepared[record.id] = LightGBMVideoData(windows=windows, targets=targets)
+        prepared[record.id] = LightGBMVideoData(
+            windows=windows,
+            targets=targets,
+            video_duration_seconds=float(video_info.duration),
+            annotation_intervals=tuple(
+                (float(annotation.start), float(annotation.end), int(annotation.score))
+                for annotation in annotations
+            ),
+        )
         group_by_video[record.id] = record.group_id
 
         # Report class-3 annotation events that never yield a class-3
