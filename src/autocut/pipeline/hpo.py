@@ -362,6 +362,13 @@ def run_hpo(
             "outer_per_video_candidate_event_recall_at_10_v2": outer_recalls,
             "outer_events": outer_metrics.get("events", 0),
             "outer_evaluated_videos": len(outer_recalls),
+            "outer_selected_segments": int(outer_metrics.get("selected_segments", 0)),
+            "outer_useful_segments": int(outer_metrics.get("useful_segments", 0)),
+            "outer_segment_precision": outer_metrics.get("segment_precision"),
+            "outer_average_segments_per_video": outer_metrics.get("average_segments_per_video"),
+            "outer_total_selected_duration_seconds": float(outer_metrics.get("total_selected_duration_seconds", 0.0)),
+            "outer_interesting_segments": int(outer_metrics.get("interesting_segments", 0)),
+            "outer_interesting_segment_rate": outer_metrics.get("interesting_segment_rate"),
             "outer_training_video_ids": list(outer_fold.train_video_ids),
             "outer_test_video_ids": list(outer_fold.validation_video_ids),
             "outer_evaluation_history": history,
@@ -537,6 +544,13 @@ def run_hpo(
         if item["outer_candidate_event_recall_at_10_v2"] is not None
     ]
     mean_score = float(outer_total_hits / outer_total_events) if outer_total_events else None
+    outer_selected_segments = sum(int(item["outer_selected_segments"]) for item in outer_results)
+    outer_useful_segments = sum(int(item["outer_useful_segments"]) for item in outer_results)
+    outer_interesting_segments = sum(int(item["outer_interesting_segments"]) for item in outer_results)
+    outer_selected_duration = sum(
+        float(item["outer_total_selected_duration_seconds"]) for item in outer_results
+    )
+    outer_video_count = sum(len(item["outer_test_video_ids"]) for item in outer_results)
     std_score = (
         float(np.std(all_outer_video_recalls, ddof=1))
         if len(all_outer_video_recalls) > 1 else (0.0 if all_outer_video_recalls else None)
@@ -568,6 +582,19 @@ def run_hpo(
         "evaluated_outer_video_count": len(all_outer_video_recalls),
         "outer_total_events": outer_total_events,
         "outer_total_hits": outer_total_hits,
+        "outer_total_selected_segments": outer_selected_segments,
+        "outer_total_useful_segments": outer_useful_segments,
+        "outer_segment_precision": (
+            outer_useful_segments / outer_selected_segments if outer_selected_segments else None
+        ),
+        "outer_average_segments_per_video": (
+            outer_selected_segments / outer_video_count if outer_video_count else None
+        ),
+        "outer_total_selected_duration_seconds": outer_selected_duration,
+        "outer_interesting_segments": outer_interesting_segments,
+        "outer_interesting_segment_rate": (
+            outer_interesting_segments / outer_selected_segments if outer_selected_segments else None
+        ),
         "mean_outer_candidate_event_recall_at_10_v2": mean_score,
         "std_outer_video_candidate_event_recall_at_10_v2": std_score,
         "mean_outer_group_candidate_event_recall_at_10_v2": mean_fold_score,
