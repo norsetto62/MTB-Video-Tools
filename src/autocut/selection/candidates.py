@@ -112,3 +112,68 @@ def select_ranked_segments(
         item.start,
     ))
     return segments
+
+
+
+def build_candidate_clips(
+    timestamps: np.ndarray,
+    scores: Sequence[float] | np.ndarray,
+    *,
+    video_duration: float,
+    top_k: int = 10,
+    max_gap_seconds: float = 2.0,
+    min_clip_seconds: float = 3.0,
+    padding_seconds: float = 2.0,
+):
+    """Select ranked segments and convert them to production CandidateClip values.
+
+    The minimum duration is applied to the unpadded merged segment. Padding is
+    then applied symmetrically and clipped to the real source-video duration.
+    The returned pairs preserve the originating RankedSegment for diagnostics.
+    """
+    from .candidate_types import CandidateClip, WindowEvidence
+
+    numeric_values = {
+        "video_duration": video_duration,
+        "max_gap_seconds": max_gap_seconds,
+        "min_clip_seconds": min_clip_seconds,
+        "padding_seconds": padding_seconds,
+    }
+    for name, value in numeric_values.items():
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0):
+            raise ValueError(f"{name} must be finite and non-negative.")
+    if video_duration <= 0:
+        raise ValueError("video_duration must be greater than zero.")
+
+    spans = np.asarray(timestamps, dtype=np.float64)
+    values = np.asarray(scores, dtype=np.float64)
+    segments = select_ranked_segments(
+        spans, values, top_k=top_k, max_gap_seconds=max_gap_seconds,
+    )
+    candidates = []
+    for segment in segments:
+        if segment.duration_seconds + 1e-9 < min_clip_seconds:
+            continue
+        start = max(0.0, segment.start - padding_seconds)
+        end = min(float(video_duration), segment.end + padding_seconds)
+        if end <= start:
+            continue
+        evidence = tuple(
+            WindowEvidence(
+                start=float(spans[index, 0]),
+                end=float(spans[index, 1]),
+                probability=float(values[index]),
+            )
+            for index in segment.window_indices
+        )
+        candidate = CandidateClip(
+            start=start,
+            end=end,
+            duration=end - start,
+            mean_probability=segment.mean_score,
+            max_probability=segment.max_score,
+            window_evidence=evidence,
+        )
+        candidates.append((segment, candidate))
+    return candidates
