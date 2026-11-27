@@ -213,13 +213,22 @@ The command has two distinct stages:
    score is for selection only and must not be reported as generalization
    performance.
 
+The primary objective is `candidate_event_recall_at_10_v2`: all video
+windows are ranked, the top 10 are merged with the configured temporal gap,
+and the resulting production-equivalent clips are padded and clipped to the
+source duration. A class-3 annotation event is recalled when at least one
+selected clip overlaps it by at least one second. Precision, selected-segment
+count, mean segments per video, total selected duration, and the class-2/3
+interesting-segment rate (at least 50% of clip duration labeled 2 or 3) are
+reported as diagnostics, not as the optimization objective.
+
 The JSON report contains the nested evaluation under `outer_folds` and the
 production configuration in the top-level `best_params` field. The latter
 can be consumed by `train` through:
 
 ```yaml
 hpo:
-  best_params_path: output/hpo/lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json
+  best_params_path: output/hpo/lightgbm_hpo_nested_candidate_event_recall_at_10_v2_median_iqr_all_windows.json
 ```
 
 The final parameter-selection stage uses the original persistent Optuna
@@ -238,9 +247,10 @@ hpo:
   # proxy_test_groups: [group_a, group_b]
 ```
 
-The Optuna study name is exactly the value of `hpo.study_name`
-(`study_claude_1` in this example). No metric, evaluation or normalization
-suffixes are added. The default database path is
+The Optuna study name appends the metric version to `hpo.study_name`
+(`study_claude_1_candidate_event_recall_at_10_v2` in this example). This
+isolates the new candidate-level objective from trials produced by the previous
+window-level NMS metric. The default database path is
 `data/db/hpo_study.db`, matching the plotter's default:
 
 ```powershell
