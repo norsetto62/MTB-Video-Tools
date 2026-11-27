@@ -44,7 +44,7 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
                     "validation_metrics": {
                         "events": 2,
                         "hit_events": 1,
-                        "per_video": {"0": {"recall": 0.5}}
+                        "per_video": {"0": {"event_recall": 0.5}}
                     }
                 },
             )
@@ -65,11 +65,11 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
             validation_video_ids=validation_ids,
             summary={
                 "validation_metrics": {
-                    "segment_recall_at_5": 0.75,
+                    "pooled_event_recall": 0.75,
                     "events": 4,
                     "hit_events": 3,
                     "per_video": {
-                        str(index): {"recall": 0.75}
+                        str(index): {"event_recall": 0.75}
                         for index, _ in enumerate(validation_ids)
                     },
                 },
@@ -102,14 +102,14 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
     assert inner_group_sets[-1] == {"group_a", "group_b", "group_c"}
     assert result["best_params"]["num_iterations"] == 7
     assert result["final_parameter_selection"]["purpose"] == "production_parameter_selection_only"
-    assert result["study_name"] == "test_nested"
+    assert result["study_name"] == "test_nested_candidate_event_recall_at_10_v2"
     assert (tmp_path / "hpo.sqlite3").is_file()
     persisted = optuna.load_study(
         study_name=result["study_name"],
         storage=f"sqlite:///{(tmp_path / 'hpo.sqlite3').as_posix()}",
     )
     assert len(persisted.trials) == 1
-    assert persisted.best_trial.user_attrs["metric"] == "nms_pooled_segment_recall_at_5"
+    assert persisted.best_trial.user_attrs["metric"] == "candidate_event_recall_at_10_v2"
     assert inner_group_sets == [
         {"group_b", "group_c"},
         {"group_a", "group_c"},
@@ -117,16 +117,16 @@ def test_hpo_keeps_outer_group_out_of_inner_hpo_and_reports_video_ids(
         {"group_a", "group_b", "group_c"},
     ]
     assert result["outer_fold_count"] == 3
-    assert result["mean_outer_segment_recall_at_5"] == pytest.approx(0.75)
-    assert result["mean_outer_group_segment_recall_at_5"] == pytest.approx(0.75)
+    assert result["mean_outer_candidate_event_recall_at_10_v2"] == pytest.approx(0.75)
+    assert result["mean_outer_group_candidate_event_recall_at_10_v2"] == pytest.approx(0.75)
     assert result["evaluated_outer_video_count"] == 3
     for fold in result["outer_folds"]:
-        assert fold["outer_per_video_segment_recall_at_5"] == {
+        assert fold["outer_per_video_candidate_event_recall_at_10_v2"] == {
             f"video_{fold['outer_group'][-1]}": 0.75
         }
         assert fold["inner_best_params"]["num_iterations"] == 7
         assert fold["outer_group"] not in fold["inner_groups"]
-    assert (tmp_path / "lightgbm_hpo_nested_segment_recall_at_5_median_iqr_all_windows.json").is_file()
+    assert (tmp_path / "lightgbm_hpo_nested_candidate_event_recall_at_10_v2_median_iqr_all_windows.json").is_file()
 
     # A second invocation with the same study identity appends trials.
     hpo.run_hpo("manifest.yaml", settings)
