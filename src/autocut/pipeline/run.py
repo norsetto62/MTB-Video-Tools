@@ -58,7 +58,7 @@ def _run_config_sections(config: Config) -> tuple[Config, AudioConfig]:
                    "roi_left": 0.15, "roi_right": 0.85, "roi_bottom": 0.50, "roi_top": 0.10},
         "features": {"window_duration": 4.0, "window_stride": 2.0},
         "model": {"checkpoint": "models/lightgbm/ranker.json"},
-        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0, "max_gap_to_merge": 3.0, "padding_seconds": 2.0},
+        "selection": {"min_clip": 3.0, "max_clip_duration": 0.0, "max_gap_to_merge": 2.0, "padding_seconds": 2.0},
         "audio": {"sync_mode": "off", "max_synced_clip_duration": 0.0, "fade_duration": 2.0, "bass_sensitivity": 0.15, "bass_min_gap_sec": 0.30},
         "logging": {"level": "INFO"},
     }
