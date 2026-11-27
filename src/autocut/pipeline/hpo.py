@@ -319,8 +319,8 @@ def run_hpo(
             iteration_diagnostic = {
                 "configured_iterations": int(selected_config.num_iterations),
                 "peak_iteration": peak_offset + 1,
-                "peak_recall_at_5": float(recall_curve[peak_offset]),
-                "recall_at_configured_iteration": float(recall_curve[-1]),
+                "peak_candidate_event_recall": float(recall_curve[peak_offset]),
+                "candidate_recall_at_configured_iteration": float(recall_curve[-1]),
                 "peak_minus_final": float(recall_curve[peak_offset] - recall_curve[-1]),
                 "interpretation": "post-hoc diagnostic only; never used for iteration or hyperparameter selection",
             }
@@ -331,7 +331,7 @@ def run_hpo(
             }
         outer_metrics = outer_fold.summary.get("validation_metrics", {})
         outer_per_video = outer_metrics.get("per_video", {})
-        # segment_recall_at_k numbers videos by their position in the
+        # candidate event metrics number videos by their position in the
         # concatenated validation arrays; translate those positions back to
         # stable manifest video IDs for an interpretable report.
         outer_recalls = {}
@@ -339,7 +339,7 @@ def run_hpo(
             item = outer_per_video.get(str(video_index))
             if (
                 item is not None
-                and item.get("recall") is not None
+                and item.get("event_recall") is not None
                 and np.isfinite(float(item["event_recall"]))
             ):
                 outer_recalls[video_id] = float(item["event_recall"])
@@ -478,7 +478,7 @@ def run_hpo(
         trial.set_user_attr("evaluated_event_count", total_events)
         trial.set_user_attr("evaluated_folds", sorted(per_fold))
         logger.info(
-            "LightGBM final HPO trial %d: objective=%s, pooled NMS Segment Recall@5=%.5f, folds=%s",
+            "LightGBM final HPO trial %d: objective=%s, pooled candidate event recall=%.5f, folds=%s",
             trial.number, params.get("objective", base_config.objective), score, per_fold,
         )
         return score
@@ -557,7 +557,7 @@ def run_hpo(
         "evaluation": "nested_leave_one_group_out_hpo",
         "metric": METRIC_ID,
         "metric_version": METRIC_ID,
-        "aggregation": "pooled_hits_divided_by_events_after_per_video_temporal_nms",
+        "aggregation": "unique_class3_annotation_events_covered_by_selected_clips_at_least_1s_divided_by_total_events",
         "direction": "maximize",
         "manifest": str(Path(manifest_path).expanduser().resolve()),
         "groups": groups,
