@@ -244,8 +244,8 @@ def prepare_lightgbm_manifest_data(
         group_by_video[record.id] = record.group_id
 
         # Report class-3 annotation events that never yield a class-3
-        # majority-vote window. These events are invisible to the current
-        # event-recall metric, so keep their durations explicit in diagnostics.
+        # majority-vote training window. Candidate-level validation still
+        # evaluates these events from the original annotation intervals.
         class3_annotations = [annotation for annotation in annotations if annotation.score == 3]
         class3_events: list[list[Any]] = []
         for annotation in class3_annotations:
