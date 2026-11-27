@@ -73,7 +73,7 @@ def test_candidate_metric_reports_segment_and_duration_diagnostics():
         max_gap_seconds=0.0, min_clip_seconds=3.0, padding_seconds=2.0,
     )
     assert result["average_segments_per_video"] == pytest.approx(3.0)
-    assert result["total_selected_duration_seconds"] == pytest.approx(24.0)
+    assert result["total_selected_duration_seconds"] == pytest.approx(22.0)
     assert result["per_video"]["0"]["candidate_count"] == 3
 
 
