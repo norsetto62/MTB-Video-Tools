@@ -34,6 +34,8 @@ tools/dji-telemetry-export.exe
 tools/compare_imu.py
 tools/dji_imu_analysis.py
 tools/dji_pitch_analysis.py
+tools/check_labels.py
+tools/z-score_comparison.py
 
 # Widgets
 output_widgets/

@@ -65,6 +65,7 @@ def engineer_lightgbm_sequence(X: np.ndarray) -> np.ndarray:
     grid_u = values[:, _GRID_U_INDICES].reshape(-1, 3, 3)
     grid_v = values[:, _GRID_V_INDICES].reshape(-1, 3, 3)
     magnitudes = np.hypot(grid_u, grid_v)
+    #magnitudes = values[:, _GRID_MAGNITUDE_INDICES].reshape(-1, 3, 3)
     epsilon = 1e-5
 
     center_magnitude = magnitudes[:, 1, 1]
