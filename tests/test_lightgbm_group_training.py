@@ -23,6 +23,11 @@ def _video_data(seed, labels):
     return LightGBMVideoData(
         windows=FeatureWindows(X=X, timestamps=timestamps.astype(np.float64)),
         targets=y,
+        video_duration_seconds=float(timestamps[-1, 1] + 5.0),
+        annotation_intervals=tuple(
+            (float(start), float(end), int(label))
+            for (start, end), label in zip(timestamps, y)
+        ),
     )
 
 
@@ -63,8 +68,8 @@ def test_group_fold_keeps_validation_group_out_of_training_and_reports_metrics(t
     metrics = result.summary["validation_metrics"]
     assert metrics["evaluated_videos"] == 1
     assert metrics["events"] >= 1
-    assert 0.0 <= metrics["segment_recall_at_5"] <= 1.0
-    assert result.summary["ranking_metric"] == "segment_recall_at_5"
+    assert 0.0 <= metrics["pooled_event_recall"] <= 1.0
+    assert result.summary["ranking_metric"] == "candidate_event_recall_at_10_v2"
     assert result.summary["early_stopping"] is False
     assert result.summary["best_iteration"] == _config().num_iterations
     assert result.summary["training_group_sizes"] == [16, 16]
@@ -114,4 +119,4 @@ def test_group_fold_allows_a_single_class_in_the_held_out_group():
     metrics = result.summary["validation_metrics"]
     assert metrics["evaluated_videos"] == 0
     assert metrics["events"] == 0
-    assert metrics["segment_recall_at_5"] is None
+    assert metrics["pooled_event_recall"] is None
