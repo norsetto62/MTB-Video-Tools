@@ -1,88 +1,103 @@
-"""Tests for NMS-suppressed, pooled event-based Segment Recall@K."""
+"""Tests for production-equivalent candidate-level event metrics."""
 import numpy as np
 import pytest
 
-from autocut.ml.ranking_metrics import segment_recall_at_k, make_segment_recall_at_5
+from autocut.ml.ranking_metrics import (
+    METRIC_ID,
+    candidate_event_metrics,
+    make_candidate_event_recall_evaluator,
+)
 
 
-def test_overlapping_class3_windows_form_one_event():
-    labels = np.array([3, 3, 3, 0, 3, 3])
-    times = np.array([[0, 4], [2, 6], [6, 10], [8, 12], [20, 24], [22, 26]], dtype=float)
-    scores = np.array([0.9, 0.1, 0.2, 0.0, 0.8, 0.3])
-    result = segment_recall_at_k(labels, scores, [6], times, k=2)
+def test_candidate_event_recall_uses_padded_clips_and_one_second_overlap():
+    timestamps = np.array([[10.0, 14.0], [30.0, 34.0], [50.0, 54.0]])
+    scores = np.array([0.9, 0.8, 0.1])
+    annotations = [[(13.0, 16.0, 3), (30.0, 34.0, 3)]]
+    result = candidate_event_metrics(
+        scores, [3], timestamps, [60.0], annotations,
+        max_gap_seconds=2.0, min_clip_seconds=3.0, padding_seconds=2.0,
+    )
+    # First candidate starts at 8s and ends at 16s, covering the first event
+    # for 3 seconds. Second candidate also covers the second event.
     assert result["events"] == 2
     assert result["hit_events"] == 2
-    assert result["segment_recall_at_k"] == pytest.approx(1.0)
+    assert result["pooled_event_recall"] == pytest.approx(1.0)
+    assert result["selected_segments"] == 2
+    assert result["useful_segments"] == 2
+    assert result["segment_precision"] == pytest.approx(1.0)
+    assert result["metric"] == METRIC_ID
 
 
-def test_nms_suppresses_adjacent_overlapping_predictions_before_top_k():
-    labels = np.array([3, 3, 0, 3, 0, 0])
-    times = np.array([[0, 4], [2, 6], [1, 5], [10, 14], [12, 16], [20, 24]], dtype=float)
-    scores = np.array([0.99, 0.98, 0.97, 0.96, 0.95, 0.94])
-    result = segment_recall_at_k(labels, scores, [6], times, k=2)
-    assert result["hit_events"] == 2
-    assert result["segment_recall_at_k"] == pytest.approx(1.0)
-    assert result["predictions_suppressed"] >= 1
-    assert result["per_video"]["0"]["predictions_after_suppression"] == 2
+def test_event_requires_at_least_one_second_overlap():
+    timestamps = np.array([[0.0, 4.0], [20.0, 24.0]])
+    result = candidate_event_metrics(
+        np.array([0.9, 0.1]), [2], timestamps, [30.0],
+        [[(3.1, 5.0, 3)]],
+        max_gap_seconds=0.0, min_clip_seconds=3.0, padding_seconds=0.0,
+    )
+    # Unpadded segment [0,4) overlaps the event by only 0.9 seconds.
+    assert result["events"] == 1
+    assert result["hit_events"] == 0
+    assert result["pooled_event_recall"] == pytest.approx(0.0)
 
 
-def test_pooled_recall_weights_videos_by_event_count():
-    labels = np.array([3, 0, 0, 3, 0, 0, 3, 0, 3, 0, 3, 0])
-    times = np.array([
-        [0, 4], [4, 8], [8, 12], [20, 24], [24, 28], [28, 32],
-        [40, 44], [44, 48], [60, 64], [64, 68], [80, 84], [84, 88],
-    ], dtype=float)
-    scores = np.array([0.99, 0.1, 0.1, 0.98, 0.1, 0.1, 0.1, 0.2, 0.1, 0.19, 0.1, 0.0])
-    result = segment_recall_at_k(labels, scores, [6, 6], times, k=2)
-    assert result["per_video"]["0"]["recall"] == pytest.approx(1.0)
-    assert result["per_video"]["1"]["recall"] == pytest.approx(0.0)
-    assert result["mean_per_video_event_recall"] == pytest.approx(0.5)
-    assert result["pooled_event_recall"] == pytest.approx(2 / 5)
-    assert result["segment_recall_at_k"] == pytest.approx(2 / 5)
-    assert result["pooled_event_recall"] == pytest.approx(2 / 5)
-    assert result["segment_recall_at_5"] is None  # k=2; the named @5 field is intentionally unset
-
-
-def test_class2_does_not_join_or_create_class3_event():
-    labels = np.array([3, 2, 3, 0])
-    times = np.array([[0, 4], [2, 6], [4, 8], [6, 10]], dtype=float)
-    result = segment_recall_at_k(labels, np.array([0.9, 0.1, 0.8, 0.2]), [4], times, k=1)
+def test_adjacent_class3_annotations_are_one_event_and_only_counted_once():
+    timestamps = np.array([[0.0, 4.0], [4.0, 8.0], [30.0, 34.0]])
+    result = candidate_event_metrics(
+        np.array([0.9, 0.8, 0.1]), [3], timestamps, [40.0],
+        [[(1.0, 3.0, 3), (3.0, 5.0, 3)]],
+        max_gap_seconds=2.0, min_clip_seconds=3.0, padding_seconds=2.0,
+    )
     assert result["events"] == 1
     assert result["hit_events"] == 1
 
 
-def test_videos_without_class3_are_excluded_from_pooled_denominator():
-    labels = np.array([0, 1, 2, 0, 2, 1])
-    times = np.array([[0, 4], [2, 6], [4, 8], [0, 4], [2, 6], [4, 8]], dtype=float)
-    result = segment_recall_at_k(labels, np.arange(6), [3, 3], times)
-    assert result["segment_recall_at_5"] is None
-    assert result["videos_with_events"] == 0
-    assert result["evaluated_videos"] == 0
+def test_class2_3_duration_fraction_is_reported_separately():
+    timestamps = np.array([[0.0, 4.0], [30.0, 34.0]])
+    result = candidate_event_metrics(
+        np.array([0.9, 0.1]), [2], timestamps, [40.0],
+        [[(0.0, 2.0, 2), (2.0, 4.0, 0)]],
+        max_gap_seconds=0.0, min_clip_seconds=3.0, padding_seconds=0.0,
+    )
+    assert result["interesting_segments"] == 1
+    assert result["interesting_segment_rate"] == pytest.approx(1.0)
+    assert result["events"] == 0
+    assert result["pooled_event_recall"] is None
 
 
-def test_metric_rejects_invalid_suppression_threshold():
-    with pytest.raises(ValueError, match="suppression_iou_threshold"):
-        segment_recall_at_k(
-            np.array([3]), np.array([1.0]), [1], np.array([[0.0, 1.0]]),
-            suppression_iou_threshold=1.1,
-        )
+def test_candidate_metric_reports_segment_and_duration_diagnostics():
+    timestamps = np.array([[0.0, 4.0], [20.0, 24.0], [40.0, 44.0]])
+    result = candidate_event_metrics(
+        np.array([0.9, 0.8, 0.1]), [3], timestamps, [50.0],
+        [[(0.0, 4.0, 3)]],
+        max_gap_seconds=0.0, min_clip_seconds=3.0, padding_seconds=2.0,
+    )
+    assert result["average_segments_per_video"] == pytest.approx(2.0)
+    assert result["total_selected_duration_seconds"] == pytest.approx(16.0)
+    assert result["per_video"]["0"]["candidate_count"] == 2
 
 
-def test_metric_rejects_misaligned_timestamps_and_group_sizes():
-    with pytest.raises(ValueError, match="timestamps"):
-        segment_recall_at_k(np.array([3]), np.array([1.0]), [1], np.zeros((2, 2)))
-    with pytest.raises(ValueError, match="sum"):
-        segment_recall_at_k(np.array([3]), np.array([1.0]), [2], np.array([[0.0, 1.0]]))
-
-
-def test_lightgbm_feval_returns_higher_is_better():
+def test_lightgbm_evaluator_returns_candidate_event_recall():
     class Dataset:
         def get_label(self):
             return np.array([3, 0, 3, 0])
 
-    times = np.array([[0, 4], [2, 6], [10, 14], [12, 16]], dtype=float)
-    callback = make_segment_recall_at_5(times, [4])
-    name, value, higher_is_better = callback(np.array([0.9, 0.1, 0.8, 0.2]), Dataset())
-    assert name == "segment_recall_at_5"
+    callback = make_candidate_event_recall_evaluator(
+        np.array([[0, 4], [2, 6], [20, 24], [22, 26]], dtype=float),
+        [4], [40.0], [[(0, 4, 3), (20, 24, 3)]],
+        max_gap_seconds=2.0, min_clip_seconds=3.0, padding_seconds=2.0,
+    )
+    name, value, higher_is_better = callback(
+        np.array([0.9, 0.1, 0.8, 0.2]), Dataset()
+    )
+    assert name == METRIC_ID
     assert value == pytest.approx(1.0)
     assert higher_is_better is True
+
+
+def test_metric_rejects_misaligned_metadata():
+    with pytest.raises(ValueError, match="align"):
+        candidate_event_metrics(
+            np.array([0.9]), [1], np.array([[0.0, 4.0]]),
+            [10.0, 11.0], [[(0.0, 2.0, 3)]],
+        )
