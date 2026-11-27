@@ -34,7 +34,13 @@ def candidate_event_metrics(
     """
     ranking = np.asarray(scores, dtype=np.float64)
     spans = np.asarray(timestamps, dtype=np.float64)
-    sizes = [int(size) for size in group_sizes]
+    raw_sizes = list(group_sizes)
+    if any(
+        isinstance(size, bool) or not isinstance(size, (int, np.integer)) or int(size) <= 0
+        for size in raw_sizes
+    ):
+        raise ValueError("group_sizes must contain positive integers.")
+    sizes = [int(size) for size in raw_sizes]
     if ranking.ndim != 1 or spans.shape != (len(ranking), 2):
         raise ValueError("scores and timestamps must align as (N,) and (N, 2).")
     if not np.isfinite(ranking).all() or not np.isfinite(spans).all():
