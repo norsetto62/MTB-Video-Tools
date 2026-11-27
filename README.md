@@ -254,12 +254,12 @@ window-level NMS metric. The default database path is
 `data/db/hpo_study.db`, matching the plotter's default:
 
 ```powershell
-python tools/plot_study.py study_claude_1
+python tools/plot_study.py study_claude_1_candidate_event_recall_at_10_v2
 ```
 
-To fine-tune, change `hpo.search_space` and run HPO again with the same study
-name and database; the new trials are appended and Optuna can use the existing
-trial history. Keep the same parameter distributions within a study. If you
+To fine-tune, change `hpo.search_space` and run HPO again with the same
+configured `hpo.study_name` and database; the versioned study is resumed and
+new trials are appended. Keep the same parameter distributions within a study. Keep the same parameter distributions within a study. If you
 want to make an incompatible change to the search space or evaluation setup,
 use a new `study_name` so the trials are not mixed.
 
