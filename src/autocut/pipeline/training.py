@@ -232,8 +232,13 @@ def prepare_lightgbm_manifest_data(
             targets=targets,
             video_duration_seconds=float(video_info.duration),
             annotation_intervals=tuple(
-                (float(annotation.start), float(annotation.end), int(annotation.score))
+                (
+                    float(annotation.start),
+                    min(float(annotation.end), float(video_info.duration)),
+                    int(annotation.score),
+                )
                 for annotation in annotations
+                if min(float(annotation.end), float(video_info.duration)) > float(annotation.start)
             ),
         )
         group_by_video[record.id] = record.group_id
