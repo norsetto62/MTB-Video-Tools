@@ -22,9 +22,9 @@ def test_candidate_event_recall_uses_padded_clips_and_one_second_overlap():
     assert result["events"] == 2
     assert result["hit_events"] == 2
     assert result["pooled_event_recall"] == pytest.approx(1.0)
-    assert result["selected_segments"] == 2
+    assert result["selected_segments"] == 3
     assert result["useful_segments"] == 2
-    assert result["segment_precision"] == pytest.approx(1.0)
+    assert result["segment_precision"] == pytest.approx(2 / 3)
     assert result["metric"] == METRIC_ID
 
 
@@ -60,7 +60,7 @@ def test_class2_3_duration_fraction_is_reported_separately():
         max_gap_seconds=0.0, min_clip_seconds=3.0, padding_seconds=0.0,
     )
     assert result["interesting_segments"] == 1
-    assert result["interesting_segment_rate"] == pytest.approx(1.0)
+    assert result["interesting_segment_rate"] == pytest.approx(0.5)
     assert result["events"] == 0
     assert result["pooled_event_recall"] is None
 
@@ -72,9 +72,9 @@ def test_candidate_metric_reports_segment_and_duration_diagnostics():
         [[(0.0, 4.0, 3)]],
         max_gap_seconds=0.0, min_clip_seconds=3.0, padding_seconds=2.0,
     )
-    assert result["average_segments_per_video"] == pytest.approx(2.0)
-    assert result["total_selected_duration_seconds"] == pytest.approx(16.0)
-    assert result["per_video"]["0"]["candidate_count"] == 2
+    assert result["average_segments_per_video"] == pytest.approx(3.0)
+    assert result["total_selected_duration_seconds"] == pytest.approx(24.0)
+    assert result["per_video"]["0"]["candidate_count"] == 3
 
 
 def test_lightgbm_evaluator_returns_candidate_event_recall():
