@@ -12,6 +12,7 @@ import numpy as np
 
 from ..config_loader import Config
 from ..ml.lightgbm.model import LightGBMConfig
+from ..ml.ranking_metrics import METRIC_ID
 from ..ml.lightgbm.training import train_lightgbm_group_fold, train_lightgbm_lovo
 from .training import (
     _training_config,
@@ -278,7 +279,7 @@ def run_hpo(
                     "has no inner-validation class-3 events."
                 )
             score = float(total_hits / total_events)
-            trial.set_user_attr("inner_fold_segment_recall_at_5", per_fold)
+            trial.set_user_attr("inner_fold_candidate_event_recall_at_10_v2", per_fold)
             trial.set_user_attr("inner_event_count", total_events)
             trial.set_user_attr("inner_event_hits", total_hits)
             return score
@@ -312,7 +313,7 @@ def run_hpo(
             },
         )
         history = outer_fold.summary.get("evaluation_history", {})
-        recall_curve = history.get("validation", {}).get("segment_recall_at_5", [])
+        recall_curve = history.get("validation", {}).get(METRIC_ID, [])
         if recall_curve:
             peak_offset = int(np.argmax(recall_curve))
             iteration_diagnostic = {
@@ -339,9 +340,9 @@ def run_hpo(
             if (
                 item is not None
                 and item.get("recall") is not None
-                and np.isfinite(float(item["recall"]))
+                and np.isfinite(float(item["event_recall"]))
             ):
-                outer_recalls[video_id] = float(item["recall"])
+                outer_recalls[video_id] = float(item["event_recall"])
         all_outer_video_recalls.extend(outer_recalls.values())
         outer_events = int(outer_metrics.get("events", 0))
         outer_hits = int(outer_metrics.get("hit_events", 0))
@@ -355,10 +356,10 @@ def run_hpo(
             "inner_best_value": float(best.value),
             "inner_best_params": best_params,
             "inner_best_fold_scores": best.user_attrs.get(
-                "inner_fold_segment_recall_at_5", {}
+                "inner_fold_candidate_event_recall_at_10_v2", {}
             ),
-            "outer_segment_recall_at_5": outer_score,
-            "outer_per_video_segment_recall_at_5": outer_recalls,
+            "outer_candidate_event_recall_at_10_v2": outer_score,
+            "outer_per_video_candidate_event_recall_at_10_v2": outer_recalls,
             "outer_events": outer_metrics.get("events", 0),
             "outer_evaluated_videos": len(outer_recalls),
             "outer_training_video_ids": list(outer_fold.train_video_ids),
@@ -369,7 +370,7 @@ def run_hpo(
         report(
             f"Outer fold {outer_index + 1}/{len(groups)} complete: "
             f"group={outer_group}, inner best={float(best.value):.5f}, "
-            f"outer recall@5={outer_score if outer_score is not None else 'undefined'}."
+            f"outer candidate event recall={outer_score if outer_score is not None else 'undefined'}."
         )
 
     normalization_name = data_config["feature_normalization"]
@@ -378,9 +379,11 @@ def run_hpo(
     # The nested outer-fold studies above remain temporary and isolated.
     # The final full-dataset LOVO study is the persistent, resumable study used
     # for production parameter selection and interactive fine-tuning.
-    study_name = section.get("study_name", "ranking_hpo")
-    if not isinstance(study_name, str) or not study_name.strip():
+    configured_study_name = section.get("study_name", "ranking_hpo")
+    if not isinstance(configured_study_name, str) or not configured_study_name.strip():
         raise ValueError("hpo.study_name must be a non-empty string.")
+    # Keep Optuna histories for the old window-level NMS metric isolated.
+    study_name = f"{configured_study_name.strip()}_{METRIC_ID}"
 
     # Preserve the old HPO proxy-group option for the production-parameter
     # search only. Nested evaluation above always uses every manifest group.
@@ -467,9 +470,9 @@ def run_hpo(
                 f"Final HPO trial {trial.number} produced no validation class-3 events."
             )
         score = float(total_hits / total_events)
-        trial.set_user_attr("metric", "nms_pooled_segment_recall_at_5")
-        trial.set_user_attr("pooled_segment_recall_at_5", score)
-        trial.set_user_attr("fold_segment_recall_at_5", per_fold)
+        trial.set_user_attr("metric", "candidate_event_recall_at_10_v2")
+        trial.set_user_attr("pooled_candidate_event_recall_at_10_v2", score)
+        trial.set_user_attr("fold_candidate_event_recall_at_10_v2", per_fold)
         trial.set_user_attr("total_events", total_events)
         trial.set_user_attr("total_hits", total_hits)
         trial.set_user_attr("evaluated_event_count", total_events)
@@ -496,10 +499,10 @@ def run_hpo(
         "storage_path": str(db_path.resolve()),
         "proxy_test_groups": sorted(set(final_group_by_video.values())) if proxy_value is not None else None,
         "best_trial_number": final_best.number,
-        "best_inner_pooled_segment_recall_at_5": float(final_best.value),
+        "best_inner_pooled_candidate_event_recall_at_10_v2": float(final_best.value),
         "best_params": final_best_params,
-        "best_fold_segment_recall_at_5": final_best.user_attrs.get(
-            "fold_segment_recall_at_5", {}
+        "best_fold_candidate_event_recall_at_10_v2": final_best.user_attrs.get(
+            "fold_candidate_event_recall_at_10_v2", {}
         ),
         "total_events": final_best.user_attrs.get("total_events"),
         "total_hits": final_best.user_attrs.get("total_hits"),
@@ -511,27 +514,27 @@ def run_hpo(
                 "value": trial.value,
                 "params": trial.params,
                 "effective_params": _effective_params(base_config, search_space, trial.params),
-                "fold_segment_recall_at_5": trial.user_attrs.get("fold_segment_recall_at_5", {}),
+                "fold_candidate_event_recall_at_10_v2": trial.user_attrs.get("fold_candidate_event_recall_at_10_v2", {}),
             }
             for trial in final_completed
         ],
         "warning": (
             "This full-dataset LOVO score is used to select production parameters; "
-            "it is not an unbiased estimate. Use mean_outer_segment_recall_at_5 "
+            "it is not an unbiased estimate. Use mean_outer_candidate_event_recall_at_10_v2 "
             "from nested_cv for generalization performance."
         ),
     }
     report(
         f"Final production parameters selected: trial #{final_best.number}, "
-        f"full-data LOVO pooled recall@5={float(final_best.value):.5f}. "
+        f"full-data LOVO pooled candidate event recall={float(final_best.value):.5f}. "
         f"Study '{study_name}' now contains {len(final_study.trials)} trial records; "
         f"database: {db_path}."
     )
 
     outer_fold_scores = [
-        float(item["outer_segment_recall_at_5"])
+        float(item["outer_candidate_event_recall_at_10_v2"])
         for item in outer_results
-        if item["outer_segment_recall_at_5"] is not None
+        if item["outer_candidate_event_recall_at_10_v2"] is not None
     ]
     mean_score = float(outer_total_hits / outer_total_events) if outer_total_events else None
     std_score = (
@@ -549,10 +552,11 @@ def run_hpo(
     output_dir = Path(section.get("output_dir", "output/hpo")).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     normalization_slug = str(normalization_name).replace("per_video_", "")
-    output_path = output_dir / f"lightgbm_hpo_nested_segment_recall_at_5_{normalization_slug}.json"
+    output_path = output_dir / f"lightgbm_hpo_nested_{METRIC_ID}_{normalization_slug}.json"
     payload = {
         "evaluation": "nested_leave_one_group_out_hpo",
-        "metric": "segment_recall_at_5",
+        "metric": METRIC_ID,
+        "metric_version": METRIC_ID,
         "aggregation": "pooled_hits_divided_by_events_after_per_video_temporal_nms",
         "direction": "maximize",
         "manifest": str(Path(manifest_path).expanduser().resolve()),
@@ -564,10 +568,10 @@ def run_hpo(
         "evaluated_outer_video_count": len(all_outer_video_recalls),
         "outer_total_events": outer_total_events,
         "outer_total_hits": outer_total_hits,
-        "mean_outer_segment_recall_at_5": mean_score,
-        "std_outer_video_segment_recall_at_5": std_score,
-        "mean_outer_group_segment_recall_at_5": mean_fold_score,
-        "std_outer_group_segment_recall_at_5": std_fold_score,
+        "mean_outer_candidate_event_recall_at_10_v2": mean_score,
+        "std_outer_video_candidate_event_recall_at_10_v2": std_score,
+        "mean_outer_group_candidate_event_recall_at_10_v2": mean_fold_score,
+        "std_outer_group_candidate_event_recall_at_10_v2": std_fold_score,
         "outer_folds": outer_results,
         # Top-level best_params is intentionally compatible with
         # training.run_lightgbm_train_from_manifest's hpo.best_params_path.
