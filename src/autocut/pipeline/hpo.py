@@ -589,7 +589,7 @@ def run_hpo(
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     payload["results_path"] = str(output_path)
     report(
-        f"Nested CV and final parameter selection complete: pooled outer NMS Segment Recall@5="
+        f"Nested CV and final parameter selection complete: pooled outer candidate event recall="
         f"{mean_score if mean_score is not None else 'undefined'}; "
         f"results saved to {output_path}."
     )
